@@ -206,6 +206,13 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 #if NENER>0
   integer::irad
 #endif
+  integer ,dimension(1:ncpu,1:IRandNumSize)::allseed
+
+  ! If necessary, initialize random number generator
+  if(localseed(1)==-1)then
+     call rans(ncpu,iseed,allseed)
+     localseed=allseed(myid,1:IRandNumSize)
+  end if
 
   if(sf_log_properties) ilun=myid+103
   ! Conversion factor from user units to cgs units
@@ -402,6 +409,8 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 
          ! Thermal energy
          dE_winds = 0.5 * Mej_winds * v_ej**2
+
+
          if (nSN_tot .ge. 1.0) then
             ethermal(j) = ESN * nSN_tot
          else
@@ -497,8 +506,8 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
          do idim=1,ndim
              e=e+0.5d0*unew(indp(j),idim+1)**2/max(unew(indp(j),1),smallr)
          end do
-         uvar=(gamma-1.0d0)*(unew(indp(j),ndim+2)-e)*scale_T2
-         write(*,*) 'FEEDBACK T2 = ', uvar
+         uvar=(gamma-1.0d0)*(unew(indp(j),ndim+2)-e)*scale_T2/max(unew(indp(j),1),smallr)
+         write(*,*) 'FEEDBACK T2 = ', uvar, ' mgas = ', unew(indp(j),1)*vol_loc(j)*scale_Msol, ' Msol'
      endif
   end do
 

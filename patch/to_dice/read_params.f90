@@ -74,8 +74,8 @@ subroutine read_params
   character(LEN=5)::nchar
   integer(kind=8)::ngridtot=0
   integer(kind=8)::nparttot=0
-  real(kind=8)::delta_tout=0,tend=0
-  real(kind=8)::delta_aout=0,aend=0
+  real(kind=8)::tend=0
+  real(kind=8)::aend=0
   logical::nml_ok, info_ok
   integer,parameter::tag=1134
 #ifndef WITHOUTMPI
@@ -267,6 +267,58 @@ subroutine read_params
   read(1,NML=dice_params,END=106)
 106 continue
 
+#ifndef WITHOUTMPI
+#ifdef LIGHT_MPI_COMM
+  if(myid==1 .and. ncpu .gt. 100) then
+    write(*,*) "--------------------------------------------------------------------------------------------------------------"
+    write(*,*) "> Using Light MPI Communicator data structures to reduce memory footprint advocated by P. Wautelet (IDRIS) in"
+    write(*,*) "  http://www.idris.fr/docs/docu/support-avance/ramses.html"
+    write(*,*) ""
+
+    allocate(emission_reception_legacy(1:100, 1:levelmax))
+    mem_used_legacy_buff = dble(sizeof(emission_reception_legacy)*2)*ncpu/100.0
+    deallocate(emission_reception_legacy)
+    write(*,*) "  * Old MPI communication structures (emission+reception) would have allocated : ", mem_used_legacy_buff/1.0e6," MB"
+    write(*,*) "      - reception(1:ncpu,1:nlevelmax) : ", mem_used_legacy_buff/2.0e6," MB"
+    write(*,*) "      - emission(1:ncpu,1:nlevelmax)  : ", mem_used_legacy_buff/2.0e6," MB"
+    if (poisson) then
+        allocate(emission_reception_legacy(1:100, 1:levelmax-1))
+        mem_used_legacy_buff_mg = dble(sizeof(emission_reception_legacy)*2)*ncpu/100.0
+        deallocate(emission_reception_legacy)
+        write(*,*) "  * Old Poisson-related MPI communication structures (active_mg+emission_mg) would have allocated : ", mem_used_legacy_buff_mg/1.0e6," MB"
+        write(*,*) "      - active_mg(1:ncpu,1:nlevelmax-1) : ", mem_used_legacy_buff_mg/2.0e6," MB"
+        write(*,*) "      - emission_mg(1:ncpu,1:nlevelmax-1) : ", mem_used_legacy_buff_mg/2.0e6," MB"
+        mem_used_legacy_buff = mem_used_legacy_buff + mem_used_legacy_buff_mg
+    endif
+
+    allocate(reception(1:100, 1:levelmax))
+    allocate(emission(1:levelmax))
+    allocate(emission_part(1:levelmax))
+    mem_used_new_buff = dble(sizeof(emission)) + dble(sizeof(reception))*ncpu/100.0 + dble(sizeof(emission_part))
+    deallocate(reception)
+    deallocate(emission)
+    deallocate(emission_part)
+    write(*,*) "  * New MPI communication structures (emission+reception) use : ", mem_used_new_buff/1.0e6," MB"
+    write(*,*) "       - emission(1:nlevelmax)         : ", dble(sizeof(emission))/1.0e6," MB"
+    write(*,*) "       - emission_part(1:nlevelmax)    : ", dble(sizeof(emission_part))/1.0e6," MB"
+    write(*,*) "       - reception(1:ncpu,1:nlevelmax) : ", dble(sizeof(reception))*ncpu/1.0e8," MB"
+    if (poisson) then
+        allocate(reception(1:100, 1:levelmax-1)) ! active_mg 
+        allocate(emission(1:levelmax-1)) ! emission_mg
+        mem_used_new_buff_mg = dble(sizeof(emission)) + dble(sizeof(reception))*ncpu/100.0
+        deallocate(reception)
+        deallocate(emission)
+        write(*,*) "  * New Poisson-related MPI communication structures (emission_mg+active_mg) use : ", mem_used_new_buff_mg/1.0e6," MB"
+        write(*,*) "       - emission_mg(1:nlevelmax-1)         : ", dble(sizeof(emission))/1.0e6," MB"
+        write(*,*) "       - active_mg(1:ncpu,1:nlevelmax-1) : ", dble(sizeof(reception))*ncpu/1.0e8," MB"
+        mem_used_new_buff = mem_used_new_buff + mem_used_new_buff_mg
+    endif
+    write(*,*) "    => Overall memory economy : ", (mem_used_legacy_buff-mem_used_new_buff)/1.0e6,"MB"
+    write(*,*) "--------------------------------------------------------------------------------------------------------------"
+  endif
+#endif
+#endif
+
   !-------------------------------------------------
   ! Read optional nrestart command-line argument
   !-------------------------------------------------
@@ -305,24 +357,30 @@ subroutine read_params
   !-------------------------------------------------
   ! Compute time step for outputs
   !-------------------------------------------------
-  if(tend>0)then
-     if(delta_tout==0)delta_tout=tend
-     noutput=MIN(int(tend/delta_tout),MAXOUT)
-     do i=1,noutput
-        tout(i)=dble(i)*delta_tout
-     end do
-     if(tout(noutput).LT.tend)then
-        noutput=noutput+1
-        tout(noutput)=tend
-     endif
-  else if(aend>0)then
-     if(delta_aout==0)delta_aout=aend
-     noutput=MIN(int(aend/delta_aout),MAXOUT)
-     do i=1,noutput
-        aout(i)=dble(i)*delta_aout
-     end do
+  ! check how many predetermined output times are listed (either give tout or aout)
+  if(noutput==0.and..not.all(tout==HUGE(1.0D0)))then
+     do while(tout(noutput+1)<HUGE(1.0D0))
+        noutput = noutput+1
+     enddo
   endif
-  noutput=MIN(noutput,MAXOUT)
+  if(noutput==0.and..not.all(aout==HUGE(1.0D0)))then
+     do while(aout(noutput+1)<HUGE(1.0D0))
+        noutput = noutput+1
+     enddo
+  endif
+  ! add final time and expansion factor to the predetermined output list
+  if(tout(noutput).LT.tend)then
+     noutput=noutput+1
+     tout(noutput)=tend
+  endif
+  if(aout(noutput).LT.aend)then
+     noutput=noutput+1
+     aout(noutput)=aend
+  endif
+  ! set periodic output params
+  tout_next=delta_tout
+  aout_next=delta_aout
+
   if(imovout>0) then
      allocate(tmovout(0:imovout))
      allocate(amovout(0:imovout))
