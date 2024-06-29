@@ -303,7 +303,7 @@ subroutine read_params
     write(*,*) "       - emission_part(1:nlevelmax)    : ", dble(sizeof(emission_part))/1.0e6," MB"
     write(*,*) "       - reception(1:ncpu,1:nlevelmax) : ", dble(sizeof(reception))*ncpu/1.0e8," MB"
     if (poisson) then
-        allocate(reception(1:100, 1:levelmax-1)) ! active_mg 
+        allocate(reception(1:100, 1:levelmax-1)) ! active_mg
         allocate(emission(1:levelmax-1)) ! emission_mg
         mem_used_new_buff_mg = dble(sizeof(emission)) + dble(sizeof(reception))*ncpu/100.0
         deallocate(reception)
@@ -337,6 +337,9 @@ subroutine read_params
         info_file='output_'//TRIM(nchar)//'/info_'//TRIM(nchar)//'.txt'
         inquire(file=info_file, exist=info_ok)
      enddo
+  else if (myid==1 .and. nrestart .lt. 0)  then
+     info_file='output_restart/info_restart.txt'
+     inquire(file=info_file, exist=info_ok)
   endif
 
 #ifndef WITHOUTMPI
@@ -344,6 +347,11 @@ subroutine read_params
 #endif
 
   if (nrestart .gt. 0 .and. .not. info_ok) then
+     if (myid==1) then
+         write(*,*) "Error: Could not find restart file"
+     endif
+     call clean_stop
+  else if (nrestart .lt. 0 .and. .not. info_ok) then
      if (myid==1) then
          write(*,*) "Error: Could not find restart file"
      endif

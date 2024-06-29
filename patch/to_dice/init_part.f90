@@ -109,12 +109,12 @@
 #ifdef OUTPUT_PARTICLE_POTENTIAL
   allocate(ptcl_phi(npartmax))
 #endif
-  ! DICE patch 
+  ! DICE patch
   allocate(up(npartmax))
   if(ic_mask_ptype.gt.-1)then
      allocate(maskp(npartmax))
   endif
-  ! DICE patch 
+  ! DICE patch
   xp=0; vp=0; mp=0; levelp=0; idp=0
   typep(1:npartmax)%family=FAM_UNDEF; typep(1:npartmax)%tag=0
   if(star.or.sink)then
@@ -297,6 +297,169 @@
         ! Attempt to read mass from binary file
         call read_tracer_mass
      end if
+  else if (nrestart < 0) then ! restart from a restart output
+     ilun=2*ncpu+myid+103
+     ! call title(nrestart,nchar)
+
+     if(IOGROUPSIZEREP>0)then
+        call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
+        fileloc='output_restart/group_'//TRIM(ncharcpu)//'/part_restart.out'
+     else
+        fileloc='output_restart/part_restart.out'
+     endif
+
+     call title(myid,nchar)
+     fileloc=TRIM(fileloc)//TRIM(nchar)
+     ! Wait for the token
+#ifndef WITHOUTMPI
+     if(IOGROUPSIZE>0) then
+        if (mod(myid-1,IOGROUPSIZE)/=0) then
+           call MPI_RECV(dummy_io,1,MPI_INTEGER,myid-1-1,tagg,&
+                & MPI_COMM_WORLD,MPI_STATUS_IGNORE,info2)
+        end if
+     endif
+#endif
+
+
+     open(unit=ilun,file=fileloc,form='unformatted')
+     rewind(ilun)
+     read(ilun)ncpu2
+     read(ilun)ndim2
+     read(ilun)npart2
+     if (MC_tracer) then
+        read(ilun)localseed, tracer_seed
+     else
+        read(ilun)localseed
+     end if
+     read(ilun)nstar_tot
+     read(ilun)mstar_tot
+     read(ilun)mstar_lost
+     read(ilun)nsink
+     if(ncpu2.ne.ncpu.or.ndim2.ne.ndim.or.npart2.gt.npartmax)then
+        write(*,*)'File part.tmp not compatible'
+        write(*,*)'Found   =',ncpu2,ndim2,npart2
+        write(*,*)'Expected=',ncpu,ndim,npartmax
+        call clean_stop
+     end if
+     ! Read position
+     allocate(xdp(1:npart2))
+     do idim=1,ndim
+        read(ilun)xdp
+        xp(1:npart2,idim)=xdp
+     end do
+     ! Read velocity
+     do idim=1,ndim
+        read(ilun)xdp
+        vp(1:npart2,idim)=xdp
+     end do
+     ! Read mass
+     read(ilun)xdp
+     mp(1:npart2)=xdp
+     deallocate(xdp)
+     ! Read identity
+     allocate(isp8(1:npart2))
+     read(ilun)isp8
+     idp(1:npart2)=isp8
+     deallocate(isp8)
+
+     ! Read level
+     allocate(isp(1:npart2))
+     read(ilun)isp
+     levelp(1:npart2)=isp
+     deallocate(isp)
+
+     ! Read family
+     allocate(ii1(1:npart2))
+     read(ilun)ii1
+     typep(1:npart2)%family = ii1
+     ! Read tag
+     read(ilun)ii1
+     typep(1:npart2)%tag = ii1
+     deallocate(ii1)
+
+#ifdef OUTPUT_PARTICLE_POTENTIAL
+     ! We don't need the potential, but read it anyway (to get the records correctly for tp/zp)
+     read(ilun)
+#endif
+     if(star.or.sink)then
+        ! Read birth epoch
+        allocate(xdp(1:npart2))
+        read(ilun)xdp
+        tp(1:npart2)=xdp
+        if(convert_birth_times) then
+           do i = 1, npart2 ! Convert birth time to proper for RT postpr.
+              call getProperTime(tp(i),tp(i))
+           enddo
+        endif
+        if(metal)then
+           ! Read metallicity
+           read(ilun)xdp
+           zp(1:npart2)=xdp
+        end if
+#ifdef INIT_STELLAR_MASS
+        ! Read initial stellar mass
+         read(ilun)xdp
+         mp0(1:npart2)=xdp
+#endif
+        deallocate(xdp)
+     end if
+
+     if (MC_tracer) then
+        allocate(isp(1:npart2))
+        ! Now read partp
+        read(ilun)isp
+        partp(1:npart2) = isp
+        call convert_global_index_to_local_index(npart2)
+        deallocate(isp)
+     end if
+     close(ilun)
+
+     ! Send the token
+#ifndef WITHOUTMPI
+     if(IOGROUPSIZE>0) then
+        if(mod(myid,IOGROUPSIZE)/=0 .and.(myid.lt.ncpu))then
+           dummy_io=1
+           call MPI_SEND(dummy_io,1,MPI_INTEGER,myid-1+1,tagg, &
+                & MPI_COMM_WORLD,info2)
+        end if
+     endif
+#endif
+     ! Get nlevelmax_part from cosmological inital conditions
+     if(cosmo)then
+        min_mdm_cpu = 1
+        do ipart=1,npart2
+           ! Get dark matter only
+           if (is_DM(typep(ipart))) then
+              ! note: using two nested if so that the second one is only evaluated for DM particles
+              if (mp(ipart) .lt. min_mdm_cpu) min_mdm_cpu = mp(ipart)
+           end if
+        end do
+
+#ifndef WITHOUTMPI
+        call MPI_ALLREDUCE(min_mdm_cpu,min_mdm_all,1,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,info)
+#else
+        min_mdm_all = min_mdm_cpu
+#endif
+        ilevel = 1
+        do while(.true.)
+           mm1 = 0.5d0**(3*ilevel)*(1.0d0-omega_b/omega_m)
+           if((mm1 > 0.90d0*min_mdm_all).AND.(mm1 < 1.10d0*min_mdm_all))then
+              nlevelmax_part = ilevel
+              exit
+           endif
+           ilevel = ilevel+1
+        enddo
+        if(myid==1) write(*,*) 'nlevelmax_part=',nlevelmax_part
+     endif
+
+     if(debug)write(*,*)'part.tmp read for processor ',myid
+     npart=npart2
+
+     if (tracer .and. MC_tracer) then
+        ! Attempt to read mass from binary file
+        call read_tracer_mass
+     end if
+
   else
 
      filetype_loc=filetype
@@ -773,7 +936,7 @@ contains
        deallocate(emission_part(1)%f)
        deallocate(emission_part(1)%f8)
     end if
- 
+
     ! Count particles
     offset=0
     sendbuf_cum=0
@@ -787,7 +950,7 @@ contains
           offset=offset+ncache
        end if
     end do
- 
+
     ! Allocate communicator structures (emission)
     if(emission_part(1)%nactive>0)then
        allocate(emission_part(1)%cpuid(emission_part(1)%nactive))
@@ -803,7 +966,7 @@ contains
             idx=idx+1
          end if
        end do
- 
+
        ! Fill communicator structures with particle data
        jpart=0
        sendbuf=0
@@ -1269,7 +1432,7 @@ contains
           mass_blck  = -1
           metal_blck = -1
           age_blck   = -1
-          
+
           if(ic_format .eq. 'Gadget1') then
              ! Init block counter
              jump_blck = 1
@@ -1393,7 +1556,7 @@ contains
              write(*,*) 'Gadget header is not 256 bytes'
              error=.true.
           endif
-          
+
           ! Byte swapping doesn't appear to work if you just do READ(1)header
           READ(1,POS=head_blck) header%npart,header%mass,header%time,header%redshift, &
                header%flag_sfr,header%flag_feedback,header%nparttotal, &
@@ -1402,13 +1565,13 @@ contains
                header%flag_stellarage,header%flag_metals,header%totalhighword, &
                header%flag_entropy_instead_u, header%flag_doubleprecision, &
                header%flag_ic_info, header%lpt_scalingfactor
-          
+
           nstar_tot = sum(header%npart(3:5))
           npart     = sum(header%npart)
           ngas      = header%npart(1)
           nhalo     = header%npart(2)
           if(cosmo) T2_start = 1.356d-2/aexp**2
-          
+
           write(*,'(A50)')"__________________________________________________"
           write(*,*)"Found ",npart," particles"
           skip=.false.
@@ -1538,7 +1701,7 @@ contains
                    if(xx(i,3)<  0.0d0  )xx(i,3)=xx(i,3)+dble(nz)
                    if(xx(i,3)>=dble(nz))xx(i,3)=xx(i,3)-dble(nz)
                 endif
-                
+
                 if(metal) then
                    if(metal_blck.ne.-1) then
                       zz(i) = zz_sp(i)*ic_scale_metal
@@ -1564,7 +1727,7 @@ contains
                       ! Temperature stored in units of K/mu
                       uu(i) = uu_sp(i)*mu_mol*(gadget_scale_v/scale_v)**2*ic_scale_u
                    endif
-                   
+
                 endif
                 if(kpart.le.header%npart(1)) mgas_tot = mgas_tot+mm(i)
                 ! Check the End Of Block
