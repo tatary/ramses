@@ -1212,7 +1212,8 @@ SUBROUTINE star_RT_vsweep(ind_grid,ind_part,ind_grid_part,ng,np,dt,ilevel)
       !INIT_STELLAR_MASS
       mass = mp0(ind_part(j))
 #endif 
-     part_NpInp(j,:) = part_NpInp(j,:)*mass*scale_inp !#photons
+     ! part_NpInp(j,:) = part_NpInp(j,:)*mass*scale_inp !#photons
+      part_NpInp(j,:) = group_on*part_NpInp(j,:)*mass*scale_inp !#photons
 
      if(showSEDstats .and. nSEDgroups .gt. 0) then
         step_nPhot = step_nPhot+part_NpInp(j,1)*scale_nPhot

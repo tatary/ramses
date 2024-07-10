@@ -35,7 +35,8 @@ levelmax=13
 !levelmax=9
 nexpand=3,3,3,3,3,3,3,3,3
 ngridtot=50000000
-nparttot=30000000
+!nparttot=30000000
+npartmax=1942600
 boxlen=100.
 /
 
@@ -72,20 +73,20 @@ neq_chem = .true.
 &SF_PARAMS
 m_star = 0.5
 n_star = 0.1
-eps_star = 0.5
-sf_virial=.true.
-sf_model = 1
+eps_star = 1.0
+sf_virial=.false.
+sf_model = 6
 sf_trelax=10.0
-sf_tdiss = 1.0
-sf_compressive = .true.
+sf_tdiss = 0
+sf_compressive = .flase.
 sf_log_properties = .true.
 /
 
 &FEEDBACK_PARAMS
 f_esn = 1.0
-eta_sn = 0.1
-t_sne  = 10.0
-yield  = 0.1
+eta_sn = 0.1                    ! dummy
+t_sne  = 10.0                   ! dummy
+yield  = 0.1                    ! dummy
 /
 
 
@@ -122,6 +123,7 @@ group_egy     = 0.55, 3.3, 8.4,  12.44, 18.85,  35.079, 65.666
 groupL0       = 0.1,  1.0, 5.6,  11.20, 13.60,  24.59,  54.42
 groupL1       = 1.0,  5.6, 11.2, 13.60, 24.590, 54.42,  0.0
 spec2group    = 4,5,6,7             ! H2, HI, HeI, HeII -> pck
+group_on      = 1, 1, 1, 1, 1, 1
 group_csn(1,:) = 0.0, 0.0, 0.0, 0.0
 group_csn(2,:) = 0.0, 0.0, 0.0, 0.0
 group_csn(3,:) = 0.0, 0.0, 0.0, 0.0
@@ -160,7 +162,7 @@ units_length  = 0.308567758128200E+22 ! kpc
 /
 
 &DICE_PARAMS
-ic_file='dice_dw2.g2'         ! Name of the initial conditions file
+ic_file='dice_dw1.g2'         ! Name of the initial conditions file
 ic_nfile=1                    ! If greater than one, look for files with name matching ic_file//'.n'
 ic_ifout=1                    ! Change ramses output index for restarts
 ic_format='Gadget2'           ! Format of the initial conditions. 'Gadget1' or 'Gadget2'

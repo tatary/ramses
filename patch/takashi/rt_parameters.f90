@@ -39,7 +39,7 @@ module rt_parameters
   logical::isHe=.true.                              !     He ionization fractions tracked?
   logical::isH2=.false.                             !                          H2 tracked?
   integer::ixHI=0, ixHII=0, ixHeII=0, ixHeIII=0     !      Indexes of ionization fractions
-  logical::is_SED_single_Z=.false.                  !                   Tracks if single Z 
+  logical::is_SED_single_Z=.false.                  !                   Tracks if single Z
                                                     !                 in SED interpolation
 
   ! RT_PARAMS namelist--------------------------------------------------------------------
@@ -80,6 +80,7 @@ module rt_parameters
   character(LEN=128)::uv_file=''       ! File containing stellar energy distributions    !
   logical::cloudy_metal_cooling=.false.! Use cloudy metallicity cooling tables           !
   character(LEN=128)::cloudy_metal_file='' ! File containing cloudy metallicity cooling tables   !
+  logical::attn_after_chem=.false.     ! calculate attenuation after chemistry           !
 
   ! RT_GROUPS namelist--------------------------------------------------------------------
   integer::sedprops_update=-1                      ! Update sedprops from star populations
@@ -93,6 +94,7 @@ module rt_parameters
   real(dp),dimension(nGroups)::group_egy_AGNfrac=0               !  Fraction of AGN energy
   real(dp),dimension(nGroups)::groupL0=13.60                     ! Wavelength lower limits
   real(dp),dimension(nGroups)::groupL1=0                         ! Wavelength upper limits
+  integer,dimension(nGroups)::group_on=1                         ! Wavelength emitted by stars
   integer,dimension(nIons)::spec2group=0                 !Ion -> group # in recombinations
 
   ! Imposed boundary condition variables

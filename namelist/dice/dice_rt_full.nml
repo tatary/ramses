@@ -2,7 +2,7 @@
 pic=.true.
 poisson=.true.
 hydro=.true.
-rt=.false.
+rt=.true.
 nrestart=0
 nremap=4
 nsubcycle=1,2,2,2,2,2,2,2
@@ -69,7 +69,7 @@ haardt_madau =.true.
 z_reion=8.5
 self_shielding =.true.
 neq_chem = .true.
-Zsolar_Asplund = .true. 
+Zsolar_Asplund = .true.
 /
 
 &SF_PARAMS
@@ -109,12 +109,14 @@ cloudy_metal_file='/mnt/synology1/takashi/dwarf/ramses_tables/cloudy_cooling/run
 iPEH_group=3
 !rt_isIR=.true.	                ! logical	Assume first photon group represents IR photons, in local thermal equilibrium (LTE) with dust
 rt_isIR=.false.	                ! logical	Assume first photon group represents IR photons, in local thermal equilibrium (LTE) with dust
+rt_isIR_alt=.false.              ! logical	Assume first photon group represents IR photons
 rt_isIRtrap=.false.	            ! logical	Apply trapping of IR photons in optically thick gas, in effect correctly modelling the IR propagation
 is_kIR_T=.ture.
-rt_star=.false.                 ! do we want star particles to emit radiation?
+rt_star=.true.                 ! do we want star particles to emit radiation?
 rt_esc_frac=1.0d0                ! escape fraction of radiation from those star particles
 sed_dir='/mnt/synology1/takashi/dwarf/ramses_tables/SED/bc03_Chabrier'             ! directory which contains SED files
 sedprops_update=1              ! how often to up mean energies and cross sections
+attn_after_chem=.true.         ! absorption will be estimated after chemistry
 /
 
 &RT_GROUPS
@@ -122,8 +124,8 @@ sedprops_update=1              ! how often to up mean energies and cross section
 !groupL0       = 11.20, 13.60, 15.200, 24.590, 54.42
 !groupL1       = 13.60, 15.20, 24.590, 54.420, 0.0
 group_egy     = 0.55, 3.3, 8.4,  12.44, 18.85,  35.079, 65.666
-groupL0       = 0.1,  1.0, 5.6,  11.20, 13.60,  24.59,  54.42
-groupL1       = 1.0,  5.6, 11.2, 13.60, 24.590, 54.42,  0.0
+groupL0       = 0.1,  1.0, 5.6,  11.20, 13.60,  24.590,  54.42
+groupL1       = 1.0,  5.6, 11.20, 13.60, 24.590, 54.42,  0.0
 spec2group    = 4,5,6,7             ! H2, HI, HeI, HeII -> pck
 group_on      = 1, 1, 1, 1, 1, 1
 group_csn(1,:) = 0.0, 0.0, 0.0, 0.0

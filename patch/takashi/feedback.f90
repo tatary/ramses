@@ -189,7 +189,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   real(dp)::dx,dx_loc,scale,birth_time,current_time,t_age_Gyr, dt_Gyr
   real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v, scale_mcgs
   real(dp):: scale_Msol, m_in_sol
-  real(dp)::Msne, nSNCC, nSNIa, nSN_tot, Mej, dMz
+  real(dp)::Msne, nSNCC, nSNIa, nSN_tot, Mej, Mej_winds, dE_winds, dMz, v_ej
   ! Grid based arrays
   real(dp),dimension(1:nvector,1:ndim),save::x0
   integer ,dimension(1:nvector),save::ind_cell
@@ -206,6 +206,13 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 #if NENER>0
   integer::irad
 #endif
+  integer ,dimension(1:ncpu,1:IRandNumSize)::allseed
+
+  ! If necessary, initialize random number generator
+  if(localseed(1)==-1)then
+     call rans(ncpu,iseed,allseed)
+     localseed=allseed(myid,1:IRandNumSize)
+  end if
 
   if(sf_log_properties) ilun=myid+103
   ! Conversion factor from user units to cgs units
@@ -384,19 +391,26 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
          Mej = nSNIa * Msne
          mejecta = mejecta + Mej
          dMz = dMz + yields(1) * Mej
-         call get_wind_mass_loss_rate(t_age_Gyr, metallicities, Mej)
+         v_ej = 0.0d0
+         call get_wind_mass_loss_rate(t_age_Gyr, metallicities, Mej, v_ej)
          Mej = Mej * dt_Gyr * m_in_sol
+         Mej_winds = Mej
          mejecta = mejecta + Mej
+         v_ej = v_ej/(scale_v*1.0d-5) ! convert from km/s to code units
          call get_wind_yields(t_age_Gyr, metallicities, yields)
          dMz = dMz + (yields(1) + metallicities(1))* Mej
 
          mejecta = mejecta/scale_Msol
+         Mej_winds = Mej_winds/scale_Msol
          mloss(j) = mejecta/vol_loc(j)
          if (metal) then
             mzloss(j) = dMz/scale_Msol/vol_loc(j)
          endif
 
          ! Thermal energy
+         dE_winds = 0.5 * Mej_winds * v_ej**2
+
+
          if (nSN_tot .ge. 1.0) then
             ethermal(j) = ESN * nSN_tot
          else
@@ -405,10 +419,10 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                ethermal(j) = ESN
             endif
          endif
-         ethermal(j) = f_esn * ethermal(j)/vol_loc(j)
+         ethermal(j) = (f_esn * ethermal(j) + dE_winds)/vol_loc(j)
          !ethermal(j)=ethermal(j)+mejecta*ESN/vol_loc(j)
          mp(ind_part(j))=mp(ind_part(j))-mejecta
-         if(sf_log_properties .and. (ethermal(j) .gt. 0)) then
+         if(sf_log_properties .and. (ethermal(j) .gt. (1.01*dE_winds/vol_loc(j)))) then
             write(ilun,'(I10)',advance='no') 1
             write(ilun,'(2I10,E24.12)',advance='no') idp(ind_part(j)),ilevel,mp(ind_part(j))
             do idim=1,ndim
@@ -487,14 +501,14 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
      !unew(indp(j),5)=unew(indp(j),5)+mloss(j)*ekinetic(j)+ &
          ! & ethermal(j)*(1d0+RAD_BOOST)
      unew(indp(j),5)=unew(indp(j),5)+mloss(j)*ekinetic(j)+ethermal(j)
-     if(ethermal(j).gt.0) then 
-         e = 0.d0 
-         do idim=1,ndim 
-             e=e+0.5d0*unew(indp(j),idim+1)**2/max(unew(indp(j),1),smallr) 
-         end do 
-         uvar=(gamma-1.0d0)*(unew(indp(j),ndim+2)-e)*scale_T2
-         write(*,*) 'FEEDBACK T2 = ', uvar
-     endif 
+     if(ethermal(j) .gt. 0.99*(f_esn*ESN/vol_loc(j))) then
+         e = 0.d0
+         do idim=1,ndim
+             e=e+0.5d0*unew(indp(j),idim+1)**2/max(unew(indp(j),1),smallr)
+         end do
+         uvar=(gamma-1.0d0)*(unew(indp(j),ndim+2)-e)*scale_T2/max(unew(indp(j),1),smallr)
+         write(*,*) 'FEEDBACK T2 = ', uvar, ' mgas = ', unew(indp(j),1)*vol_loc(j)*scale_Msol, ' Msol'
+     endif
   end do
 
   ! Add metals
@@ -1211,14 +1225,15 @@ subroutine get_Ia_yields(yields, Msne)
    Msne = 1.4d0
 end subroutine get_Ia_yields
 
-subroutine get_wind_mass_loss_rate(t_age_Gyr, metallicities, mdot)
+subroutine get_wind_mass_loss_rate(t_age_Gyr, metallicities, mdot, v_ejecta)
+   ! v_ejecta is in km/s here
    use chemical_yields
    implicit none
    real(dp), intent(in) :: t_age_Gyr
    real(dp), intent(in) :: metallicities(1:nelements)
-   real(dp), intent(out) :: mdot
+   real(dp), intent(out) :: mdot, v_ejecta
    integer :: k
-   real(dp) :: ZZ, f1, f2, f3, t1, t2, t3, tt
+   real(dp) :: ZZ, f0, f1, f2, f3, t1, t2, t3, tt
    real(dp) :: f_agb, t_agb, x_agb
    ZZ = metallicities(1)/solar_abundances(1)
    ZZ = min(max(ZZ, 0.01), 3.0)
@@ -1250,6 +1265,9 @@ subroutine get_wind_mass_loss_rate(t_age_Gyr, metallicities, mdot)
    if (t_age_Gyr .lt. 0.033) then
       mdot = mdot * (1.01)
    endif
+   f0 = ZZ**0.12
+   v_ejecta = f0 * (3000./(1.+(t_age_Gyr/0.003)**2.5) &
+      & + 600./(1.+(sqrt(ZZ)*t_age_Gyr/0.05)**6. + (ZZ/0.2)**1.5) + 30.)
 end subroutine get_wind_mass_loss_rate
 
 subroutine get_wind_yields(t_age_Gyr, metallicities, yields)

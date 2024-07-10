@@ -18,7 +18,7 @@ module rt_cooling_module
          , signc, sigec, PHrate, UVrates, rt_isIR, kappaAbs, kappaSc     &
          , is_kIR_T, iIR, rt_isIRtrap, iIRtrapVar, rt_pressBoost         &
          , rt_isoPress, rt_T_rad, rt_vc, iPEH_group                     &
-         , init_cloudy_metal_cooling, Zsol_cloudy_factor
+         , init_cloudy_metal_cooling, Zsol_cloudy_factor, rt_isIR_alt
 
   ! NOTE: T2=T/mu
   ! Np = photon density, Fp = photon flux,
@@ -42,6 +42,7 @@ module rt_cooling_module
   logical::rt_isoPress=.false.         ! Use cE, not F, for rad. pressure
   real(dp)::rt_pressBoost=1d0          ! Boost on RT pressure
   logical::rt_isIR=.false.             ! Using IR scattering on dust?
+  logical::rt_isIR_alt=.false.         ! Althernative of rt_isIR. LTE is not assumed
   logical::rt_isIRtrap=.false.         ! IR trapping in NENER variable?
   logical::is_kIR_T=.false.            ! k_IR propto T^2?
   logical::rt_T_rad=.false.            ! Use T_gas = T_rad
@@ -91,7 +92,7 @@ SUBROUTINE rt_set_model(h,omegab, omega0, omegaL, astart_sim, T2_sim)
 !-------------------------------------------------------------------------
   if(myid==1) write(*,*) &
        '==================RT momentum pressure is turned ON=============='
-  if(myid==1 .and. rt_isIR) &
+  if(myid==1 .and. (rt_isIR.or.rt_isIR_alt)) &
        write(*,*) 'There is an IR group, with index ',iIR
   if(myid==1 .and. rt_isIRtrap) write(*,*) &
        '=========IR trapping is turned ON=============='
@@ -207,7 +208,9 @@ SUBROUTINE rt_solve_cooling(T2, xion, Np, Fp, p_gas, dNpdt, dFpdt        &
   real(dp):: dT2
   real(dp),dimension(nIons):: dXion
   real(dp),dimension(nGroups):: dNp
+  real(dp),dimension(nGroups):: dNp_save !TO: to update photon number density and chemistry simulataneously
   real(dp),dimension(1:ndim, 1:nGroups):: dFp
+  real(dp),dimension(1:ndim, 1:nGroups):: dFp_save
   real(dp),dimension(1:ndim):: dp_gas
   integer::i, ia, ig, nAct, nAct_next, loopcnt, code
   integer,dimension(1:nvector):: indAct              ! Active cell indexes
@@ -224,7 +227,7 @@ SUBROUTINE rt_solve_cooling(T2, xion, Np, Fp, p_gas, dNpdt, dFpdt        &
 #if NGROUPS>0
   if(rt .and. nGroups .gt. 0) then
      group_egy_erg(1:nGroups) = group_egy(1:nGroups) * eV2erg
-     if(rt_isIR) then
+     if(rt_isIR.or.rt_isIRtrap.or.rt_isIR_alt) then
         group_egy_ratio(1:nGroups) = group_egy(1:nGroups) / group_egy(iIR)
         one_over_egy_IR_erg = 1d0 / group_egy_erg(iIR)
      endif
@@ -277,6 +280,15 @@ SUBROUTINE rt_solve_cooling(T2, xion, Np, Fp, p_gas, dNpdt, dFpdt        &
      do ia=1,nAct                             ! Loop over the active cells
         i = indAct(ia)                        !                 Cell index
         call cool_step(i)
+        !if (myid==17 .and. i == 1) then
+        !    if (dt_ok) then
+        !        print *, "dt ok    -->    go to next update T2 = ", T2(i), "nH = ", nH(i)
+        !    else
+        !        print *, "dt too long  -->  retry with shorter dt (code =", code, ") T2 = ", T2(i), "nH = ", nH(i)
+        !    end if
+        !    print *, "-------------------------------------------------------"
+        !    print *, ""
+        !end if
         if(loopcnt .gt. 100000) then
            call display_coolinfo(.true., loopcnt, i, dt-tleft(i), dt     &
                             ,ddt(i), nH(i), T2(i),  xion(:,i),  Np(:,i)  &
@@ -437,118 +449,246 @@ contains
        recRad(1:nGroups)=0. ; phAbs(1:nGroups)=0.
        ! Scattering rate; reduce the photon flux, but not photon density:
        phSc(1:nGroups)=0.
+       if (attn_after_chem) then
+         dNp_save = dNp ! backup
+         dFp_save = dFp ! backup
+         ! EMISSION FROM GAS
+         if(.not. rt_OTSA .and. rt_advect) then ! ----------- Rec. radiation
+            if(isH2) alpha(ixHI) = 0d0 ! H2 emits no rec. radiation
+            alpha(ixHII) = inp_coolrates_table(tbl_alphaA_HII, TK,.false.) &
+                         - inp_coolrates_table(tbl_alphaB_HII, TK,.false.)
+            if(isHe) then
+               ! alpha(2) A-B becomes negative around 1K, hence the max
+               alpha(ixHeII) = &
+                    MAX(0d0,inp_coolrates_table(tbl_alphaA_HeII,TK,.false.) &
+                            -inp_coolrates_table(tbl_alphaB_HeII, TK,.false.))
+               alpha(ixHeIII) = inp_coolrates_table(tbl_alphaA_HeIII, TK,.false.) &
+                              - inp_coolrates_table(tbl_alphaB_HeIII, TK,.false.)
+            endif
+            do iion=1,nIonsUsed
+               if(spec2group(iion) .gt. 0) &  ! Contribution of ion -> group
+                    recRad(spec2group(iion)) = &
+                    recRad(spec2group(iion)) + alpha(iion) * nI(iion) * ne
+            enddo
+         endif
+         ! ABSORPTION/SCATTERING OF PHOTONS BY GAS
+         do igroup=1,nGroups      ! -------------------Ionization absorbtion
+            phAbs(igroup) = SUM(nN(:)*signc(igroup,:)*ssh2(igroup)) ! s-1
+         end do
+         ! IR, optical and UV depletion by dust absorption: ----------------
+         phSc(iIR)  = phSc(iIR) + dustSc(iIR)
+         do igroup=1,nGroups        ! Deplete photons, since they go into IR
+            phAbs(igroup) = phAbs(igroup) + dustAbs(igroup)
+         end do
 
-       ! EMISSION FROM GAS
-       if(.not. rt_OTSA .and. rt_advect) then ! ----------- Rec. radiation
-          if(isH2) alpha(ixHI) = 0d0 ! H2 emits no rec. radiation
-          alpha(ixHII) = inp_coolrates_table(tbl_alphaA_HII, TK,.false.) &
-                       - inp_coolrates_table(tbl_alphaB_HII, TK,.false.)
-          if(isHe) then
-             ! alpha(2) A-B becomes negative around 1K, hence the max
-             alpha(ixHeII) = &
-                  MAX(0d0,inp_coolrates_table(tbl_alphaA_HeII,TK,.false.) &
-                          -inp_coolrates_table(tbl_alphaB_HeII, TK,.false.))
-             alpha(ixHeIII) = inp_coolrates_table(tbl_alphaA_HeIII, TK,.false.) &
-                            - inp_coolrates_table(tbl_alphaB_HeIII, TK,.false.)
-          endif
-          do iion=1,nIonsUsed
-             if(spec2group(iion) .gt. 0) &  ! Contribution of ion -> group
-                  recRad(spec2group(iion)) = &
-                  recRad(spec2group(iion)) + alpha(iion) * nI(iion) * ne
-          enddo
-       endif
+         do igroup=1,nGroups  ! ------------------- Do the update of N before abs
+            dNp(igroup)= MAX(smallNp,                                      &
+                          (ddt(icell)*(recRad(igroup)+dNpdt(igroup,icell)) &
+                                      +dNp(igroup)))
+         enddo
 
-       ! ABSORPTION/SCATTERING OF PHOTONS BY GAS
-       do igroup=1,nGroups      ! -------------------Ionization absorbtion
-          phAbs(igroup) = SUM(nN(:)*signc(igroup,:)*ssh2(igroup)) ! s-1
-       end do
-       ! IR, optical and UV depletion by dust absorption: ----------------
-       if(rt_isIR) & !IR scattering/abs on dust (abs after T update)
-            phSc(iIR)  = phSc(iIR) + dustSc(iIR)
-       do igroup=1,nGroups        ! Deplete photons, since they go into IR
-          if( .not. (rt_isIR .and. igroup.eq.iIR) ) &  ! IR done elsewhere
-               phAbs(igroup) = phAbs(igroup) + dustAbs(igroup)
-       end do
+         ! Now OK to use dNp
+         if(iPEH_group .gt. 0) then
+            ! Photoelectric absorption: the effective PEH cross section
+            ! is photoelectric heating rate / habing flux
+            ! Note: as this absorption is done separately, kappaAbs
+            !       should not include PEH absorption when PEH is included.
+            ! from Bakes and Tielens 1994 and Wolfire 2003
+            G0  = group_egy_erg(iPEH_group)                                &
+                * dNp(iPEH_group) * rt_c_cgs / 1.6d-3
+            eff_peh = 4.87d-2                                              &
+                    / (1d0 + 4d-3 * (G0*sqrt(TK)/ne*2.)**0.73)      &
+                    + 3.65d-2 * (TK/1d4)**0.7                       &
+                    / (1d0 + 2d-4 * (G0 * sqrt(TK) / ne*2. ))
+            phAbs(iPEH_group) = phAbs(iPEH_group)                          &
+                              + 8.125d-22 * eff_peh * rt_c_cgs * nH(icell) &
+                              * Zsolar(icell) * f_dust
+         endif
 
-       if(iPEH_group .gt. 0) then
-          ! Photoelectric absorption: the effective PEH cross section
-          ! is photoelectric heating rate / habing flux
-          ! Note: as this absorption is done separately, kappaAbs
-          !       should not include PEH absorption when PEH is included.
-          ! from Bakes and Tielens 1994 and Wolfire 2003
-          G0  = group_egy_erg(iPEH_group)                                &
-              * dNp(iPEH_group) * rt_c_cgs / 1.6d-3
-          eff_peh = 4.87d-2                                              &
-                  / (1d0 + 4d-3 * (G0*sqrt(TK)/ne*2.)**0.73)      &
-                  + 3.65d-2 * (TK/1d4)**0.7                       &
-                  / (1d0 + 2d-4 * (G0 * sqrt(TK) / ne*2. ))
-          phAbs(iPEH_group) = phAbs(iPEH_group)                          &
-                            + 8.125d-22 * eff_peh * rt_c_cgs * nH(icell) &
-                            * Zsolar(icell) * f_dust
-       endif
+         dmom(1:nDim)=0d0
+         do igroup=1,nGroups  ! ------------------- Do the update of N and F
+            dNp_save(igroup)= MAX(smallNp,                                      &
+                          (ddt(icell)*(recRad(igroup)+dNpdt(igroup,icell)) &
+                                      +dNp_save(igroup))                        &
+                          / (1d0+ddt(icell)*phAbs(igroup)))
 
-       dmom(1:nDim)=0d0
-       do igroup=1,nGroups  ! ------------------- Do the update of N and F
-          dNp(igroup)= MAX(smallNp,                                      &
-                        (ddt(icell)*(recRad(igroup)+dNpdt(igroup,icell)) &
-                                    +dNp(igroup))                        &
-                        / (1d0+ddt(icell)*phAbs(igroup)))
+            dUU = ABS(dNp_save(igroup)-Np(igroup,icell))                        &
+                  /(Np(igroup,icell)+Np_MIN) * one_over_Np_FRAC
+            !if(dUU .gt. 1d0) then
+               !code=1 ;   RETURN                        ! ddt(icell) too big
+            !endif
+            fracMax=MAX(fracMax,dUU)      ! To check if ddt can be increased
 
-          dUU = ABS(dNp(igroup)-Np(igroup,icell))                        &
-                /(Np(igroup,icell)+Np_MIN) * one_over_Np_FRAC
-          if(dUU .gt. 1d0) then
-             code=1 ;   RETURN                        ! ddt(icell) too big
-          endif
-          fracMax=MAX(fracMax,dUU)      ! To check if ddt can be increased
+            ! Flux update without absorption
+            do idim=1,nDim
+               dFp(idim,igroup) = &
+                    (ddt(icell)*dFpdt(idim,igroup,icell)+dFp(idim,igroup))
+            end do
+            call reduce_flux(dFp(:,igroup),dNp(igroup)*rt_c_cgs)
 
-          do idim=1,nDim
-             dFp(idim,igroup) = &
-                  (ddt(icell)*dFpdt(idim,igroup,icell)+dFp(idim,igroup)) &
-                  /(1d0+ddt(icell)*(phAbs(igroup)+phSc(igroup)))
-          end do
-          call reduce_flux(dFp(:,igroup),dNp(igroup)*rt_c_cgs)
+            ! Flux update with absorption
+            do idim=1,nDim
+               dFp_save(idim,igroup) = &
+                    (ddt(icell)*dFpdt(idim,igroup,icell)+dFp_save(idim,igroup)) &
+                    /(1d0+ddt(icell)*(phAbs(igroup)+phSc(igroup)))
+            end do
+            call reduce_flux(dFp_save(:,igroup),dNp_save(igroup)*rt_c_cgs)
 
-          do idim=1,nDim
-             dUU = ABS(dFp(idim,igroup)-Fp(idim,igroup,icell))           &
-                  / (ABS(Fp(idim,igroup,icell))+Fp_MIN) * one_over_Fp_FRAC
-             if(dUU .gt. 1d0) then
-                code=2 ;   RETURN                     ! ddt(icell) too big
-             endif
-             fracMax=MAX(fracMax,dUU)   ! To check if ddt can be increased
-          end do
+            do idim=1,nDim
+               dUU = ABS(dFp_save(idim,igroup)-Fp(idim,igroup,icell))           &
+                    / (ABS(Fp(idim,igroup,icell))+Fp_MIN) * one_over_Fp_FRAC
+               !if(dUU .gt. 1d0) then
+               !   code=2 ;   RETURN                     ! ddt(icell) too big
+               !endif
+               fracMax=MAX(fracMax,dUU)   ! To check if ddt can be increased
+            end do
 
-       end do
+         end do
 
-       do igroup=1,nGroups ! -------Momentum transfer from photons to gas:
-          mom_fact = ddt(icell) * (phAbs(igroup) + phSc(igroup)) &
-               * group_egy_erg(igroup) * one_over_c_cgs
+         do igroup=1,nGroups ! -------Momentum transfer from photons to gas:
+            mom_fact = ddt(icell) * (phAbs(igroup) + phSc(igroup)) &
+                 * group_egy_erg(igroup) * one_over_c_cgs
 
-          if(rt_isoPress .and. .not. (rt_isIR .and. igroup==iIR)) then
-             ! rt_isoPress: assume f=1, where f is reduced flux.
-             fluxMag=sqrt(sum((dFp(:,igroup))**2))
-             if(fluxMag .gt. 0d0) then
-                mom_fact = mom_fact * dNp(igroup) / fluxMag
-             else
-                mom_fact = 0d0
-             endif
-          else
-             mom_fact = mom_fact * one_over_rt_c_cgs
-          end if
+            if(rt_isoPress .and. .not. (rt_isIR .and. igroup==iIR)) then
+               ! rt_isoPress: assume f=1, where f is reduced flux.
+               fluxMag=sqrt(sum((dFp(:,igroup))**2))
+               if(fluxMag .gt. 0d0) then
+                  mom_fact = mom_fact * dNp(igroup) / fluxMag
+               else
+                  mom_fact = 0d0
+               endif
+            else
+               mom_fact = mom_fact * one_over_rt_c_cgs
+            end if
 
-          do idim = 1, nDim
-             dmom(idim) = dmom(idim) + dFp(idim,igroup) * mom_fact
-          end do
-       end do
-       dp_gas = dp_gas + dmom * rt_pressBoost        ! update gas momentum
+            do idim = 1, nDim
+               dmom(idim) = dmom(idim) + dFp(idim,igroup) * mom_fact
+            end do
+         end do
+         dp_gas = dp_gas + dmom * rt_pressBoost        ! update gas momentum
 
-       ! Add absorbed UV/optical energy to IR:----------------------------
-       if(rt_isIR) then
-          do igroup=iIR+1,nGroups
-             dNp(iIR) = dNp(iIR) + dustAbs(igroup) * ddt(icell)          &
-                  * dNp(igroup) * group_egy_ratio(igroup)
-          end do
-       endif
+         ! Add absorbed UV/optical energy to IR:----------------------------
+         if(rt_isIR_alt) then
+            do igroup=iIR+1,nGroups
+               dNp_save(iIR) = dNp_save(iIR) + dustAbs(igroup) * ddt(icell)          &
+                    * dNp(igroup) * group_egy_ratio(igroup)
+            end do
+         endif
        ! -----------------------------------------------------------------
+
+       else !=========================== default mode =======================
+         ! EMISSION FROM GAS
+         if(.not. rt_OTSA .and. rt_advect) then ! ----------- Rec. radiation
+            if(isH2) alpha(ixHI) = 0d0 ! H2 emits no rec. radiation
+            alpha(ixHII) = inp_coolrates_table(tbl_alphaA_HII, TK,.false.) &
+                         - inp_coolrates_table(tbl_alphaB_HII, TK,.false.)
+            if(isHe) then
+               ! alpha(2) A-B becomes negative around 1K, hence the max
+               alpha(ixHeII) = &
+                    MAX(0d0,inp_coolrates_table(tbl_alphaA_HeII,TK,.false.) &
+                            -inp_coolrates_table(tbl_alphaB_HeII, TK,.false.))
+               alpha(ixHeIII) = inp_coolrates_table(tbl_alphaA_HeIII, TK,.false.) &
+                              - inp_coolrates_table(tbl_alphaB_HeIII, TK,.false.)
+            endif
+            do iion=1,nIonsUsed
+               if(spec2group(iion) .gt. 0) &  ! Contribution of ion -> group
+                    recRad(spec2group(iion)) = &
+                    recRad(spec2group(iion)) + alpha(iion) * nI(iion) * ne
+            enddo
+         endif
+
+         ! ABSORPTION/SCATTERING OF PHOTONS BY GAS
+         do igroup=1,nGroups      ! -------------------Ionization absorbtion
+            phAbs(igroup) = SUM(nN(:)*signc(igroup,:)*ssh2(igroup)) ! s-1
+         end do
+         ! IR, optical and UV depletion by dust absorption: ----------------
+         if(rt_isIR) & !IR scattering/abs on dust (abs after T update)
+              phSc(iIR)  = phSc(iIR) + dustSc(iIR)
+         do igroup=1,nGroups        ! Deplete photons, since they go into IR
+            if( .not. (rt_isIR .and. igroup.eq.iIR) ) &  ! IR done elsewhere
+                 phAbs(igroup) = phAbs(igroup) + dustAbs(igroup)
+         end do
+
+         if(iPEH_group .gt. 0) then
+            ! Photoelectric absorption: the effective PEH cross section
+            ! is photoelectric heating rate / habing flux
+            ! Note: as this absorption is done separately, kappaAbs
+            !       should not include PEH absorption when PEH is included.
+            ! from Bakes and Tielens 1994 and Wolfire 2003
+            G0  = group_egy_erg(iPEH_group)                                &
+                * dNp(iPEH_group) * rt_c_cgs / 1.6d-3
+            eff_peh = 4.87d-2                                              &
+                    / (1d0 + 4d-3 * (G0*sqrt(TK)/ne*2.)**0.73)      &
+                    + 3.65d-2 * (TK/1d4)**0.7                       &
+                    / (1d0 + 2d-4 * (G0 * sqrt(TK) / ne*2. ))
+            phAbs(iPEH_group) = phAbs(iPEH_group)                          &
+                              + 8.125d-22 * eff_peh * rt_c_cgs * nH(icell) &
+                              * Zsolar(icell) * f_dust
+         endif
+
+         dmom(1:nDim)=0d0
+         do igroup=1,nGroups  ! ------------------- Do the update of N and F
+            dNp(igroup)= MAX(smallNp,                                      &
+                          (ddt(icell)*(recRad(igroup)+dNpdt(igroup,icell)) &
+                                      +dNp(igroup))                        &
+                          / (1d0+ddt(icell)*phAbs(igroup)))
+
+            dUU = ABS(dNp(igroup)-Np(igroup,icell))                        &
+                  /(Np(igroup,icell)+Np_MIN) * one_over_Np_FRAC
+            if(dUU .gt. 1d0) then
+               code=1 ;   RETURN                        ! ddt(icell) too big
+            endif
+            fracMax=MAX(fracMax,dUU)      ! To check if ddt can be increased
+
+            do idim=1,nDim
+               dFp(idim,igroup) = &
+                    (ddt(icell)*dFpdt(idim,igroup,icell)+dFp(idim,igroup)) &
+                    /(1d0+ddt(icell)*(phAbs(igroup)+phSc(igroup)))
+            end do
+            call reduce_flux(dFp(:,igroup),dNp(igroup)*rt_c_cgs)
+
+            do idim=1,nDim
+               dUU = ABS(dFp(idim,igroup)-Fp(idim,igroup,icell))           &
+                    / (ABS(Fp(idim,igroup,icell))+Fp_MIN) * one_over_Fp_FRAC
+               if(dUU .gt. 1d0) then
+                  code=2 ;   RETURN                     ! ddt(icell) too big
+               endif
+               fracMax=MAX(fracMax,dUU)   ! To check if ddt can be increased
+            end do
+
+         end do
+
+         do igroup=1,nGroups ! -------Momentum transfer from photons to gas:
+            mom_fact = ddt(icell) * (phAbs(igroup) + phSc(igroup)) &
+                 * group_egy_erg(igroup) * one_over_c_cgs
+
+            if(rt_isoPress .and. .not. (rt_isIR .and. igroup==iIR)) then
+               ! rt_isoPress: assume f=1, where f is reduced flux.
+               fluxMag=sqrt(sum((dFp(:,igroup))**2))
+               if(fluxMag .gt. 0d0) then
+                  mom_fact = mom_fact * dNp(igroup) / fluxMag
+               else
+                  mom_fact = 0d0
+               endif
+            else
+               mom_fact = mom_fact * one_over_rt_c_cgs
+            end if
+
+            do idim = 1, nDim
+               dmom(idim) = dmom(idim) + dFp(idim,igroup) * mom_fact
+            end do
+         end do
+         dp_gas = dp_gas + dmom * rt_pressBoost        ! update gas momentum
+
+         ! Add absorbed UV/optical energy to IR:----------------------------
+         if(rt_isIR) then
+            do igroup=iIR+1,nGroups
+               dNp_save(iIR) = dNp_save(iIR) + dustAbs(igroup) * ddt(icell)          &
+                    * dNp(igroup) * group_egy_ratio(igroup)
+            end do
+         endif
+         ! -----------------------------------------------------------------
+       endif
     endif !if(rt)
 #endif
     ! UPDATE TEMPERATURE *************************************************
@@ -642,6 +782,7 @@ contains
        TK=dT2*mu
     endif
 
+#if 0
 #if NGROUPS>0
     if(rt_isIR) then
        if(kAbs_loc(iIR) .gt. 0d0 .and. .not. rt_T_rad) then
@@ -671,10 +812,11 @@ contains
              code=5 ; RETURN
           endif
           fracMax=MAX(fracMax,dUU)
-          TK=dT2*mu
+          TK=dT2*mu ! why do we update GAS TEMPERATURE?
           call reduce_flux(dFp(:,iIR),dNp(iIR)*rt_c_cgs)
        endif
     endif
+#endif
 #endif
 
     ! HYDROGEN UPDATE*****************************************************
@@ -841,6 +983,12 @@ contains
     if(rt_isTconst)then
        mu = getMu(dXion, dT2)
        dT2=rt_Tconst/mu
+    endif
+
+    if (rt .and. rt_advect .and. attn_after_chem) then
+      ! Update the values for which absorption is considered
+      dNp = dNp_save
+      dFp = dFp_save
     endif
 
     ! CLEAN UP AND RETURN ************************************************

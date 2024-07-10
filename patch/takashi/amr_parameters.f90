@@ -216,6 +216,7 @@ module amr_parameters
                                         ! instead of ramses classical cooling 
   logical :: modify_pressure_fix_cond = .false. !modify pressure-fix condition (add extra condition of e_th < 0.5 * e_kin; this may be needed to take into account SN feedback in some cells)
   real(dp) :: pressure_fix_maxMach = 1d1   !maximum Mach number for coservative update (used if modify_pressure_fix_cond = .true.)
+  logical :: Zsolar_Asplund=.false.
 
   ! EOS parameters
   character(len=20)::barotropic_eos_form='legacy'  !Type of barotropic EOS: choose from:

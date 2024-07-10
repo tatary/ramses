@@ -1192,6 +1192,7 @@ subroutine fill_comm(ind_part,ind_com,ind_list,np,ilevel,icpu)
      end do
      current_property = current_property+1
 #endif
+
   end if
   ! MC Tracer
   if (MC_tracer) then
@@ -1372,6 +1373,7 @@ subroutine empty_comm(ind_com,np,ilevel,icpu)
      end do
      current_property = current_property+1
 #endif
+
   end if
 
   ! MC Tracer

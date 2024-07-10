@@ -157,8 +157,8 @@ SUBROUTINE read_rt_params(nml_ok)
        & ,rt_err_grad_xHI, rt_floor_xHI, rt_refine_aexp, is_mu_H2,isHe   &
        & ,isH2, rt_isIR, is_kIR_T, rt_T_rad, rt_vc, rt_pressBoost        &
        & ,rt_isoPress, rt_isIRtrap, iPEH_group, heat_unresolved_HII      &
-       & ,cosmic_rays                                                    &
-       & ,cloudy_metal_cooling, cloudy_metal_file                        &
+       & ,cosmic_rays, rt_isIR_alt                                       &
+       & ,cloudy_metal_cooling, cloudy_metal_file,attn_after_chem        &
        ! RT regions (for initialization)                                 &
        & ,rt_nregion, rt_region_type                                     &
        & ,rt_reg_x_center, rt_reg_y_center, rt_reg_z_center              &
@@ -180,6 +180,8 @@ SUBROUTINE read_rt_params(nml_ok)
   ! -Off if restarting, but can set to true (for postprocessing)
   ! -On otherwise, but can set to false (for specificic initialisation)
   if(nrestart .gt. 0) then
+     rt_is_init_xion=.false.
+  else if (nrestart .lt. 0) then
      rt_is_init_xion=.false.
   else
      rt_is_init_xion=.true.
@@ -264,7 +266,8 @@ SUBROUTINE read_rt_groups(nml_ok)
   integer::i,igroup_HI=0, igroup_HII=0, igroup_HeII=0, igroup_HeIII=0
 !-------------------------------------------------------------------------
   namelist/rt_groups/group_csn, group_cse, group_egy, spec2group         &
-       & , groupL0, groupL1, kappaAbs, kappaSc, group_egy_AGNfrac
+       & , groupL0, groupL1, kappaAbs, kappaSc, group_egy_AGNfrac        &
+       & , group_on
   if(myid==1) then
      write(*,'(" Working with ",I2," photon groups and  "                &
           & ,I2, " ion species")') nGroups, nIons
@@ -301,7 +304,7 @@ SUBROUTINE read_rt_groups(nml_ok)
      if(ixHI .gt. 0) then                                ! H2 dissociation
         group_csn(igroup_HI,ixHI)=2.1d-19
         group_cse(igroup_HI,ixHI)=2.1d-19
-     endif  
+     endif
      group_egy(igroup_HI)=12.44
   endif
   if(igroup_HII .gt. 0) then
@@ -321,24 +324,24 @@ SUBROUTINE read_rt_groups(nml_ok)
      group_csn(igroup_HeII,ixHII)=5.687d-19! HI ionization by HeI photons
      group_cse(igroup_HeII,ixHII)=5.042d-19
      if(ixHeII .gt. 0) then                              ! HeI ionization
-        group_csn(igroup_HeII,ixHeII)=4.478d-18   
+        group_csn(igroup_HeII,ixHeII)=4.478d-18
         group_cse(igroup_HeII,ixHeII)=4.130d-18
      endif
      group_egy(igroup_HeII)=35.079
   endif
   if(igroup_HeIII .gt. 0) then
      if(ixHI .gt. 0) then                 ! H2 ionization by HeII photons
-        group_csn(igroup_HeIII,ixHI)=4.1d-19 
+        group_csn(igroup_HeIII,ixHI)=4.1d-19
         group_cse(igroup_HeIII,ixHI)=4.1d-19
      endif
      group_csn(igroup_HeIII,ixHII)=7.889d-20  ! HI ioniz. by HeII photons
      group_cse(igroup_HeIII,ixHII)=7.456d-20
      if(ixHeII .gt. 0) then                  ! HeI ioniz. by HeII photons
-        group_csn(igroup_HeIII,ixHeII)=1.197d-18 
+        group_csn(igroup_HeIII,ixHeII)=1.197d-18
         group_cse(igroup_HeIII,ixHeII)=1.142d-18
      endif
      if(ixHeIII .gt. 0) then                            ! HeII ionization
-        group_csn(igroup_HeIII,ixHeIII)=1.055d-18     
+        group_csn(igroup_HeIII,ixHeIII)=1.055d-18
         group_cse(igroup_HeIII,ixHeIII)=1.001d-18
      endif
      group_egy(igroup_HeIII)=65.666
@@ -367,8 +370,11 @@ SUBROUTINE read_rt_groups(nml_ok)
            .and. (groupL0(i) .le. 13.6) .and. (groupL1(i) .ge. 11.2))then
            ssh2(i) = 4d2 ! H2 self-shielding factor
            isLW(i) = 1d0 ! Index for LW groups
+           if (myid==1) then
+             write(*,*) 'LW is ON and the index is ', i
+           endif
         endif
-    enddo
+     enddo
   endif
 
   call updateRTGroups_CoolConstants

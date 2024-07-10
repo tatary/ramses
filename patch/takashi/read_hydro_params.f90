@@ -52,7 +52,8 @@ subroutine read_hydro_params(nml_ok)
 #endif
        & ,pressure_fix,beta_fix,scheme,riemann &
        & ,strict_equilibrium &
-       & ,modify_pressure_fix_cond, pressure_fix_maxMach 
+       & ,modify_pressure_fix_cond, pressure_fix_maxMach
+
 
   ! Refinement parameters
   namelist/refine_params/x_refine,y_refine,z_refine,r_refine &
@@ -93,7 +94,7 @@ subroutine read_hydro_params(nml_ok)
   namelist/cooling_params/cooling,metal,isothermal,haardt_madau,J21 &
        & ,barotropic_eos,barotropic_eos_form,polytrope_rho,polytrope_index,T_eos,mu_gas &
        & ,a_spec,self_shielding,z_ave,z_reion,ind_rsink,T2max,neq_chem &
-       & ,cooling_ism
+       & ,cooling_ism, Zsolar_Asplund
 
   ! Star formation parameters
   namelist/sf_params/m_star,n_star,T2_star,g_star,del_star &
