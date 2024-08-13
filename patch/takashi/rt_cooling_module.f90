@@ -218,6 +218,31 @@ SUBROUTINE rt_solve_cooling(T2, xion, Np, Fp, p_gas, dNpdt, dFpdt        &
   real(dp)::one_over_Np_FRAC, one_over_Fp_FRAC, one_over_T_FRAC
   real(dp),dimension(1:nGroups) :: group_egy_ratio, group_egy_erg
 
+  integer,save :: ifirst = 0 !TO ADDED (for prcedures at first call)
+  !------------------------------------------------
+  ! print info at first call (KS ADDED)
+  !------------------------------------------------
+  if (ifirst == 0) then
+      if(myid==1)then
+          write(*,'(A)') '##################################################################'
+          write(*,'(A)') 'Info about chemistry model (first call of rt_solve_cooling by myid = 1)'
+          write(*,'(A)') '##################################################################'
+          !write(*,'(A)') "** WARNING ** clumping factor for H2 formation on dust is
+          !set to unity"
+          !write(*,'(A, 1PE10.2)') "** WARNING ** clumping factor for H2 formation on dust is set to ", fclump_H2dust
+          if (attn_after_chem) then
+              write(*,'(A)') "** WARNING ** the order of updating radiation field and chemistry changed"
+              if (rt_skip_convergence) then
+                write(*,'(A)') "** WARNING ** not impose convergence condition for radiation fields"
+              end if
+          end if
+          !if (SS_LVG) then !  large-velocity gradient approximation
+              !write(*,'(A)') "** WARNING ** use the large-velocity gradient approximation (dx_SS = rho/|nabla rho|) to estimate the length scale for the H2 self-shielding"
+          !end if
+      end if
+      ifirst = 1
+  end if
+
   ! Store some temporary variables reduce computations
   one_over_rt_c_cgs = 1d0 / rt_c_cgs
   one_over_Np_FRAC = 1d0 / Np_FRAC
@@ -280,15 +305,6 @@ SUBROUTINE rt_solve_cooling(T2, xion, Np, Fp, p_gas, dNpdt, dFpdt        &
      do ia=1,nAct                             ! Loop over the active cells
         i = indAct(ia)                        !                 Cell index
         call cool_step(i)
-        !if (myid==17 .and. i == 1) then
-        !    if (dt_ok) then
-        !        print *, "dt ok    -->    go to next update T2 = ", T2(i), "nH = ", nH(i)
-        !    else
-        !        print *, "dt too long  -->  retry with shorter dt (code =", code, ") T2 = ", T2(i), "nH = ", nH(i)
-        !    end if
-        !    print *, "-------------------------------------------------------"
-        !    print *, ""
-        !end if
         if(loopcnt .gt. 100000) then
            call display_coolinfo(.true., loopcnt, i, dt-tleft(i), dt     &
                             ,ddt(i), nH(i), T2(i),  xion(:,i),  Np(:,i)  &
@@ -514,9 +530,11 @@ contains
 
             dUU = ABS(dNp_save(igroup)-Np(igroup,icell))                        &
                   /(Np(igroup,icell)+Np_MIN) * one_over_Np_FRAC
-            !if(dUU .gt. 1d0) then
-               !code=1 ;   RETURN                        ! ddt(icell) too big
-            !endif
+            if(.not.rt_skip_convergence) then
+              if(dUU .gt. 1d0) then
+                 code=1 ;   RETURN                        ! ddt(icell) too big
+              endif
+            endif
             fracMax=MAX(fracMax,dUU)      ! To check if ddt can be increased
 
             ! Flux update without absorption
@@ -537,9 +555,11 @@ contains
             do idim=1,nDim
                dUU = ABS(dFp_save(idim,igroup)-Fp(idim,igroup,icell))           &
                     / (ABS(Fp(idim,igroup,icell))+Fp_MIN) * one_over_Fp_FRAC
-               !if(dUU .gt. 1d0) then
-               !   code=2 ;   RETURN                     ! ddt(icell) too big
-               !endif
+               if(.not.rt_skip_convergence) then
+                 if(dUU .gt. 1d0) then
+                    code=2 ;   RETURN                     ! ddt(icell) too big
+                 endif
+               endif
                fracMax=MAX(fracMax,dUU)   ! To check if ddt can be increased
             end do
 
@@ -573,6 +593,8 @@ contains
                dNp_save(iIR) = dNp_save(iIR) + dustAbs(igroup) * ddt(icell)          &
                     * dNp(igroup) * group_egy_ratio(igroup)
             end do
+            dNp_save(iIR) = dNp_save(iIR) + dustAbs(iIR) * ddt(icell)          &
+                * dNp(iIR) ! dust re-emission
          endif
        ! -----------------------------------------------------------------
 
@@ -1484,7 +1506,7 @@ END FUNCTION getMu
          end do
       end do
 
-      zred_uv_max = zred_cloudy(nbin_z_cloudy)
+      zred_uv_max = zred_cloudy(nbin_z_cloudy-1)
       log_1pzmin = 0.0d0
       log_1pzmax = log10(1.0d0 + zred_uv_max)
       dlogz = (log_1pzmax - log_1pzmin)/(nbin_z_cloudy - 2); ! nbin_z_cloudy for z > z_reion

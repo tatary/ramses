@@ -53,7 +53,7 @@ module dice_commons
   real(dp),dimension(1:MAXGAL)::ic_mag_scale_R  = 1.0
   real(dp),dimension(1:MAXGAL)::ic_mag_scale_H  = 1.0
   real(dp),dimension(1:MAXGAL)::ic_mag_scale_B  = 0.0
-
+  logical::star_as_nbody = .false.
 end module dice_commons
 
 subroutine read_params
@@ -113,7 +113,8 @@ subroutine read_params
        & ,static_dm,static_gas,static_stars,convert_birth_times,use_proper_time,remap_pscalar &
        & ,unbind,make_mergertree,stellar,aexp_ini
   namelist/output_params/noutput,foutput,aout,tout &
-       & ,tend,delta_tout,aend,delta_aout,gadget_output,walltime_hrs,minutes_dump
+       & ,tend,delta_tout,aend,delta_aout,gadget_output,walltime_hrs &
+       & ,minutes_dump,restart_hrs
   namelist/amr_params/levelmin,levelmax,ngridmax,ngridtot &
        & ,npartmax,nparttot,nexpand,boxlen,nlevel_collapse
   namelist/poisson_params/epsilon,gravity_type,gravity_params &
@@ -138,7 +139,7 @@ subroutine read_params
        & ,ic_mag_center_x,ic_mag_center_y,ic_mag_center_z &
        & ,ic_mag_axis_x,ic_mag_axis_y,ic_mag_axis_z &
        & ,ic_mag_scale_R,ic_mag_scale_H,ic_mag_scale_B,cosmo_add_gas_index,ic_skip_type &
-       & ,ic_mask_ivar,ic_mask_min,ic_mask_max,ic_mask_ptype
+       & ,ic_mask_ivar,ic_mask_min,ic_mask_max,ic_mask_ptype,star_as_nbody
 
   ! MPI initialization
 #ifndef WITHOUTMPI
@@ -376,12 +377,12 @@ subroutine read_params
         noutput = noutput+1
      enddo
   endif
-  ! add final time and expansion factor to the predetermined output list
-  if(tout(noutput).LT.tend)then
+  ! add final time and expansion factor at the back of the predetermined output list
+  if(tend>0)then
      noutput=noutput+1
      tout(noutput)=tend
   endif
-  if(aout(noutput).LT.aend)then
+  if(aend>0)then
      noutput=noutput+1
      aout(noutput)=aend
   endif

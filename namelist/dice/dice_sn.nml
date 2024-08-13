@@ -3,7 +3,7 @@ pic=.true.
 poisson=.true.
 hydro=.true.
 rt=.true.
-nrestart=0
+nrestart=31
 nremap=4
 nsubcycle=1,2,2,2,2,2,2,2
 ncontrol=1
@@ -29,6 +29,7 @@ delta_tout=0.6708241192497575 ! 10 Myr
 tend=67.08241192497575 ! 1 Gyr
 !walltime_hrs=1
 !minutes_dump=5
+restart_hrs=3
 /
 
 &AMR_PARAMS
@@ -128,7 +129,7 @@ group_egy     = 0.55, 3.3, 8.4,  12.44, 18.85,  35.079, 65.666
 groupL0       = 0.1,  1.0, 5.6,  11.20, 13.60,  24.590,  54.42
 groupL1       = 1.0,  5.6, 11.20, 13.60, 24.590, 54.42,  0.0
 spec2group    = 4,5,6,7             ! H2, HI, HeI, HeII -> pck
-group_on      = 1, 1, 1, 1, 1, 1
+group_on      = 0, 0, 0, 0, 0, 0
 group_csn(1,:) = 0.0, 0.0, 0.0, 0.0
 group_csn(2,:) = 0.0, 0.0, 0.0, 0.0
 group_csn(3,:) = 0.0, 0.0, 0.0, 0.0

@@ -159,6 +159,7 @@ SUBROUTINE read_rt_params(nml_ok)
        & ,rt_isoPress, rt_isIRtrap, iPEH_group, heat_unresolved_HII      &
        & ,cosmic_rays, rt_isIR_alt                                       &
        & ,cloudy_metal_cooling, cloudy_metal_file,attn_after_chem        &
+       & ,rt_skip_convergence                                            &
        ! RT regions (for initialization)                                 &
        & ,rt_nregion, rt_region_type                                     &
        & ,rt_reg_x_center, rt_reg_y_center, rt_reg_z_center              &

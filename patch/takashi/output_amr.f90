@@ -414,7 +414,7 @@ subroutine dump_restart
   filename=TRIM(filedir)//'timer_restart.txt'
   call output_timer(.true., filename)
 #ifndef WITHOUTMPI
-  if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+  call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
   if(myid==1.and.print_when_io) write(*,*)'End output timer'
 

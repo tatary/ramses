@@ -3,11 +3,10 @@ pic=.true.
 poisson=.true.
 hydro=.true.
 rt=.true.
-nrestart=0
+nrestart=-1
 nremap=4
 nsubcycle=1,2,2,2,2,2,2,2
 ncontrol=1
-verbose=.false.
 sink=.false.
 use_proper_time=.true.
 !verbose=.true.
@@ -20,15 +19,15 @@ cic_levelmax=100
 
 &INIT_PARAMS
 filetype='dice'
-initfile(1)='/mnt/synology1/takashi/dwarf/dice/run'
+initfile(1)='../dice/run'
 omega_b=0.048794
 /
 
 &OUTPUT_PARAMS
 delta_tout=0.6708241192497575 ! 10 Myr
 tend=67.08241192497575 ! 1 Gyr
-!walltime_hrs=1
-!minutes_dump=5
+walltime_hrs=12
+minutes_dump=10
 /
 
 &AMR_PARAMS
@@ -103,9 +102,9 @@ rt_courant_factor=0.8           ! courant number for RT timesteps
 rt_c_fraction=0.01              ! fraction of actual lightspeed set to RT lightspeed.
 rt_otsa=.true.                  ! OTSA
 rt_nsubcycle=2                 !If you want to use subcycles with VSLA, you need to compile with rt_step.f90
-uv_file='/mnt/synology1/takashi/dwarf/ramses_tables/hm12/hm12_ramses.dat'
+uv_file='../ramses_tables/hm12/hm12_ramses.dat'
 cloudy_metal_cooling=.true.
-cloudy_metal_file='/mnt/synology1/takashi/dwarf/ramses_tables/cloudy_cooling/run/output/cloudy_excess_metal_cooling.bin'
+cloudy_metal_file='../ramses_tables/cloudy_cooling/cloudy_excess_metal_cooling.bin'
 iPEH_group=3
 !rt_isIR=.true.	                ! logical	Assume first photon group represents IR photons, in local thermal equilibrium (LTE) with dust
 rt_isIR=.false.	                ! logical	Assume first photon group represents IR photons, in local thermal equilibrium (LTE) with dust
@@ -114,10 +113,10 @@ rt_isIRtrap=.false.	            ! logical	Apply trapping of IR photons in optica
 is_kIR_T=.ture.
 rt_star=.true.                 ! do we want star particles to emit radiation?
 rt_esc_frac=1.0d0                ! escape fraction of radiation from those star particles
-sed_dir='/mnt/synology1/takashi/dwarf/ramses_tables/SED/bc03_Chabrier'             ! directory which contains SED files
+sed_dir='../ramses_tables/SED/bc03_Chabrier'             ! directory which contains SED files
 sedprops_update=1              ! how often to up mean energies and cross sections
-attn_after_chem=.true.         ! absorption will be estimated after chemistry
-rt_skip_convergence=.true.
+attn_after_chem=.false.         ! absorption will be estimated after chemistry
+rt_skip_convergence=.false.
 /
 
 &RT_GROUPS
@@ -206,5 +205,5 @@ ic_mag_axis_z=1.0             ! Magnetic field normal vector z-component
 ic_mag_scale_R=1.0            ! Toroidal magnetic field scalelength
 ic_mag_scale_H=1.0            ! Toroidal magnetic field scaleheight
 ic_mag_scale_B=0.0            ! Foreground toroidal magnetic field value
-star_as_nbody=.true.          ! Make star particles in DICE IC into non-star particles 
+star_as_nbody=.true.          ! Make star particles in DICE IC into non-star particles
 /

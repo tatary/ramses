@@ -602,10 +602,6 @@ subroutine star_formation(ilevel)
                           scrit = log(alpha0*(1 + 2*(mach**4)/(1 + mach**2)))
 #endif
                           sfr_ff(i) = (eps_star/2.0d0)*exp(3.0d0/8.0d0*sigs)*(2.0d0-erfc((sigs-scrit)/sqrt(2.0d0*sigs)))
-                          if (sfr_ff(i)>1) then
-                              write(*, *) 'sigma = ', sqrt(sigma2)*scale_v, ' cs = ', sqrt(cs2)*scale_v, ' alpha = ', alpha0, &
-                                  ' e_ff = ', sfr_ff(i)
-                          endif
 
                        CASE (7)
                           alpha0    = (1.1937*(sigma2+cs2))/(factG*d*dx_loc**2) ! 5/(4 pi/3)

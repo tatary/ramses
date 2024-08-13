@@ -81,6 +81,7 @@ module rt_parameters
   logical::cloudy_metal_cooling=.false.! Use cloudy metallicity cooling tables           !
   character(LEN=128)::cloudy_metal_file='' ! File containing cloudy metallicity cooling tables   !
   logical::attn_after_chem=.false.     ! calculate attenuation after chemistry           !
+  logical::rt_skip_convergence=.false. ! skip convergence check for the photon density and fluxes !
 
   ! RT_GROUPS namelist--------------------------------------------------------------------
   integer::sedprops_update=-1                      ! Update sedprops from star populations

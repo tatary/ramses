@@ -112,6 +112,7 @@ module amr_parameters
   logical::output_now=.false.    ! write output next step
   real(dp)::walltime_hrs=-1      ! Wallclock time for submitted job
   real(dp)::minutes_dump=1       ! Dump an output minutes before walltime ends
+  real(dp)::restart_hrs=0        ! Restart time in hours
   logical(dp)::finish_run=.false.! trigger cleanup after walltime end dump
   real(dp)::delta_tout=HUGE(1.0D0)         ! time difference between outputs
   real(dp)::delta_aout=HUGE(1.0D0)         ! expansion factor difference between outputs
@@ -213,7 +214,7 @@ module amr_parameters
   logical ::sf_imf=.false.              ! Activate IMF sampling for SN feedback when resolution allows it
   logical ::sf_compressive=.false.      ! Advect compressive and solenoidal turbulence terms separately
   logical ::cooling_ism = .false.      ! Use cooling module from Audit & Hennebelle 2005 (non-RT)
-                                        ! instead of ramses classical cooling 
+                                        ! instead of ramses classical cooling
   logical :: modify_pressure_fix_cond = .false. !modify pressure-fix condition (add extra condition of e_th < 0.5 * e_kin; this may be needed to take into account SN feedback in some cells)
   real(dp) :: pressure_fix_maxMach = 1d1   !maximum Mach number for coservative update (used if modify_pressure_fix_cond = .true.)
   logical :: Zsolar_Asplund=.false.
