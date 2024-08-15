@@ -119,6 +119,7 @@ subroutine rt_backup_hydro(filename, filename_desc)
   end do
   close(unit_out)
 
+  if (myid == 1) close(unit_info)
   ! Send the token
 #ifndef WITHOUTMPI
   if (IOGROUPSIZE > 0) then

@@ -18,31 +18,33 @@ SOLVER = hydro
 # use original stellar particle mass
 INIT_STELLAR_MASS = 1
 # Patch
-PATCH =../patch/to_dice
+DICE =../patch/takashi/to_dice
+#DICE =
+PATCH =../patch/takashi
 # Use RT? 1=Yes, 0=No
 RT = 1
 # Use turbulence? 1=Yes, 0=No (requires fftw3)
 USE_TURB=0
 # Use MPI? 1=Yes, 0=No
-MPI = 1
+MPI=1
 MPIF90 = mpif90
 # Root name of executable
-EXEC = ramses
+EXEC=ramses
 # Number of additional energies
 NENER = 0
 # Use Grackle cooling? 1=Yes, 0=No
 GRACKLE = 0
-# Number of metal species
+# Number of metal species (Currently not used)
 NMETALS = 0
 # ATON flages: Uncomment to enable ATON
 ATON_FLAGS = #-DATON
 # Number of ions for RT
 # use 1 for HI+HII, +1 for added H2, +2 for added HeI, HeII, HeIII
-NIONS = 4
+NIONS=4
 # Number of photon groups for RT
-NGROUPS = 7
-# Number of passive scalars
-NPSCAL = 3
+NGROUPS=7
+# Number of passive scalars (1 for metallicity)
+NPSCAL = 1
 # Light MPI communicator structure (for > 10k MPI processes)
 LIGHT_MPI_COMM = 0
 
@@ -97,7 +99,7 @@ ifeq ($(COMPILER),GNU)
       F90 = gfortran
       FFLAGS += -DWITHOUTMPI
    endif
-   F90 += -frecord-marker=4 -fbacktrace -ffree-line-length-none -g -fimplicit-none
+   F90 += -frecord-marker=4 -fbacktrace -ffree-line-length-none -fimplicit-none
    ifeq ($(DEBUG),1)
       F90 += -O0 -fbounds-check -Wuninitialized -Wall
       FFLAGS += -ffpe-trap=zero,underflow,overflow,invalid -finit-real=nan
@@ -147,7 +149,7 @@ endif
 LIBS = $(LIBMPI) $(LIBS_GRACKLE) $(LIBS_TURB)
 #############################################################################
 # Sources directories are searched in this exact order
-VPATH = $(PATCH):../$(SOLVER):../aton:
+VPATH = $(DICE):$(PATCH):../$(SOLVER):../aton:
 ifeq ($(RT),1)
    VPATH += ../rt:
 endif

@@ -19,6 +19,5 @@ partcenter
 ramses2tipsy
 histo
 part2cylprof
-Makefile.*
 doc/*_build
 __pycache__
