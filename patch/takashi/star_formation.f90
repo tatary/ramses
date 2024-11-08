@@ -650,24 +650,19 @@ subroutine star_formation(ilevel)
               ! Compute Poisson realisation
               call poissdev(localseed,PoissMean,nstar(i))
               ! Compute depleted gas mass
-              if((trel>0.).and.(.not.cosmo).and.(t<=trel).and.(nstar(i) > 0)) then
-                  call ranf(localseed, RandNum)
-                  if (RandNum >= t/trel) then
-                      if (nstar(i)*mstar*scale_Msol > 1d2) then
-                        uold(ind_cell(i),5) = uold(ind_cell(i),5)  &
-                          + 1d-2*nstar(i)*mstar*scale_Msol*1d51/(scale_mcgs*scale_v**2)/mcell
-                      else
-                        call ranf(localseed, RandNum)
-                        if (RandNum < nstar(i)*mstar*scale_Msol*1d-2) then
-                          uold(ind_cell(i),5) = uold(ind_cell(i),5)  &
-                            + 1d51/(scale_mcgs*scale_v**2)/mcell
-                        end if
-                      end if
-                      nstar(i) = 0 ! no star formation
-                      !uold(ind_cell(i),5) = uold(ind_cell(i),5) + 3.d5/(scale_T2*(gamma-1.0d0))
+              if((trel>0.).and.(.not.cosmo).and.(t<trel).and.(nstar(i) > 0)) then
+                  if (nstar(i)*mstar*scale_Msol > 1d2) then
+                     uold(ind_cell(i),5) = uold(ind_cell(i),5)  &
+                     + 1d-2*nstar(i)*mstar*scale_Msol*1d51/ &
+                     (scale_mcgs*scale_v**2)/mcell
                   else
-                      write(*,*) 'RandNum = ', RandNum, ' t/trel = ', t/trel, 'sfr_ff = ', sfr_ff(i), ' nstar = ', nstar(i)
+                     call ranf(localseed, RandNum)
+                     if (RandNum < nstar(i)*mstar*scale_Msol*1d-2) then
+                        uold(ind_cell(i),5) = uold(ind_cell(i),5)  &
+                        + 1d51/(scale_mcgs*scale_v**2)/mcell
+                     end if
                   endif
+                  nstar(i) = 0 ! no star formation
               endif
               mgas=nstar(i)*mstar
               ! Security to prevent more than 90% of gas depletion
@@ -824,6 +819,18 @@ subroutine star_formation(ilevel)
            if(metal)zp(ind_part(i)) = zg  ! Initial star metallicity
 #ifdef INIT_STELLAR_MASS
            mp0(ind_part(i)) = mp(ind_part(i)) ! Initial star particle mass
+#endif
+#ifdef STELLAR_POPULATION_MASS
+           if (mp(ind_part(i))*scale_Msol > 1d2) then
+              msp0(ind_part(i)) = mp(ind_part(i)) ! Initial mass of the stellar population
+           else
+              call ranf(localseed, RandNum)
+              if (RandNum < mp(ind_part(i))*scale_Msol*1d-2) then
+                  msp0(ind_part(i)) = 1d2/scal_Msol ! 100 Msun
+              else
+                  msp0(ind_part(i)) = 0 ! no energetic feedback from this particle
+              endif
+           endif
 #endif
 
            ! Set GMC particle variables

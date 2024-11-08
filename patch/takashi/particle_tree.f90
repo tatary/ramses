@@ -708,6 +708,9 @@ subroutine virtual_tree_fine(ilevel)
 #ifdef INIT_STELLAR_MASS
      particle_data_width=particle_data_width+1
 #endif
+#ifdef STELLAR_POPULATION_MASS
+     particle_data_width=particle_data_width+1
+#endif
   endif
 
 #ifdef OUTPUT_PARTICLE_POTENTIAL
@@ -1187,7 +1190,16 @@ subroutine fill_comm(ind_part,ind_com,ind_list,np,ilevel,icpu)
      end do
      current_property = current_property+1
 #endif
-
+#ifdef STELLAR_POPULATION_MASS
+     do i=1,np
+#ifdef LIGHT_MPI_COMM
+        reception(icpu,ilevel)%pcomm%u(current_property,ind_com(i))=msp0(ind_part(i))
+#else
+        reception(icpu,ilevel)%up(ind_com(i),current_property)=msp0(ind_part(i))
+#endif
+     end do
+     current_property = current_property+1
+#endif
   end if
   ! MC Tracer
   if (MC_tracer) then
@@ -1353,6 +1365,16 @@ subroutine empty_comm(ind_com,np,ilevel,icpu)
      end do
      current_property = current_property+1
 #endif
+#ifdef STELLAR_POPULATION_MASS
+     do i=1,np
+#ifdef LIGHT_MPI_COMM
+        msp0(ind_part(i))=emission_part(ilevel)%u(current_property, offset_np+ind_com(i)-1)
+#else
+        msp0(ind_part(i))=emission(icpu,ilevel)%up(ind_com(i),current_property)
+#endif
+     end do
+     current_property = current_property+1
+#endif
 
   end if
 
@@ -1374,7 +1396,7 @@ subroutine empty_comm(ind_com,np,ilevel,icpu)
         emission_part(ilevel)%f8(1, offset_np+ind_com(i)-1) = ind_part(i)
 #else
         emission(icpu,ilevel)%fp(ind_com(i), 1) = ind_part(i)
-#endif   
+#endif
      end do
   end if
 

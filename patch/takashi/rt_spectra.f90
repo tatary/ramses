@@ -63,7 +63,7 @@ FUNCTION integrateSpectrum(X, Y, N, e0, e1, species, func)
   if(la0 .ge. la1) then
      if(myid==1) print*,'The energy limits do not overlap with SED range, so stopping'
      call clean_stop
-  endif 
+  endif
   ! If we get here, the [la0, la1] inverval is completely within X
   allocate(xx(N)) ; allocate(yy(N)) ; allocate(f(N))
   xx =  la0   ;   yy =  0.   ;   f = 0.
@@ -495,7 +495,11 @@ SUBROUTINE update_SED_group_props()
      ! particle exists and is a star
      mass = mp(i)
 #ifdef INIT_STELLAR_MASS
+#ifndef STELLAR_POPULATION_MASS
      mass = mp0(i)
+#else
+     mass = msp0(i)
+#endif
 #endif
      call getAgeGyr(tp(i), age)                         !     age = [Gyrs]
      ! second condition below is for kinetic SN feedback
@@ -1208,10 +1212,14 @@ SUBROUTINE star_RT_vsweep(ind_grid,ind_part,ind_grid_part,ng,np,dt,ilevel)
         ! Account for stellar mass loss - SED uses initial population mass
         mass = mass / (1d0-eta_sn)
      endif
-#else 
-      !INIT_STELLAR_MASS
+#else
+      ! INIT_STELLAR_MASS
+#ifndef STELLAR_POPULATION_MASS
       mass = mp0(ind_part(j))
-#endif 
+#else
+      mass = msp0(ind_part(j))
+#endif
+#endif
      ! part_NpInp(j,:) = part_NpInp(j,:)*mass*scale_inp !#photons
       part_NpInp(j,:) = group_on*part_NpInp(j,:)*mass*scale_inp !#photons
 

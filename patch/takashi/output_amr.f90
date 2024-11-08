@@ -785,6 +785,9 @@ subroutine output_header(filename)
 #ifdef INIT_STELLAR_MASS
         write(ilun,'(a)',advance='no')'mform '
 #endif
+#ifdef STELLAR_POPULATION_MASS
+        write(ilun,'(a)',advance='no')'mpop '
+#endif
      endif
      close(ilun)
 

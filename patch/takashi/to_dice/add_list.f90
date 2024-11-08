@@ -79,6 +79,11 @@ subroutine add_free(ind_part,np)
         mp0(ind_part(j))=0
      end do
 #endif
+#ifdef STELLAR_POPULATION_MASS
+     do j=1,np
+        msp0(ind_part(j))=0
+     end do
+#endif
   end if
   ! DICE patch
   if(dice_init) then
@@ -162,6 +167,14 @@ subroutine add_free_cond(ind_part,ok,np)
         endif
      end do
 #endif
+#ifdef STELLAR_POPULATION_MASS
+     do j=1,np
+        if(ok(j))then
+           msp0(ind_part(j))=0
+        endif
+     end do
+#endif
+
   end if
   ! DICE patch
   if(dice_init) then

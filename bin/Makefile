@@ -17,6 +17,8 @@ NPRE = 8
 SOLVER = hydro
 # use original stellar particle mass
 INIT_STELLAR_MASS = 1
+# define stellar population mass separately from the initial stellar mass
+STELLAR_POPULATION_MASS = 1
 # Patch
 DICE =../patch/takashi/to_dice
 #DICE =
@@ -86,6 +88,9 @@ ifeq ($(LIGHT_MPI_COMM), 1)
 endif
 ifeq ($(INIT_STELLAR_MASS), 1)
    DEFINES += -DINIT_STELLAR_MASS
+endif
+ifeq ($(STELLAR_POPULATION_MASS), 1)
+   DEFINES += -DSTELLAR_POPULATION_MASS
 endif
 #############################################################################
 # Fortran compiler options and directives

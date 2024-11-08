@@ -55,6 +55,9 @@ module pm_commons
 #ifdef INIT_STELLAR_MASS
   real(dp),allocatable,dimension(:)    ::mp0       ! Birth time mass
 #endif
+#ifdef STELLAR_POPULATION_MASS
+  real(dp),allocatable,dimension(:)    ::msp0       ! The mass of stellar population at birth (0 or 100 Msun)
+#endif
   integer,  allocatable, dimension(:)  :: itmpp    ! Working array
   integer,  allocatable, dimension(:)  :: partp    ! Particle parent (for tracers only)
   integer ,allocatable,dimension(:)    ::nextp    ! Next particle in list

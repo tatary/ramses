@@ -59,7 +59,8 @@ module rt_cooling_module
 
   real(dp),dimension(nIons, 2)::UVrates     !UV backgr. heating/ion. rates
   ! Takashi input for metal cooling from Cloudy
-  real(kind=8) :: Zsol_cloudy_factor = 2.0d-02/1.3370436579391961d-02
+  !real(kind=8) :: Zsol_cloudy_factor = 2.0d-02/1.3370436579391961d-02
+  real(kind=8) :: Zsol_cloudy_factor
   integer(kind=4) :: nbin_T_cloudy, nbin_n_cloudy, nbin_z_cloudy
   ! zred_uv_max is the maximum redshift for which we have UV background
   real(kind=8) :: zred_uv_max, log_1pzmin, log_1pzmax, dlogz, dlogT, dlogN
@@ -209,8 +210,10 @@ SUBROUTINE rt_solve_cooling(T2, xion, Np, Fp, p_gas, dNpdt, dFpdt        &
   real(dp),dimension(nIons):: dXion
   real(dp),dimension(nGroups):: dNp
   real(dp),dimension(nGroups):: dNp_save !TO: to update photon number density and chemistry simulataneously
+  real(dp),dimension(nGroups):: dNp_noabs !TO: to keep original photon number befor absorption
   real(dp),dimension(1:ndim, 1:nGroups):: dFp
   real(dp),dimension(1:ndim, 1:nGroups):: dFp_save
+  real(dp),dimension(1:ndim, 1:nGroups):: dFp_noabs
   real(dp),dimension(1:ndim):: dp_gas
   integer::i, ia, ig, nAct, nAct_next, loopcnt, code
   integer,dimension(1:nvector):: indAct              ! Active cell indexes
@@ -467,7 +470,9 @@ contains
        phSc(1:nGroups)=0.
        if (attn_after_chem) then
          dNp_save = dNp ! backup
+         dNp_noabs = dNp ! backup
          dFp_save = dFp ! backup
+         dFp_noabs = dFp ! backup
          ! EMISSION FROM GAS
          if(.not. rt_OTSA .and. rt_advect) then ! ----------- Rec. radiation
             if(isH2) alpha(ixHI) = 0d0 ! H2 emits no rec. radiation
@@ -497,10 +502,14 @@ contains
             phAbs(igroup) = phAbs(igroup) + dustAbs(igroup)
          end do
 
-         do igroup=1,nGroups  ! ------------------- Do the update of N before abs
-            dNp(igroup)= MAX(smallNp,                                      &
+         do igroup=1,nGroups  ! ------------------- Do the update of N by without and only considering dust absorption
+            dNp_noabs(igroup)= MAX(smallNp,                                      &
                           (ddt(icell)*(recRad(igroup)+dNpdt(igroup,icell)) &
                                       +dNp(igroup)))
+            dNp(igroup)= MAX(smallNp,                                      &
+                          (ddt(icell)*(recRad(igroup)+dNpdt(igroup,icell)) &
+                                      +dNp(igroup))                        &
+                          / (1d0+ddt(icell)*dustAbs(igroup)))
          enddo
 
          ! Now OK to use dNp
@@ -571,9 +580,9 @@ contains
 
             if(rt_isoPress .and. .not. (rt_isIR .and. igroup==iIR)) then
                ! rt_isoPress: assume f=1, where f is reduced flux.
-               fluxMag=sqrt(sum((dFp(:,igroup))**2))
+               fluxMag=sqrt(sum((dFp_noabs(:,igroup))**2))
                if(fluxMag .gt. 0d0) then
-                  mom_fact = mom_fact * dNp(igroup) / fluxMag
+                  mom_fact = mom_fact * dNp_noabs(igroup) / fluxMag
                else
                   mom_fact = 0d0
                endif
@@ -591,10 +600,10 @@ contains
          if(rt_isIR_alt) then
             do igroup=iIR+1,nGroups
                dNp_save(iIR) = dNp_save(iIR) + dustAbs(igroup) * ddt(icell)          &
-                    * dNp(igroup) * group_egy_ratio(igroup)
+                    * dNp_noabs(igroup) * group_egy_ratio(igroup)
             end do
             dNp_save(iIR) = dNp_save(iIR) + dustAbs(iIR) * ddt(icell)          &
-                * dNp(iIR) ! dust re-emission
+                * dNp_noabs(iIR) ! dust re-emission
          endif
        ! -----------------------------------------------------------------
 
@@ -1454,6 +1463,12 @@ END FUNCTION getMu
       logical::ok
       integer::i, j, k
       real(kind=8), allocatable :: table_to_read(:)
+
+      if (Zsolar_Asplund) then
+         Zsol_cloudy_factor = 0.0142d0/1.3370436579391961d-02
+      else
+         Zsol_cloudy_factor = 0.02d0/1.3370436579391961d-02
+      end if
       !-------------------------------------------------------------
       inquire (FILE=TRIM(cloudy_metal_file), exist=ok)
       if (.not. ok) then

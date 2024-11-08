@@ -378,7 +378,11 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
          mejecta = 0.0d0
          call calculate_number_of_CC(t_age_Gyr, nSNCC)
          nSNCC = nsnCC * dt_Gyr * m_in_sol
+#ifndef STELLAR_POPULATION_MASS
          nSN_tot = nSNCC
+#else
+         nSN_tot = nSNCC * msp0(ind_part(j))/mp0(ind_part(j))
+#endif
          call get_CC_yields(t_age_Gyr, yields, Msne)
          Mej = nSNCC * Msne
          mejecta = mejecta + Mej
@@ -409,6 +413,11 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 
          ! Thermal energy
          dE_winds = 0.5 * Mej_winds * v_ej**2
+#ifdef STELLAR_POPULATION_MASS
+         if (t_age_Gyr .le. agemax) then
+            dE_winds = dE_winds*msp0(ind_part(j))/mp0(ind_part(j))
+         endif
+#endif
 
 
          if (nSN_tot .ge. 1.0) then

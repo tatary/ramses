@@ -124,6 +124,10 @@
      allocate(mp0(npartmax))
      mp0=0
 #endif
+#ifdef STELLAR_POPULATION_MASS
+     allocate(msp0(npartmax))
+     msp0=0
+#endif
      if(metal)then
         allocate(zp(npartmax))
         zp=0
@@ -236,8 +240,13 @@
         end if
 #ifdef INIT_STELLAR_MASS
         ! Read initial stellar mass
-         read(ilun)xdp
-         mp0(1:npart2)=xdp
+        read(ilun)xdp
+        mp0(1:npart2)=xdp
+#endif
+#ifdef STELLAR_POPULATION_MASS
+        ! Read initial stellar population mass
+        read(ilun)xdp
+        msp0(1:npart2)=xdp
 #endif
         deallocate(xdp)
      end if
@@ -398,8 +407,13 @@
         end if
 #ifdef INIT_STELLAR_MASS
         ! Read initial stellar mass
-         read(ilun)xdp
-         mp0(1:npart2)=xdp
+        read(ilun)xdp
+        mp0(1:npart2)=xdp
+#endif
+#ifdef STELLAR_POPULATION_MASS
+        ! Read initial stellar population mass
+        read(ilun)xdp
+        msp0(1:npart2)=xdp
 #endif
         deallocate(xdp)
      end if
@@ -1806,11 +1820,11 @@ contains
                    endif
                    if(type_index.gt.2)then
                       if(star)then
-                         if(star_as_nbody) then 
+                         if(star_as_nbody) then
                            typep(ipart)%family = FAM_OTHER
-                         else 
+                         else
                            typep(ipart)%family = FAM_STAR
-                         endif 
+                         endif
                          typep(ipart)%tag    = 0
                       end if
                    else if(type_index.eq.2)then
