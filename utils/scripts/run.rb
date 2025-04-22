@@ -12,16 +12,15 @@ System = "xd"
 #If Restart is "Yes", this script submit a job with "subfind2.param"
 #Case (1): RestartFromQueue = "No", simply submit a job
 #Case (2): RestartFromQueue = "Yes", submit a job with -W depend=afterany:RestartID.  
-Restart = "Yes"
-#Restart = "No"
+#Restart = "Yes"
+Restart = "No"
 #RestartFromQueue = "No"
 RestartFromQueue = "Yes"
-RestartID = "5943"
+RestartID = "44746"
 
-NumberofQueue=10
-BinaryName1 = "./ramses_dice/bin/ramses3d"
-BinaryName2 = "./ramses/bin/ramses3d"
-NumNodes=4
+NumberofQueue=5
+BinaryName = "./ramses/bin/ramses3d"
+NumNodes=8
 NumThredsPerProc=1
 NumProc = NumNodes * 112 / NumThredsPerProc
 NumTasksPerNode=112/NumThredsPerProc
@@ -32,7 +31,7 @@ StartUp = "srun"
 #QName="M-large-b"
 #QName="M-test-b"
 #QName="P-test-b"
-QName="P-large-b"
+QName="P-large-bp"
 Lcommand='nodes=' + NumNodes.to_s
 
 def write_script(str, snapnum, new)
@@ -50,15 +49,16 @@ def write_script(str, snapnum, new)
     #outputfile.print "#SBATCH --mem=115G\n"    # ノード当たりのメモリ容量
     outputfile.print "#SBATCH --time=24:00:00\n"   
     #outputfile.print "#SBATCH --time=00:30:00\n"   
-    outputfile.print ". /work/opt/local/bin/enable-oneapi.sh \n"
-
+    #outputfile.print ". /work/opt/local/bin/enable-oneapi.sh \n"
+    outputfile.print "source /work/opt/local/bin/enable-cpe.sh \n"
+    outputfile.print "module swich PrgEnv-cray PrgEnv-gnu \n"
     outputfile.print "\n"
     outputfile.print "cd ${SLURM_SUBMIT_DIR}\n"
     if new == 1
-        outputfile.print StartUp, " ", BinaryName1, " " 
+        outputfile.print StartUp, " ", BinaryName, " " 
         outputfile.print "xd_rt.nml > log.", snapnum.to_s, " 2>&1" "\n"
     else
-        outputfile.print StartUp, " ", BinaryName2, " " 
+        outputfile.print StartUp, " ", BinaryName, " " 
         outputfile.print "xd_rt_rs.nml > log.", snapnum.to_s, " 2>&1" "\n"
     end
 
