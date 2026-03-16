@@ -25,6 +25,8 @@ STELLAR_POPULATION_MASS = 1
 DICE_MHD =
 DICE =../patch/takashi/to_dice
 PATCH =../patch/takashi
+#TAKSHI_MHD =../patch/takashi/mhd
+TAKSHI_MHD =
 # Use RT? 1=Yes, 0=No
 RT = 1
 # Use turbulence? 1=Yes, 0=No (requires fftw3)
@@ -141,8 +143,8 @@ ifeq ($(COMPILER),XD-CRAY)
    FFLAGS = -cpp $(DEFINES)
    F90 = ftn
    FC = ftn
-   F90 += 
-   FC += 
+   F90 +=
+   FC +=
    ifeq ($(DEBUG),1)
       F90 += -g -O0 -h backtrace -Rb -Wuninitialized -Wall
       FFLAGS += fp_trap=zerodiv,underflow,overflow,invalid -h zeroinit
@@ -200,7 +202,7 @@ endif
 LIBS = $(LIBMPI) $(LIBS_GRACKLE) $(LIBS_TURB)
 #############################################################################
 # Sources directories are searched in this exact order
-VPATH = $(DICE):$(PATCH):../$(SOLVER):../aton:
+VPATH = $(DICE_MHD):$(DICE):$(TAKSHI_MHD):$(PATCH):../$(SOLVER):../aton:
 ifeq ($(RT),1)
    VPATH += ../rt:
 endif

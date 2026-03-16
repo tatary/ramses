@@ -377,7 +377,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
          ! Stellar mass loss
          mejecta = 0.0d0
          call calculate_number_of_CC(t_age_Gyr, nSNCC)
-         nSNCC = nsnCC * dt_Gyr * m_in_sol
+         nSNCC = nSNCC * dt_Gyr * m_in_sol
 #ifndef STELLAR_POPULATION_MASS
          nSN_tot = nSNCC
 #else
@@ -389,7 +389,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
          dMz = (yields(1) + metallicities(1))*Mej
 
          call calculate_number_of_Ia(t_age_Gyr, nSNIa)
-         nSNIa = nsnIa * dt_Gyr * m_in_sol
+         nSNIa = nSNIa * dt_Gyr * m_in_sol
          nSN_tot = nSN_tot + nSNIa
          call get_Ia_yields(yields, Msne)
          Mej = nSNIa * Msne
@@ -400,7 +400,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
          Mej = Mej * dt_Gyr * m_in_sol
          Mej_winds = Mej
          mejecta = mejecta + Mej
-         v_ej = v_ej/(scale_v*1.0d-5) ! convert from km/s to code units
+         v_ej = v_ej * 1.0d5/scale_v ! convert from km/s to code units
          call get_wind_yields(t_age_Gyr, metallicities, yields)
          dMz = dMz + (yields(1) + metallicities(1))* Mej
 
