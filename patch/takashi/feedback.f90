@@ -1096,6 +1096,7 @@ subroutine Sedov_blast(xSN,vSN,mSN,sSN,ZSN,indSN,vol_gas,dq,ekBlast,nSN)
 end subroutine Sedov_blast
 !------------------------------------------------------------------------
 ! Added by Takashi Okamoto (2024/04/08)
+! Based on Hopkins+2023 (FIRE-3)
 subroutine calculate_number_of_CC(t_age_Gyr, nSNe)
    use chemical_yields
    implicit none

@@ -574,7 +574,8 @@ subroutine star_formation(ilevel)
                              sfr_ff(i) = 0
                              ok(i)     = .false.
                           endif
-                       ! instantaneous Kretshmer & Teyssier 2020
+                       ! instantaneous Kretshmer & Teyssier 2020 
+                       ! Girma & Teyssier 2023 (arXiv:2311.10826)
                        CASE (6)
                           ! Virial parameter
                           !alpha0    = (5.0d0*sigma2)/(pi*factG*d*dx_loc**2)
