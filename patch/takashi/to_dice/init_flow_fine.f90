@@ -660,7 +660,7 @@ subroutine init_uold(ilevel)
   ! the hydro scheme. unew is set to zero in virtual boundaries.
   !--------------------------------------------------------------------------
   integer::i,ivar,ind,icpu,iskip,idim
-  real(dp)::u,ek,b,eb
+  real(dp)::u,e
   real(dp)::scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2
 
   call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
@@ -686,13 +686,7 @@ subroutine init_uold(ilevel)
         end do
      end do
   end do
-#ifdef SOLVERmhd
-  ! set constant magnetic field
-  CALL mag_constant(ilevel)
-  ! toroidal field
-  CALL mag_compute(ilevel)
-#endif
-   ! Set cell averaged kinetic energy
+  ! Set cell averaged kinetic energy
   do ind=1,twotondim
      iskip=ncoarse+(ind-1)*ngridmax
      do i=1,active(ilevel)%ngrid
@@ -711,18 +705,22 @@ subroutine init_uold(ilevel)
               uold(active(ilevel)%igrid(i)+iskip,ivar_refine) = 1.0*uold(active(ilevel)%igrid(i)+iskip,1)
            endif
         endif
-        ek = 0d0
-        eb = 0d0
+        e = 0d0
         do idim=1,ndim
-           ek = ek+0.5*uold(active(ilevel)%igrid(i)+iskip,idim+1)**2/uold(active(ilevel)%igrid(i)+iskip,1)
-           b = 0.5*(uold(active(ilevel)%igrid(i)+iskip,idim+5)+uold(active(ilevel)%igrid(i)+iskip,idim+nvar))
-           eb = eb+0.5*b**2
+           e = e+0.5*uold(active(ilevel)%igrid(i)+iskip,idim+1)**2/uold(active(ilevel)%igrid(i)+iskip,1)
         enddo
-        uold(active(ilevel)%igrid(i)+iskip,ndim+2) = uold(active(ilevel)%igrid(i)+iskip,ndim+2)+ek+eb
+        uold(active(ilevel)%igrid(i)+iskip,ndim+2) = uold(active(ilevel)%igrid(i)+iskip,ndim+2)+e
      end do
   end do
 
- ! Set uold to 0 for virtual boundary cells
+#ifdef SOLVERmhd
+  ! set constant magnetic field
+  CALL mag_constant(ilevel)
+  ! toroidal field
+  CALL mag_compute(ilevel)
+#endif
+
+  ! Set uold to 0 for virtual boundary cells
   do icpu=1,ncpu
   do ind=1,twotondim
      iskip=ncoarse+(ind-1)*ngridmax

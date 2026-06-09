@@ -1873,6 +1873,7 @@ contains
           close(1)
        endif
     enddo
+    if(star_as_nbody) nstar_tot = 0
     npart = ipart
     ! Compute total number of particle
     npart_cpu       = 0

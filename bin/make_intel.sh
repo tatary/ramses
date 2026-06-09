@@ -5,7 +5,6 @@
 #rm -rf ~/work/GIZMO_Tables
 #cp -r ~/GIZMO_Tables ~/work/
 
-module swich PrgEnv-cray PrgEnv-intel
 #module add gsl/2.4_intel-18.0
 #module add fftw3
 #module add fftw/2.1.5.9

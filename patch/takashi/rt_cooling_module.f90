@@ -158,8 +158,7 @@ SUBROUTINE update_UVrates(aexp)
   UVrates=0.
   if(.not. haardt_madau) RETURN
 
-  !call inp_UV_rates_table(1./aexp - 1., UVrates, .true.)
-  call inp_UV_rates_table(1./aexp - 1., UVrates, .false.)
+  call inp_UV_rates_table(1./aexp - 1., UVrates, .true.)
 
   !if(myid==1) then
   !   write(*,*) 'The UV rates have changed to:'
