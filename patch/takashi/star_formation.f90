@@ -31,7 +31,7 @@ subroutine star_formation(ilevel)
   real(dp),dimension(1:twotondim,1:3)::xc
   ! other variables
   integer ::ncache,nnew,ivar,ngrid,icpu,index_star,ndebris_tot,ilun=10
-  integer ::igrid,ix,iy,iz,ind,i,n,iskip,nx_loc,idim
+  integer ::igrid,ix,iy,iz,ind,i,j,n,iskip,nx_loc,idim
   integer ::ntot,ntot_all,nstar_corrected,ncell
   logical ::ok_free
   real(dp)::d,x,y,z,u,v,w,e,tg,zg
@@ -56,6 +56,7 @@ subroutine star_formation(ilevel)
   integer ,dimension(1:nvector),save::ind_grid_new,ind_cell_new,ind_part
   integer ,dimension(1:nvector),save::ind_debris
   integer ,dimension(1:nvector,0:twondim)::ind_nbor
+  integer ,dimension(threetondim)::ind_nborcube
   logical ,dimension(1:nvector),save::ok,ok_new=.true.
   integer ,dimension(1:ncpu)::ntot_star_cpu,ntot_star_all
   character(LEN=80)::filename,filedir,fileloc,filedirini
@@ -315,41 +316,22 @@ subroutine star_formation(ilevel)
 
                  vx = 0 ; vy = 0 ; vz = 0 ; vx2 = 0 ; vy2 = 0 ; vz2 = 0
                  dtot = 0
-                 if (sf_model == 6) then
-                     vx = d*uold(ind_cell(i),2) + d1*uold(ind_nbor(1,1),2) &
-                     + d2*uold(ind_nbor(1,2),2) + d3*uold(ind_nbor(1,3),2) &
-                     + d4*uold(ind_nbor(1,4),2) + d5*uold(ind_nbor(1,5),2) &
-                     + d6*uold(ind_nbor(1,6),2)
-                     vy = d*uold(ind_cell(i),3) + d1*uold(ind_nbor(1,1),3) &
-                     + d2*uold(ind_nbor(1,2),3) + d3*uold(ind_nbor(1,3),3) &
-                     + d4*uold(ind_nbor(1,4),3) + d5*uold(ind_nbor(1,5),3) &
-                     + d6*uold(ind_nbor(1,6),3)
-                     vz = d*uold(ind_cell(i),4) + d1*uold(ind_nbor(1,1),4) &
-                     + d2*uold(ind_nbor(1,2),4) + d3*uold(ind_nbor(1,3),4) &
-                     + d4*uold(ind_nbor(1,4),4) + d5*uold(ind_nbor(1,5),4) &
-                     + d6*uold(ind_nbor(1,6),4)
-                     vx2 = d*uold(ind_cell(i),2)**2 &
-                     + d1*uold(ind_nbor(1,1),2)**2 &
-                     + d2*uold(ind_nbor(1,2),2)**2 &
-                     + d3*uold(ind_nbor(1,3),2)**2 &
-                     + d4*uold(ind_nbor(1,4),2)**2 &
-                     + d5*uold(ind_nbor(1,5),2)**2 &
-                     + d6*uold(ind_nbor(1,6),2)**2
-                     vy2 = d*uold(ind_cell(i),3)**2 &
-                     + d1*uold(ind_nbor(1,1),3)**2 &
-                     + d2*uold(ind_nbor(1,2),3)**2 &
-                     + d3*uold(ind_nbor(1,3),3)**2 &
-                     + d4*uold(ind_nbor(1,4),3)**2 &
-                     + d5*uold(ind_nbor(1,5),3)**2 &
-                     + d6*uold(ind_nbor(1,6),3)**2
-                     vz2 = d*uold(ind_cell(i),4)**2 &
-                     + d1*uold(ind_nbor(1,1),4)**2 &
-                     + d2*uold(ind_nbor(1,2),4)**2 &
-                     + d3*uold(ind_nbor(1,3),4)**2 &
-                     + d4*uold(ind_nbor(1,4),4)**2 &
-                     + d5*uold(ind_nbor(1,5),4)**2 &
-                     + d6*uold(ind_nbor(1,6),4)**2
-                     dtot = d + d1 + d2 + d3 + d4 + d5 + d6
+                 if (sf_model == 6 .or. sf_model == 7) then
+                     ! Mass-weighted velocity dispersion over the 3x3x3 cell cube.
+                     ! get_27_neighbors returns the coarser cell (one level down) that
+                     ! covers the region when a same-level neighbor does not exist,
+                     ! instead of falling back to the central cell itself.
+                     call get_27_neighbors(ind_cell2,ind_nborcube,ilevel)
+                     do j=1,threetondim
+                        d1  = uold(ind_nborcube(j),1)
+                        vx  = vx  + d1*uold(ind_nborcube(j),2)
+                        vy  = vy  + d1*uold(ind_nborcube(j),3)
+                        vz  = vz  + d1*uold(ind_nborcube(j),4)
+                        vx2 = vx2 + d1*uold(ind_nborcube(j),2)**2
+                        vy2 = vy2 + d1*uold(ind_nborcube(j),3)**2
+                        vz2 = vz2 + d1*uold(ind_nborcube(j),4)**2
+                        dtot = dtot + d1
+                     end do
                      vx = vx/dtot
                      vy = vy/dtot
                      vz = vz/dtot
@@ -602,8 +584,15 @@ subroutine star_formation(ilevel)
                           scrit = log(alpha0*(1 + 2*(mach**4)/(1 + mach**2)))
 #endif
                           sfr_ff(i) = (eps_star/2.0d0)*exp(3.0d0/8.0d0*sigs)*(2.0d0-erfc((sigs-scrit)/sqrt(2.0d0*sigs)))
-
-                       CASE (7)
+                       CASE (7) ! Hopkins 2013
+                          alpha0    = (1.1937*(sigma2+cs2))/(factG*d*dx_loc**2) ! 5/(4 pi/3)
+                          if (alpha0<1.0) then
+                             sfr_ff(i) = eps_star
+                          else
+                             sfr_ff(i) = 0
+                             ok(i)     = .false.
+                          endif
+                       CASE (8)
                           alpha0    = (1.1937*(sigma2+cs2))/(factG*d*dx_loc**2) ! 5/(4 pi/3)
                           sfr_ff(i) = eps_star * exp(-0.79*sqrt(alpha0))
                        END SELECT
@@ -1035,3 +1024,112 @@ subroutine getnbor(ind_cell,ind_father,ncell,ilevel)
 
 
 end subroutine getnbor
+
+!##### TO ADDED ###############################################
+! To get 27 neighboring cell indeces. When a neighboring cell
+! does not exist at the same level, it returns the index of a
+! lower level cell that covers that region
+!##############################################################
+subroutine get_27_neighbors(ind_cell, neighbors, ilevel)
+  use amr_commons
+  implicit none
+  integer, dimension(1:nvector), intent(IN) ::ind_cell
+  integer, intent(IN) :: ilevel
+  integer, dimension(threetondim), intent(OUT) :: neighbors
+  !logical, dimension(threetondim), intent(OUT) :: is_father
+  integer :: ind_grid
+  ! Working arrays
+  integer, dimension(1:nvector) :: ind_father
+  integer ,dimension(1:nvector,1:threetondim):: nbors_father_cells
+  integer ,dimension(1:nvector,1:twotondim) ::nbors_father_grids
+  integer :: i, j, k, idx
+  integer :: pos, iskip
+  integer :: my_i, my_j, my_k ! cell coordinates in the grid (0 or 1)
+  integer :: ni, nj, nk ! neighbor indices in each direction (-1, 0, 1)
+  integer :: target_i, target_j, target_k ! target neighbor location
+  integer :: father_idx, child_pos, child_grid
+
+  pos = (ind_cell(1) - ncoarse - 1)/ngridmax + 1
+  ind_grid = ind_cell(1) - ncoarse - (pos - 1)*ngridmax
+  ind_father(1) = father(ind_grid)
+  !is_father = .false.
+
+  ! get 27 neighboring father cells
+  call get3cubefather(ind_father, nbors_father_cells, &
+    nbors_father_grids, 1, ilevel)
+
+  ! find current location of the cell in its grid (1-8 -> 0-1, 0-1, 0-1)
+  pos = (ind_cell(1) - ncoarse - 1) / ngridmax + 1
+  my_k = (pos - 1) / 4
+  my_j = ((pos - 1) - my_k * 4) / 2
+  my_i = (pos - 1) - my_j * 2 - my_k * 4
+
+  ! loop over all 27 neighbors
+  idx = 0
+  do k = -1, 1
+    do j = -1, 1
+      do i = -1, 1
+        idx = idx + 1
+
+        ! target neighbor location
+        target_i = my_i + i
+        target_j = my_j + j
+        target_k = my_k + k
+
+        ! check if the target neighbor is within the same grid (0 or 1 in each direction)
+        if (target_i >= 0 .and. target_i <= 1 .and. &
+          target_j >= 0 .and. target_j <= 1 .and. &
+          target_k >= 0 .and. target_k <= 1) then
+          ! neighbor is within the same grid
+          child_pos = target_i + target_j * 2 + target_k * 4 + 1 ! back to (1-8)
+          iskip = ncoarse + (child_pos - 1) * ngridmax
+          neighbors(idx) = iskip + son(ind_father(1))
+        else
+          ! neighbor is outside the current grid, need to find the appropriate father cell
+          ! determine which father cell contains the target neighbor
+          ni = 1; nj = 1; nk = 1 ! default to (1,1,1)
+
+          if (target_i < 0) ni = 0
+          if (target_i > 1) ni = 2
+          if (target_j < 0) nj = 0
+          if (target_j > 1) nj = 2
+          if (target_k < 0) nk = 0
+          if (target_k > 1) nk = 2
+
+          father_idx = 1 + ni + 3*nj + 9*nk
+
+          child_grid = son(nbors_father_cells(1, father_idx))
+
+          ni = 1; nj = 1; nk = 1 ! default to (1,1,1)
+
+          if (target_i < 0) ni = 0
+          if (target_i > 1) ni = 2
+          if (target_j < 0) nj = 0
+          if (target_j > 1) nj = 2
+          if (target_k < 0) nk = 0
+          if (target_k > 1) nk = 2
+
+          father_idx = 1 + ni + 3*nj + 9*nk
+
+          child_grid = son(nbors_father_cells(1, father_idx))
+
+          if (child_grid > 0) then
+            ! get the child position within that father cell's grid
+            child_pos = 1 + mod(target_i, 2) + 2*mod(target_j, 2) + 4*mod(target_k, 2)
+            ! adjust for negative indices
+            if (target_i < 0) child_pos = child_pos - 1 + 2
+            if (target_j < 0) child_pos = child_pos - 2 + 4
+            if (target_k < 0) child_pos = child_pos - 4 + 8
+            iskip = ncoarse + (child_pos - 1) * ngridmax
+            neighbors(idx) = iskip + child_grid
+          else
+            neighbors(idx) = nbors_father_cells(1, father_idx) ! use the father cell if no child exists
+            !is_father(idx) = .true.
+          endif
+        endif
+      end do
+    end do
+  end do
+end subroutine get_27_neighbors
+!##############################################################
+!##############################################################
