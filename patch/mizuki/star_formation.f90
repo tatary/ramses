@@ -872,6 +872,15 @@ subroutine star_formation(ilevel)
                  if(ivar.eq.ndim+2)then
                     ! Temperature
                     uvar=(gamma-1.0d0)*(uold(ind_cell_new(i),ndim+2))*scale_T2
+#ifdef SOLVERmhd
+!------------------------------------------------------------------------
+! Added by Mizuki Ono (2026/06/13)
+!------------------------------------------------------------------------
+                 else if(ivar.ge.ndim+3.and.ivar.le.ndim+2+ndim)then
+                    ! Average of left and right magnetic fields
+                    uvar=0.5d0*(uold(ind_cell_new(i),ivar)+ &
+                       & uold(ind_cell_new(i),nvar+ivar-(ndim+2)))
+#endif
                  else
                     uvar=uold(ind_cell_new(i),ivar)
                  endif
