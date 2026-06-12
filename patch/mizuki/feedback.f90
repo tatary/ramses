@@ -208,6 +208,9 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 #endif
   integer ,dimension(1:ncpu,1:IRandNumSize)::allseed
 #ifdef SOLVERmhd
+!------------------------------------------------------------------------
+! Added by Mizuki Ono (2026/06/13)
+!------------------------------------------------------------------------
   real(dp)::dd_loop(3)
   integer::id_loop(3),ig_loop(3)
   integer::igg_loop(3),igd_loop(3)
@@ -446,6 +449,9 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
          !ethermal(j)=ethermal(j)+mejecta*ESN/vol_loc(j)
          mp(ind_part(j))=mp(ind_part(j))-mejecta
 #ifdef SOLVERmhd
+!------------------------------------------------------------------------
+! Added by Mizuki Ono (2026/06/13)
+!------------------------------------------------------------------------
          if (ethermal(j) > 0.0D0) then
             ! Loop injection for magnetic field feedback
             do idim_loop=1,3
