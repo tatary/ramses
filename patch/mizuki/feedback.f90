@@ -479,31 +479,33 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                igrid_loop(ind_loop)=son(nbors_father_cells(ind_grid_part(j),kg_loop(ind_loop)))
             end do
 
-            ! Check if all 8 grids exist at level ilevel
+            ! Compute parent cell position
+            do idim_loop=1,3
+               icg_loop(idim_loop)=ig_loop(idim_loop)-2*igg_loop(idim_loop)
+               icd_loop(idim_loop)=id_loop(idim_loop)-2*igd_loop(idim_loop)
+            end do
+
+            icell_loop(1)=1+icg_loop(1)+2*icg_loop(2)+4*icg_loop(3)
+            icell_loop(2)=1+icd_loop(1)+2*icg_loop(2)+4*icg_loop(3)
+            icell_loop(3)=1+icg_loop(1)+2*icd_loop(2)+4*icg_loop(3)
+            icell_loop(4)=1+icd_loop(1)+2*icd_loop(2)+4*icg_loop(3)
+            icell_loop(5)=1+icg_loop(1)+2*icg_loop(2)+4*icd_loop(3)
+            icell_loop(6)=1+icd_loop(1)+2*icg_loop(2)+4*icd_loop(3)
+            icell_loop(7)=1+icg_loop(1)+2*icd_loop(2)+4*icd_loop(3)
+            icell_loop(8)=1+icd_loop(1)+2*icd_loop(2)+4*icd_loop(3)
+
+            ! Check if all 8 grids exist at level ilevel and the target cells are leaf cells
             ok_inject_loop = .true.
             do ind_loop=1,8
-               if (igrid_loop(ind_loop) <= 0) ok_inject_loop = .false.
+               if (igrid_loop(ind_loop) <= 0) then
+                  ok_inject_loop = .false.
+               else
+                  c_loop(ind_loop)=ncoarse+(icell_loop(ind_loop)-1)*ngridmax+igrid_loop(ind_loop)
+                  if (son(c_loop(ind_loop)) > 0) ok_inject_loop = .false.
+               end if
             end do
 
             if (ok_inject_loop) then
-               ! Compute parent cell position
-               do idim_loop=1,3
-                  icg_loop(idim_loop)=ig_loop(idim_loop)-2*igg_loop(idim_loop)
-                  icd_loop(idim_loop)=id_loop(idim_loop)-2*igd_loop(idim_loop)
-               end do
-
-               icell_loop(1)=1+icg_loop(1)+2*icg_loop(2)+4*icg_loop(3)
-               icell_loop(2)=1+icd_loop(1)+2*icg_loop(2)+4*icg_loop(3)
-               icell_loop(3)=1+icg_loop(1)+2*icd_loop(2)+4*icg_loop(3)
-               icell_loop(4)=1+icd_loop(1)+2*icd_loop(2)+4*icg_loop(3)
-               icell_loop(5)=1+icg_loop(1)+2*icg_loop(2)+4*icd_loop(3)
-               icell_loop(6)=1+icd_loop(1)+2*icg_loop(2)+4*icd_loop(3)
-               icell_loop(7)=1+icg_loop(1)+2*icd_loop(2)+4*icd_loop(3)
-               icell_loop(8)=1+icd_loop(1)+2*icd_loop(2)+4*icd_loop(3)
-
-               do ind_loop=1,8
-                  c_loop(ind_loop)=ncoarse+(icell_loop(ind_loop)-1)*ngridmax+igrid_loop(ind_loop)
-               end do
 
                ! B_inj = sqrt(0.02 * epsilon_SN)
                ! epsilon_SN is the SN energy density in the NGP cell, which is ethermal(j)
