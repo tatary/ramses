@@ -215,7 +215,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   real(dp)::B_inj_loop,sum_dot_loop
   integer::S_zminus,S_zplus,S_yminus,S_yplus,S_xminus,S_xplus
   logical::ok_inject_loop
-  integer::idim_loop,ind_loop
+  integer::ind_loop
 #endif
 
   ! If necessary, initialize random number generator
@@ -447,55 +447,14 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 !------------------------------------------------------------------------
          if (ethermal(j) > 0.0D0) then
             ! Loop injection for magnetic field feedback
-            do idim_loop=1,3
-               id(1,idim_loop)=int(x(j,idim_loop)+0.5D0)
-               id(2,idim_loop)=id(1,idim_loop)-1
-            end do
-
-            ! Compute parent grids
-            do idim_loop=1,3
-               igd(1,idim_loop)=id(2,idim_loop)/2 ! igg_loop
-               igd(2,idim_loop)=id(1,idim_loop)/2 ! igd_loop
-            end do
-
-            kg(1)=1+igd(1,1)+3*igd(1,2)+9*igd(1,3)
-            kg(2)=1+igd(2,1)+3*igd(1,2)+9*igd(1,3)
-            kg(3)=1+igd(1,1)+3*igd(2,2)+9*igd(1,3)
-            kg(4)=1+igd(2,1)+3*igd(2,2)+9*igd(1,3)
-            kg(5)=1+igd(1,1)+3*igd(1,2)+9*igd(2,3)
-            kg(6)=1+igd(2,1)+3*igd(1,2)+9*igd(2,3)
-            kg(7)=1+igd(1,1)+3*igd(2,2)+9*igd(2,3)
-            kg(8)=1+igd(2,1)+3*igd(2,2)+9*igd(2,3)
-
-            do ind_loop=1,8
-               igrid(ind_loop)=son(nbors_father_cells(ind_grid_part(j),kg(ind_loop)))
-            end do
-
-            ! Compute parent cell position
-            do idim_loop=1,3
-               icd(1,idim_loop)=id(2,idim_loop)-2*igd(1,idim_loop) ! icg_loop
-               icd(2,idim_loop)=id(1,idim_loop)-2*igd(2,idim_loop) ! icd_loop
-            end do
-
-            icell(1)=1+icd(1,1)+2*icd(1,2)+4*icd(1,3)
-            icell(2)=1+icd(2,1)+2*icd(1,2)+4*icd(1,3)
-            icell(3)=1+icd(1,1)+2*icd(2,2)+4*icd(1,3)
-            icell(4)=1+icd(2,1)+2*icd(2,2)+4*icd(1,3)
-            icell(5)=1+icd(1,1)+2*icd(1,2)+4*icd(2,3)
-            icell(6)=1+icd(2,1)+2*icd(1,2)+4*icd(2,3)
-            icell(7)=1+icd(1,1)+2*icd(2,2)+4*icd(2,3)
-            icell(8)=1+icd(2,1)+2*icd(2,2)+4*icd(2,3)
-
-            ! Check if all 8 grids exist at level ilevel and the target cells are leaf cells
-            ok_inject_loop = .true.
-            do ind_loop=1,8
-               if (igrid(ind_loop) <= 0) then
-                  ok_inject_loop = .false.
-               else
-                  c_loop(ind_loop)=ncoarse+(icell(ind_loop)-1)*ngridmax+igrid(ind_loop)
+            ok_inject_loop = .false.
+            if (ok(j)) then
+               ok_inject_loop = .true.
+               do ind_loop=1,8
+                  c_loop(ind_loop)=ncoarse+(ind_loop-1)*ngridmax+igrid(j)
                   if (son(c_loop(ind_loop)) > 0) ok_inject_loop = .false.
-               end if
-            end do
+               end do
+            end if
 
             if (ok_inject_loop) then
 
