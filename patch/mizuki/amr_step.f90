@@ -383,7 +383,20 @@ recursive subroutine amr_step(ilevel,icount)
   ! Thermal feedback from stars
 #if NDIM==3
                                call timer('feedback','start')
-  if(hydro.and.star.and.eta_sn>0)call thermal_feedback(ilevel)
+  !------------------------------------------------------------------------
+  ! Added by Mizuki Ono (2026/06/25)
+  !------------------------------------------------------------------------
+  if(hydro.and.star.and.eta_sn>0)then
+     call thermal_feedback(ilevel)
+#ifdef SOLVERmhd
+     call make_virtual_reverse_dp(unew(1,6),ilevel)
+     call make_virtual_reverse_dp(unew(1,7),ilevel)
+     call make_virtual_reverse_dp(unew(1,8),ilevel)
+     call make_virtual_reverse_dp(unew(1,nvar+1),ilevel)
+     call make_virtual_reverse_dp(unew(1,nvar+2),ilevel)
+     call make_virtual_reverse_dp(unew(1,nvar+3),ilevel)
+#endif
+  end if
 #endif
 
   ! Density threshold or Bondi accretion onto sink particle

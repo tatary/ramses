@@ -463,7 +463,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                B_inj_loop = sqrt(0.02D0 * ethermal(j))
 
                ! Loop 1: Edge z- = (0, 0, -1/2)
-               sum_dot_loop = unew(c_loop(4),6) - unew(c_loop(4),7) - unew(c_loop(2),6) + unew(c_loop(3),7)
+               sum_dot_loop = uold(c_loop(4),6) - uold(c_loop(4),7) - uold(c_loop(2),6) + uold(c_loop(3),7)
                if (sum_dot_loop >= 0.0D0) then
                   S_zminus = 1
                else
@@ -479,7 +479,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                unew(c_loop(3),7)      = unew(c_loop(3),7)      + S_zminus * B_inj_loop
 
                ! Loop 2: Edge z+ = (0, 0, 1/2)
-               sum_dot_loop = unew(c_loop(8),6) - unew(c_loop(8),7) - unew(c_loop(6),6) + unew(c_loop(7),7)
+               sum_dot_loop = uold(c_loop(8),6) - uold(c_loop(8),7) - uold(c_loop(6),6) + uold(c_loop(7),7)
                if (sum_dot_loop >= 0.0D0) then
                   S_zplus = 1
                else
@@ -495,7 +495,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                unew(c_loop(7),7)      = unew(c_loop(7),7)      + S_zplus * B_inj_loop
 
                ! Loop 3: Edge y- = (0, -1/2, 0)
-               sum_dot_loop = unew(c_loop(6),6) - unew(c_loop(6),8) - unew(c_loop(2),6) + unew(c_loop(5),8)
+               sum_dot_loop = uold(c_loop(6),6) - uold(c_loop(6),8) - uold(c_loop(2),6) + uold(c_loop(5),8)
                if (sum_dot_loop >= 0.0D0) then
                   S_yminus = 1
                else
@@ -511,7 +511,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                unew(c_loop(5),8)      = unew(c_loop(5),8)      + S_yminus * B_inj_loop
 
                ! Loop 4: Edge y+ = (0, 1/2, 0)
-               sum_dot_loop = unew(c_loop(8),6) - unew(c_loop(8),8) - unew(c_loop(4),6) + unew(c_loop(7),8)
+               sum_dot_loop = uold(c_loop(8),6) - uold(c_loop(8),8) - uold(c_loop(4),6) + uold(c_loop(7),8)
                if (sum_dot_loop >= 0.0D0) then
                   S_yplus = 1
                else
@@ -527,7 +527,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                unew(c_loop(7),8)      = unew(c_loop(7),8)      + S_yplus * B_inj_loop
 
                ! Loop 5: Edge x- = (-1/2, 0, 0)
-               sum_dot_loop = unew(c_loop(7),7) - unew(c_loop(7),8) - unew(c_loop(3),7) + unew(c_loop(5),8)
+               sum_dot_loop = uold(c_loop(7),7) - uold(c_loop(7),8) - uold(c_loop(3),7) + uold(c_loop(5),8)
                if (sum_dot_loop >= 0.0D0) then
                   S_xminus = 1
                else
@@ -543,7 +543,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                unew(c_loop(5),8)      = unew(c_loop(5),8)      + S_xminus * B_inj_loop
 
                ! Loop 6: Edge x+ = (1/2, 0, 0)
-               sum_dot_loop = unew(c_loop(8),7) - unew(c_loop(8),8) - unew(c_loop(4),7) + unew(c_loop(6),8)
+               sum_dot_loop = uold(c_loop(8),7) - uold(c_loop(8),8) - uold(c_loop(4),7) + uold(c_loop(6),8)
                if (sum_dot_loop >= 0.0D0) then
                   S_xplus = 1
                else
