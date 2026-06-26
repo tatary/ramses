@@ -19,8 +19,8 @@ SOLVER = hydro
 # use original stellar particle mass
 INIT_STELLAR_MASS = 1
 # Patch
-DICE =../patch/takashi/to_dice
-PATCH =../patch/takashi
+DICE =../patch/mizuki/to_dice
+PATCH =../patch/mizuki
 # Use RT? 1=Yes, 0=No
 RT = 1
 # Use turbulence? 1=Yes, 0=No (requires fftw3)
