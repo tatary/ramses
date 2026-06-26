@@ -460,7 +460,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 
                ! B_inj = sqrt(0.02 * epsilon_SN)
                ! epsilon_SN is the SN energy density in the NGP cell, which is ethermal(j)
-               B_inj_loop = sqrt(f_esn_loop * 0.02D0 * ethermal(j))
+               B_inj_loop = sqrt(2.0D0 * f_esn_loop * ethermal(j))
 
                ! Loop 1: Edge z- = (0, 0, -1/2)
                sum_dot_loop = uold(c_loop(4),6) - uold(c_loop(4),7) - uold(c_loop(2),6) + uold(c_loop(3),7)

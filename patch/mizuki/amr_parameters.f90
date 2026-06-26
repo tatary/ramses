@@ -153,7 +153,7 @@ module amr_parameters
   real(dp)::rbubble=0                ! Supernovae superbubble radius in pc
   real(dp)::f_w    =0                ! Supernovae mass loading factor
   real(dp)::f_esn  =1                ! Supernovae energy in units of 1d51 erg
-  real(dp)::f_esn_loop=1.0d0         ! Supernovae loop magnetic energy fraction
+  real(dp)::f_esn_loop=0.01d0        ! Supernovae loop magnetic energy fraction
   integer ::ndebris=1                ! Supernovae debris particle number
   real(dp)::mass_gmc=-1              ! Stochastic exploding GMC mass
   real(dp)::z_ave  =0                ! Average metal abundance

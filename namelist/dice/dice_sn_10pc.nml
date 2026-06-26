@@ -90,7 +90,7 @@ f_esn = 1.0
 eta_sn = 0.1                    ! dummy
 t_sne  = 10.0                   ! dummy
 yield  = 0.1                    ! dummy
-f_esn_loop = 0.1                ! loop magnetic energy scaled to 10% of default (0.1 times)
+f_esn_loop = 0.1                 ! loop magnetic energy scaled to 10% (conversion fraction 0.1)
 /
 
 &RT_PARAMS
