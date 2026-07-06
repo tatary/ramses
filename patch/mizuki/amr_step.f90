@@ -26,7 +26,10 @@ recursive subroutine amr_step(ilevel,icount)
   ! Each routine is called using a specific order, don't change it,   !
   ! unless you check all consequences first.                          !
   !-------------------------------------------------------------------!
-  integer::i,idim,ivar
+  integer::i,idim,ivar,icpu,j,iskip
+#ifdef SOLVERmhd
+  logical::mhd_feedback_active_tot
+#endif
   logical::ok_defrag,output_now_all
   logical,save::first_step=.true.
 
@@ -387,14 +390,38 @@ recursive subroutine amr_step(ilevel,icount)
   ! Added by Mizuki Ono (2026/06/25)
   !------------------------------------------------------------------------
   if(hydro.and.star.and.eta_sn>0)then
+#ifdef SOLVERmhd
+     mhd_feedback_active = .false.
+#endif
      call thermal_feedback(ilevel)
 #ifdef SOLVERmhd
-     call make_virtual_reverse_dp(unew(1,6),ilevel)
-     call make_virtual_reverse_dp(unew(1,7),ilevel)
-     call make_virtual_reverse_dp(unew(1,8),ilevel)
-     call make_virtual_reverse_dp(unew(1,nvar+1),ilevel)
-     call make_virtual_reverse_dp(unew(1,nvar+2),ilevel)
-     call make_virtual_reverse_dp(unew(1,nvar+3),ilevel)
+#ifndef WITHOUTMPI
+     call MPI_ALLREDUCE(mhd_feedback_active, mhd_feedback_active_tot, 1, MPI_LOGICAL, MPI_LOR, MPI_COMM_WORLD, mpi_err)
+#else
+     mhd_feedback_active_tot = mhd_feedback_active
+#endif
+     if (mhd_feedback_active_tot) then
+        call make_virtual_reverse_dp(unew(1,6),ilevel)
+        call make_virtual_reverse_dp(unew(1,7),ilevel)
+        call make_virtual_reverse_dp(unew(1,8),ilevel)
+        call make_virtual_reverse_dp(unew(1,nvar+1),ilevel)
+        call make_virtual_reverse_dp(unew(1,nvar+2),ilevel)
+        call make_virtual_reverse_dp(unew(1,nvar+3),ilevel)
+        ! Reset magnetic field to 0 for virtual boundary cells to avoid double addition
+        do icpu=1,ncpu
+        do j=1,twotondim
+           iskip=ncoarse+(j-1)*ngridmax
+           do i=1,reception(icpu,ilevel)%ngrid
+              unew(reception(icpu,ilevel)%igrid(i)+iskip,6)=0.0
+              unew(reception(icpu,ilevel)%igrid(i)+iskip,7)=0.0
+              unew(reception(icpu,ilevel)%igrid(i)+iskip,8)=0.0
+              unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+1)=0.0
+              unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+2)=0.0
+              unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+3)=0.0
+           end do
+        end do
+        end do
+     end if
 #endif
   end if
 #endif

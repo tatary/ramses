@@ -32,6 +32,9 @@ module amr_commons
 
   ! MPI variables
   integer::ncpu,ndomain,myid,overload=1
+#ifdef SOLVERmhd
+  logical::mhd_feedback_active=.false.
+#endif
 
   ! Friedman model variables
   integer::n_frw
