@@ -291,7 +291,7 @@ subroutine userflag_fine(ilevel)
   ! some user-defined physical criteria at the level ilevel.
   ! -------------------------------------------------------------------
   integer::i,ncache,nok,ix,iy,iz,iskip
-  integer::igrid,ind,idim,ngrid,ipart,next_part,ig,nstar,cur_ipart,nok_star
+  integer::igrid,ind,idim,ngrid,ipart,next_part,ig,nstar,cur_igrid,cur_ipart,nok_star,ig_fine,igrid_fine
   integer::nx_loc
   integer,dimension(1:nvector),save::ind_grid,ind_cell
   integer,dimension(1:nvector),save::ind_grid_star,ind_cell_star,ind_part_star,father_star
@@ -421,27 +421,55 @@ subroutine userflag_fine(ilevel)
      !------------------------------------------------------------------------
      ! Added by Mizuki Ono (2026/07/15)
      !------------------------------------------------------------------------ 
-     if(star)then
-        nstar=0
-        do ig=1,ngrid
-           ipart=headp(ind_grid(ig))
-           do while (ipart>0)
-              next_part=nextp(ipart)
-              if(is_star(typep(ipart)))then
-                 if((t-tp(ipart))*scale_t/Gyr2sec<agemax)then
-                    ! Young star found, register to buffer
-                    nstar=nstar+1
-                    ind_part_star(nstar)=ipart
-                    ind_grid_star(nstar)=ind_grid(ig)
-                    father_star(nstar)=father(ind_grid(ig))
-                    
-                    ! Grid identified, exit particle loop
-                    exit
-                 end if
-              end if
-              ipart = next_part
-           end do
-        end do
+      if(star)then
+         nstar=0
+         
+         ! 1. Scan star particles belonging to current level (ilevel) grids
+         do ig=1,ngrid
+            ipart=headp(ind_grid(ig))
+            do while (ipart>0)
+               next_part=nextp(ipart)
+               if(is_star(typep(ipart)))then
+                  if((t-tp(ipart))*scale_t/Gyr2sec<agemax)then
+                     if (nstar < nvector) then
+                        nstar=nstar+1
+                        ind_part_star(nstar)=ipart
+                        ind_grid_star(nstar)=ind_grid(ig)
+                        father_star(nstar)=father(ind_grid(ig))
+                     endif
+                     
+                     ! Grid identified, exit particle loop
+                     exit
+                  end if
+               end if
+               ipart = next_part
+            end do
+         end do
+         
+         ! 2. Scan star particles belonging to finer level (ilevel+1) grids to prevent derefinement
+         ! Only execute this when at one level below the maximum level (ilevel == nlevelmax - 1)
+         if (ilevel == nlevelmax - 1) then
+            do ig_fine = 1, active(ilevel+1)%ngrid
+               igrid_fine = active(ilevel+1)%igrid(ig_fine)
+               ipart = headp(igrid_fine)
+               do while (ipart > 0)
+                  next_part = nextp(ipart)
+                  if (is_star(typep(ipart))) then
+                     if ((t-tp(ipart))*scale_t/Gyr2sec < agemax) then
+                        if (nstar < nvector) then
+                           nstar = nstar + 1
+                           ind_part_star(nstar) = ipart
+                           ! Register parent cell ID and decoded parent grid ID
+                           father_star(nstar) = father(igrid_fine)
+                           ind_grid_star(nstar) = mod(father(igrid_fine) - ncoarse - 1, ngridmax) + 1
+                        endif
+                        exit
+                     endif
+                  end if
+                  ipart = next_part
+               end do
+            end do
+         endif
         
         ! Batch processing
         if(nstar>0)then
@@ -451,10 +479,11 @@ subroutine userflag_fine(ilevel)
            ! Flag surrounding cells for each star
             do i=1,nstar
                cur_ipart=ind_part_star(i)
+               cur_igrid=ind_grid_star(i)
                
                ! Lower left corner of 3x3x3 grid-cube
                do idim=1,ndim
-                  x0_part(idim)=xg(ind_grid_star(i),idim)-3.0D0*dx
+                  x0_part(idim)=xg(cur_igrid,idim)-3.0D0*dx
                end do
                
                ! Rescale position at level ilevel
