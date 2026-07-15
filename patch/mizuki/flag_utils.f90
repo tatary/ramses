@@ -291,10 +291,11 @@ subroutine userflag_fine(ilevel)
   ! some user-defined physical criteria at the level ilevel.
   ! -------------------------------------------------------------------
   integer::i,ncache,nok,ix,iy,iz,iskip
-  integer::igrid,ind,idim,ngrid,ipart,next_part,ig,nstar,cur_igrid,cur_ipart
+  integer::igrid,ind,idim,ngrid,ipart,next_part,ig,nstar,cur_ipart,nok_star
   integer::nx_loc
   integer,dimension(1:nvector),save::ind_grid,ind_cell
   integer,dimension(1:nvector),save::ind_grid_star,ind_cell_star,ind_part_star,father_star
+  integer,dimension(1:twotondim*2)::ind_grid_nbor,ind_cell_nbor
 
   logical,dimension(1:nvector),save::ok
 
@@ -448,73 +449,82 @@ subroutine userflag_fine(ilevel)
            call get3cubefather(father_star(1:nstar),nbors_father_cells,nbors_father_grids,nstar,ilevel)
            
            ! Flag surrounding cells for each star
-           do i=1,nstar
-              cur_ipart=ind_part_star(i)
-              cur_igrid=ind_grid_star(i)
-              
-              ! Lower left corner of 3x3x3 grid-cube
-              do idim=1,ndim
-                 x0_part(idim)=xg(cur_igrid,idim)-3.0D0*dx
-              end do
-              
-              ! Rescale position at level ilevel
-              do idim=1,ndim
-                 x_part(idim)=xp(cur_ipart, idim)/scale+skip_loc(idim)
-                 x_part(idim)=(x_part(idim)-x0_part(idim))/dx
-              end do
-              
-              ! Compute parent cells and grids indexes
-              do idim = 1, ndim
-                 dd_part(idim)=x_part(idim)+0.5D0
-                 id_loc(idim)=int(dd_part(idim))
-                 ig_loc(idim)=id_loc(idim)-1
-                 igg_loc(idim)=ig_loc(idim)/2
-                 igd_loc(idim)=id_loc(idim)/2
-                 icg_loc(idim)=ig_loc(idim)-2*igg_loc(idim)
-                 icd_loc(idim)=id_loc(idim)-2*igd_loc(idim)
-              end do
-              
-              do ix=1,twotondim
-                 iy=ix-1
-                 ind_grid_star(ix)=1
-                 ind_cell_star(ix)=1
-                 if (mod(iy,2)==0) then
-                    ind_grid_star(ix)=ind_grid_star(ix)+igg_loc(1)
-                    ind_cell_star(ix)=ind_cell_star(ix)+icg_loc(1)
-                 else
-                    ind_grid_star(ix)=ind_grid_star(ix)+igd_loc(1)
-                    ind_cell_star(ix)=ind_cell_star(ix)+icd_loc(1)
-                 end if
-                 if (ndim>1)then
-                    if (mod(iy/2,2)==0) then
-                       ind_grid_star(ix)=ind_grid_star(ix)+3*igg_loc(2)
-                       ind_cell_star(ix)=ind_cell_star(ix)+2*icg_loc(2)
-                    else
-                       ind_grid_star(ix)=ind_grid_star(ix)+3*igd_loc(2)
-                       ind_cell_star(ix)=ind_cell_star(ix)+2*icd_loc(2)
-                    end if
-                 end if
-                 if(ndim>2)then
-                    if (mod(iy/4,2)==0) then
-                       ind_grid_star(ix)=ind_grid_star(ix)+9*igg_loc(3)
-                       ind_cell_star(ix)=ind_cell_star(ix)+4*icg_loc(3)
-                    else
-                       ind_grid_star(ix)=ind_grid_star(ix)+9*igd_loc(3)
-                       ind_cell_star(ix)=ind_cell_star(ix)+4*icd_loc(3)
-                    end if
-                 end if
-              end do
-              do ix=1,twotondim
-                 ind_grid_star(twotondim+ix)=son(nbors_father_cells(i,ind_grid_star(ix)))
-                 if (ind_grid_star(twotondim+ix) > 0) then
-                    ind_cell_star(twotondim+ix) = ncoarse + (ind_cell_star(ix) - 1) * ngridmax + ind_grid_star(twotondim+ix)
-                    if (flag1(ind_cell_star(twotondim+ix)) == 0) then
-                       flag1(ind_cell_star(twotondim+ix)) = 1
-                       nflag = nflag + 1
-                    end if
-                 end if
-              end do
-           end do
+            do i=1,nstar
+               cur_ipart=ind_part_star(i)
+               
+               ! Lower left corner of 3x3x3 grid-cube
+               do idim=1,ndim
+                  x0_part(idim)=xg(ind_grid_star(i),idim)-3.0D0*dx
+               end do
+               
+               ! Rescale position at level ilevel
+               do idim=1,ndim
+                  x_part(idim)=xp(cur_ipart, idim)/scale+skip_loc(idim)
+                  x_part(idim)=(x_part(idim)-x0_part(idim))/dx
+               end do
+               
+               ! Compute parent cells and grids indexes
+               do idim = 1, ndim
+                  dd_part(idim)=x_part(idim)+0.5D0
+                  id_loc(idim)=int(dd_part(idim))
+                  ig_loc(idim)=id_loc(idim)-1
+                  igg_loc(idim)=ig_loc(idim)/2
+                  igd_loc(idim)=id_loc(idim)/2
+                  icg_loc(idim)=ig_loc(idim)-2*igg_loc(idim)
+                  icd_loc(idim)=id_loc(idim)-2*igd_loc(idim)
+               end do
+               
+               nok_star = 0
+               do ix=1,twotondim
+                  iy=ix-1
+                  ind_grid_nbor(ix)=1
+                  ind_cell_nbor(ix)=1
+                  if (mod(iy,2)==0) then
+                     ind_grid_nbor(ix)=ind_grid_nbor(ix)+igg_loc(1)
+                     ind_cell_nbor(ix)=ind_cell_nbor(ix)+icg_loc(1)
+                  else
+                     ind_grid_nbor(ix)=ind_grid_nbor(ix)+igd_loc(1)
+                     ind_cell_nbor(ix)=ind_cell_nbor(ix)+icd_loc(1)
+                  end if
+                  if (ndim>1)then
+                     if (mod(iy/2,2)==0) then
+                        ind_grid_nbor(ix)=ind_grid_nbor(ix)+3*igg_loc(2)
+                        ind_cell_nbor(ix)=ind_cell_nbor(ix)+2*icg_loc(2)
+                     else
+                        ind_grid_nbor(ix)=ind_grid_nbor(ix)+3*igd_loc(2)
+                        ind_cell_nbor(ix)=ind_cell_nbor(ix)+2*icd_loc(2)
+                     end if
+                  end if
+                  if(ndim>2)then
+                     if (mod(iy/4,2)==0) then
+                        ind_grid_nbor(ix)=ind_grid_nbor(ix)+9*igg_loc(3)
+                        ind_cell_nbor(ix)=ind_cell_nbor(ix)+4*icg_loc(3)
+                     else
+                        ind_grid_nbor(ix)=ind_grid_nbor(ix)+9*igd_loc(3)
+                        ind_cell_nbor(ix)=ind_cell_nbor(ix)+4*icd_loc(3)
+                     end if
+                  end if
+               end do
+               do ix=1,twotondim
+                  ind_grid_nbor(twotondim+ix)=son(nbors_father_cells(i,ind_grid_nbor(ix)))
+                  if (ind_grid_nbor(twotondim+ix) > 0) then
+                     ind_cell_nbor(twotondim+ix) = ncoarse + (ind_cell_nbor(ix) - 1) * ngridmax + ind_grid_nbor(twotondim+ix)
+                     if (flag1(ind_cell_nbor(twotondim+ix)) == 0) then
+                        flag1(ind_cell_nbor(twotondim+ix)) = 1
+                        nflag = nflag + 1
+                        nok_star = nok_star + 1
+                     end if
+                  end if
+               end do
+               
+               if (nok_star > 0) then
+                  write(*,*) 'DEBUG_STAR_REFINE: Time=', t, &
+                             ' TargetLevel=', ilevel+1, &
+                             ' StarID=', idp(cur_ipart), &
+                             ' Pos=', xp(cur_ipart, 1:ndim), &
+                             ' NewlyFlaggedCells=', nok_star
+               endif
+            end do
         end if
      end if
 
