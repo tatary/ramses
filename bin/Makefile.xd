@@ -15,14 +15,14 @@ NDIM = 3
 # Float precision size
 NPRE = 8
 # hydro/mhd/rhd solver
-SOLVER = hydro
+SOLVER = mhd
 # use original stellar particle mass
 INIT_STELLAR_MASS = 1
 # define stellar population mass separately from the initial stellar mass
 STELLAR_POPULATION_MASS = 1
 # Patch
-#DICE_MHD =../patch/mizuki/to_dice/mhd
-DICE_MHD =
+DICE_MHD =../patch/mizuki/to_dice/mhd
+PATCH_MHD =../patch/mizuki/mhd
 DICE =../patch/mizuki/to_dice
 PATCH =../patch/mizuki
 # Use RT? 1=Yes, 0=No
@@ -200,7 +200,7 @@ endif
 LIBS = $(LIBMPI) $(LIBS_GRACKLE) $(LIBS_TURB)
 #############################################################################
 # Sources directories are searched in this exact order
-VPATH = $(DICE):$(PATCH):../$(SOLVER):../aton:
+VPATH = $(DICE_MHD):$(DICE):$(PATCH_MHD):$(PATCH):../$(SOLVER):../aton:
 ifeq ($(RT),1)
    VPATH += ../rt:
 endif
