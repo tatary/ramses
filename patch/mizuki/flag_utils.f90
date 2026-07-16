@@ -291,7 +291,7 @@ subroutine userflag_fine(ilevel)
   ! some user-defined physical criteria at the level ilevel.
   ! -------------------------------------------------------------------
   integer::i,ncache,nok,ix,iy,iz,iskip
-  integer::igrid,ind,idim,ngrid,ipart,next_part,ig,nstar,cur_igrid,cur_ipart,nok_star,ig_fine,igrid_fine
+  integer::igrid,ind,idim,ngrid,ipart,next_part,ig,nstar,cur_igrid,cur_ipart,nok_star,ig_fine,igrid_fine,icell_parent
   integer::nx_loc
   integer,dimension(1:nvector),save::ind_grid,ind_cell
   integer,dimension(1:nvector),save::ind_grid_star,ind_cell_star,ind_part_star,father_star
@@ -461,7 +461,8 @@ subroutine userflag_fine(ilevel)
                            ind_part_star(nstar) = ipart
                            ! Register parent cell ID and decoded parent grid ID
                            father_star(nstar) = father(igrid_fine)
-                           ind_grid_star(nstar) = mod(father(igrid_fine) - ncoarse - 1, ngridmax) + 1
+                           icell_parent = (father(igrid_fine) - ncoarse - 1) / ngridmax + 1
+                           ind_grid_star(nstar) = father(igrid_fine) - ncoarse - (icell_parent - 1) * ngridmax
                         endif
                         exit
                      endif
