@@ -214,7 +214,6 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   integer::c_loop(8)
   real(dp)::B_inj_loop,sum_dot_loop
   integer::S_zminus,S_zplus,S_yminus,S_yplus,S_xminus,S_xplus
-  logical::ok_inject_loop
   integer::ind_loop
 #endif
 
@@ -445,23 +444,17 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 !------------------------------------------------------------------------
 ! Added by Mizuki Ono (2026/06/13)
 !------------------------------------------------------------------------
-         if (ethermal(j) > 0.0D0) then
-            ! Loop injection for magnetic field feedback
-            ok_inject_loop = .false.
+         if (ethermal(j) > 0.0D0 .and. f_esn_loop > 0.0D0) then
             if (ok(j)) then
-               ok_inject_loop = .true.
-               do ind_loop=1,8
-                  c_loop(ind_loop)=ncoarse+(ind_loop-1)*ngridmax+igrid(j)
-                  if (son(c_loop(ind_loop)) > 0) ok_inject_loop = .false.
-               end do
-            end if
-
-            if (ok_inject_loop) then
                mhd_feedback_active = .true.
 
                ! B_inj = sqrt(0.02 * epsilon_SN)
                ! epsilon_SN is the SN energy density in the NGP cell, which is ethermal(j)
                B_inj_loop = sqrt(2.0D0 * f_esn_loop * ethermal(j))
+
+               do ind_loop=1,8
+                  c_loop(ind_loop)=ncoarse+(ind_loop-1)*ngridmax+igrid(j)
+               end do
 
                ! Loop 1: Edge z- = (0, 0, -1/2)
                sum_dot_loop = uold(c_loop(4),6) - uold(c_loop(4),7) - uold(c_loop(2),6) + uold(c_loop(3),7)
@@ -560,7 +553,8 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                unew(c_loop(6),8)      = unew(c_loop(6),8)      + S_xplus * B_inj_loop
 
                ! Convert 1% SN energy to magnetic loop energy
-               ethermal(j) = ethermal(j) * 0.99D0
+               ethermal(j) = ethermal(j) * (1-f_esn_loop)
+               write(*,*) 'FEEDBACK B = ', B_inj_loop, ' StarID = ', idp(ind_part(j))
             end if
          end if
 #endif
