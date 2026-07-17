@@ -586,6 +586,9 @@ subroutine star_formation(ilevel)
                           sfr_ff(i) = (eps_star/2.0d0)*exp(3.0d0/8.0d0*sigs)*(2.0d0-erfc((sigs-scrit)/sqrt(2.0d0*sigs)))
                        CASE (7) ! Hopkins 2013
                           alpha0    = (1.1937*(sigma2+cs2))/(factG*d*dx_loc**2) ! 5/(4 pi/3)
+                          if (d*scale_nH > 500) then 
+                            write(*,*) 'alpha0 = ', alpha0, ' sigma2 = ', sigma2, ' cs2 = ', cs2, 'nH = ', d*scale_nH
+                          endif 
                           if (alpha0<1.0) then
                              sfr_ff(i) = eps_star
                           else

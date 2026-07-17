@@ -1735,7 +1735,6 @@ END FUNCTION getMu
       TT = T2*mu
       lTT = log10(TT)
       lnH = log10(nH)
-      zred = 1.0/aexp - 1.0
       if (zred .ge. z_reion) then
          izred = nbin_z_cloudy
       else
@@ -1760,20 +1759,20 @@ END FUNCTION getMu
                else
                   inH = nbin_n_cloudy
                end if
-               var0 = met_cool_tab(izred, inH, iTemp)
-               var1 = met_cool_tab(izred, inH, iTemp + 1)
+               var0 = met_cool_tab(iTemp, inH, izred)
+               var1 = met_cool_tab(iTemp + 1, inH, izred)
                metal_cool_tot = var0 + (var1 - var0)*(TT - T0) &
                                 /(T1 - T0)
-               var0 = met_cool_prime_tab(izred, inH, iTemp)
-               var1 = met_cool_prime_tab(izred, inH, iTemp + 1)
+               var0 = met_cool_prime_tab(iTemp, inH, izred)
+               var1 = met_cool_prime_tab(iTemp + 1, inH, izred)
                metal_cool_prime = var0 + (var1 - var0)*(TT - T0) &
                                   /(T1 - T0)
-               var0 = met_heat_tab(izred, inH, iTemp)
-               var1 = met_heat_tab(izred, inH, iTemp + 1)
+               var0 = met_heat_tab(iTemp, inH, izred)
+               var1 = met_heat_tab(iTemp + 1, inH, izred)
                metal_heat_tot = var0 + (var1 - var0)*(TT - T0) &
                                 /(T1 - T0)
-               var0 = met_heat_prime_tab(izred, inH, iTemp)
-               var1 = met_heat_prime_tab(izred, inH, iTemp + 1)
+               var0 = met_heat_prime_tab(iTemp, inH, izred)
+               var1 = met_heat_prime_tab(iTemp + 1, inH, izred)
                metal_heat_prime = var0 + (var1 - var0)*(TT - T0) &
                                   /(T1 - T0)
             else
@@ -1799,7 +1798,11 @@ END FUNCTION getMu
             metal_heat_prime = 0d0
          else if (lTT .ge. log_T_cloudy(1)) then
             iTemp = (lTT - log_T_cloudy(1))/dlogT + 1
+            ! Outside the density range of the table, use the edge values
+            ! (constant extrapolation, as in the z >= z_reion branch)
+            lnH = min(max(lnH, log_nH_cloudy(1)), log_nH_cloudy(nbin_n_cloudy))
             inH = (lnH - log_nH_cloudy(1))/dlogN + 1
+            inH = max(1, min(inH, nbin_n_cloudy - 1))
             metal_cool_tot = trilinear_interpolation(izred, inH, iTemp, zred, lnH, &
                                                      TT, met_cool_tab)
             metal_cool_prime = trilinear_interpolation(izred, inH, iTemp, zred, lnH, &

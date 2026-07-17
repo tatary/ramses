@@ -14,7 +14,7 @@ program log2col
   character(LEN=12)::char12
   character(LEN=128)::nomfich,repository,outfich
   character(LEN=128)::full_line
-  real::ekin,t,a,dt,epot,econs,mem_grid,mem_part
+  real::ekin,t,a,dt,epot,econs,mem_grid,mem_part,nhmax
 
   call read_params
 
@@ -34,7 +34,7 @@ program log2col
   ! Ecriture du fichier log en colonnes
   !-----------------------------------------------
   open(unit=11,file=TRIM(outfich),form='formatted')
-  write(11,'("   nstep            t          dt        aexp        ekin        epot       econs  memgrid(%)  mempart(%) ")')
+  write(11,'("   nstep            t          dt        aexp        ekin        epot       econs  memgrid(%)  mempart(%)  nHmax(/cc) ")')
 
   do
 
@@ -52,6 +52,13 @@ program log2col
         jpos=index(full_line,"ekin=")
         char11=full_line(jpos+5:jpos+14)
         read(char11,'(1pe9.2)')ekin
+        jpos=index(full_line,"nHmax=")
+        if(jpos.gt.0)then
+           char9=full_line(jpos+6:jpos+14)
+           read(char9,'(1pe9.2)')nhmax
+        else
+           nhmax=0.
+        endif
         read(10,'(a)',END=999)full_line
         jpos=index(full_line,"t=")
         char12=full_line(jpos+2:jpos+14)
@@ -68,7 +75,7 @@ program log2col
         char4=full_line(jpos+10:jpos+14)
         read(char4,'(F4.1)')mem_part
 
-        write(11,'(I8,1X,1pe12.5,7(1X,1pe11.4))')nstep,t,dt,a,ekin,epot,econs,mem_grid,mem_part
+        write(11,'(I8,1X,1pe12.5,8(1X,1pe11.4))')nstep,t,dt,a,ekin,epot,econs,mem_grid,mem_part,nhmax
 
      endif
 
