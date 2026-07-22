@@ -424,7 +424,7 @@ subroutine userflag_fine(ilevel)
       if(star)then
          nstar=0
          
-         ! 1. Scan star particles belonging to current level (ilevel) grids
+         ! 1. Find star particles only to identify grids with any star particle
          do ig=1,ngrid
             ipart=headp(ind_grid(ig))
             do while (ipart>0)
@@ -437,8 +437,6 @@ subroutine userflag_fine(ilevel)
                         ind_grid_star(nstar)=ind_grid(ig)
                         father_star(nstar)=father(ind_grid(ig))
                      endif
-                     
-                     ! Grid identified, exit particle loop
                      exit
                   end if
                end if
@@ -446,8 +444,8 @@ subroutine userflag_fine(ilevel)
             end do
          end do
          
-         ! 2. Scan star particles belonging to finer level (ilevel+1) grids to prevent derefinement
-         ! Only execute this when at one level below the maximum level (ilevel == nlevelmax - 1)
+         ! 2. Find star particles belonging to levelmax (ilevel+1) grids
+         ! to flag them for refinement (preventing derefinement)
          if (ilevel == nlevelmax - 1) then
             do ig_fine = 1, active(ilevel+1)%ngrid
                igrid_fine = active(ilevel+1)%igrid(ig_fine)
@@ -459,7 +457,6 @@ subroutine userflag_fine(ilevel)
                         if (nstar < nvector) then
                            nstar = nstar + 1
                            ind_part_star(nstar) = ipart
-                           ! Register parent cell ID and decoded parent grid ID
                            father_star(nstar) = father(igrid_fine)
                            icell_parent = (father(igrid_fine) - ncoarse - 1) / ngridmax + 1
                            ind_grid_star(nstar) = father(igrid_fine) - ncoarse - (icell_parent - 1) * ngridmax
@@ -472,12 +469,9 @@ subroutine userflag_fine(ilevel)
             end do
          endif
         
-        ! Batch processing
+        ! Flag processing
         if(nstar>0)then
-           ! Call get3cubefather in batch for nstar stars
            call get3cubefather(father_star(1:nstar),nbors_father_cells,nbors_father_grids,nstar,ilevel)
-           
-           ! Flag surrounding cells for each star
             do i=1,nstar
                cur_ipart=ind_part_star(i)
                cur_igrid=ind_grid_star(i)
@@ -547,13 +541,13 @@ subroutine userflag_fine(ilevel)
                   end if
                end do
                
-               if (nok_star > 0) then
-                  write(*,*) 'DEBUG_STAR_REFINE: Time=', t, &
-                             ' TargetLevel=', ilevel+1, &
-                             ' StarID=', idp(cur_ipart), &
-                             ' Pos=', xp(cur_ipart, 1:ndim), &
-                             ' NewlyFlaggedCells=', nok_star
-               endif
+               ! if (nok_star > 0) then
+               !    write(*,*) 'DEBUG_STAR_REFINE: Time=', t, &
+               !               ' TargetLevel=', ilevel+1, &
+               !               ' StarID=', idp(cur_ipart), &
+               !               ' Pos=', xp(cur_ipart, 1:ndim), &
+               !               ' NewlyFlaggedCells=', nok_star
+               ! endif
             end do
         end if
      end if

@@ -188,7 +188,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   real(dp)::delta_x,tau_factor,rad_factor
   real(dp)::dx,dx_loc,scale,birth_time,current_time,t_age_Gyr, dt_Gyr
   real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v, scale_mcgs
-  real(dp):: scale_Msol, m_in_sol
+  real(dp):: scale_Msol, m_in_sol, scale_B_muG
   real(dp)::Msne, nSNCC, nSNIa, nSN_tot, Mej, Mej_winds, dE_winds, dMz, v_ej
   ! Grid based arrays
   real(dp),dimension(1:nvector,1:ndim),save::x0
@@ -228,6 +228,8 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
   scale_mcgs = scale_d * scale_l**3 ! get mass in units of g
   scale_Msol = scale_d * scale_l**3 / M_sun ! get mass in units of M_sun
+  ! Conversion factor for magnetic field from code unit to micro Gauss (CGS)
+  scale_B_muG = sqrt(4.0D0 * acos(-1.0D0) * scale_d) * scale_v * 1.0D6
 
   ! Mesh spacing in that level
   dx=0.5D0**ilevel
@@ -444,13 +446,13 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 !------------------------------------------------------------------------
 ! Added by Mizuki Ono (2026/06/13)
 !------------------------------------------------------------------------
-         if (ethermal(j) > 0.0D0 .and. f_esn_loop > 0.0D0) then
+         if ((ethermal(j) .gt. (1.01*dE_winds/vol_loc(j))) .and. f_esn_loop > 0.0D0 .and. t_age_Gyr .le. agemax) then
             if (ok(j)) then
                mhd_feedback_active = .true.
 
                ! B_inj = sqrt(0.02 * epsilon_SN)
                ! epsilon_SN is the SN energy density in the NGP cell, which is ethermal(j)
-               B_inj_loop = sqrt(2.0D0 * f_esn_loop * ethermal(j))
+               B_inj_loop = sqrt(2.0D0 * f_esn_loop * (ethermal(j)-dE_winds/vol_loc(j)))
 
                do ind_loop=1,8
                   c_loop(ind_loop)=ncoarse+(ind_loop-1)*ngridmax+igrid(j)
@@ -552,9 +554,8 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                unew(c_loop(2),nvar+3) = unew(c_loop(2),nvar+3) + S_xplus * B_inj_loop
                unew(c_loop(6),8)      = unew(c_loop(6),8)      + S_xplus * B_inj_loop
 
-               ! Convert 1% SN energy to magnetic loop energy
-               ethermal(j) = ethermal(j) * (1-f_esn_loop)
-               write(*,*) 'FEEDBACK B = ', B_inj_loop, ' StarID = ', idp(ind_part(j))
+               ! ethermal(j) = ethermal(j) * (1-f_esn_loop)
+               write(*,*) 'FEEDBACK B = ', B_inj_loop * scale_B_muG, ' muG  StarID = ', idp(ind_part(j))
             end if
          end if
 #endif
