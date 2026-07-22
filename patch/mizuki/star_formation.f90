@@ -61,6 +61,9 @@ subroutine star_formation(ilevel)
   character(LEN=80)::filename,filedir,fileloc,filedirini
   character(LEN=5)::nchar,ncharcpu
   logical::file_exist
+  integer, save :: last_opened_ifout = -1
+  logical :: is_first_access
+  logical :: is_restart_exception
 #ifdef SOLVERmhd
   real(dp)::bx1,bx2,by1,by2,bz1,bz2,A,B,C,emag,beta,fbeta
 #endif
@@ -103,7 +106,9 @@ subroutine star_formation(ilevel)
 #endif
 
      inquire(file=fileloc,exist=file_exist)
-     if((.not.file_exist).or.(abs(t-trestart).lt.dtnew(ilevel))) then
+     is_first_access = (ifout .ne. last_opened_ifout)
+     is_restart_exception = (abs(t-trestart).lt.dtnew(ilevel)) .and. (nrestart.lt.0)
+     if ((.not.file_exist) .or. (is_first_access .and. (.not.is_restart_exception))) then
         open(ilun, file=fileloc, form='formatted')
         write(ilun,'(A24)',advance='no') '# event id  ilevel  mp  '
         do idim=1,ndim
@@ -121,8 +126,10 @@ subroutine star_formation(ilevel)
         enddo
         write(ilun,'(A5)',advance='no') 'tag  '
         write(ilun,'(A1)') ' '
+        last_opened_ifout = ifout
      else
         open(ilun, file=fileloc, status="old", position="append", action="write", form='formatted')
+        last_opened_ifout = ifout
      endif
   endif
 
