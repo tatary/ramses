@@ -39,7 +39,7 @@ subroutine thermal_feedback(ilevel)
   logical::file_exist
   integer,parameter::tag=1120
 
-  if(sf_log_properties) then
+  if(sf_log_properties.and.ifout.gt.1) then
      call title(ifout-1,nchar)
      if(IOGROUPSIZEREP>0) then
         call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
@@ -63,8 +63,8 @@ subroutine thermal_feedback(ilevel)
 #endif
 
      inquire(file=fileloc,exist=file_exist)
-     if(.not.file_exist) then
-        open(ilun, file=fileloc, form='formatted')
+     if((.not.file_exist).or.(ifout-1.ne.ifout_stars_log)) then
+        open(ilun, file=fileloc, status='replace', form='formatted')
         write(ilun,'(A24)',advance='no') '# event id  ilevel  mp  '
         do idim=1,ndim
            write(ilun,'(A2,I1,A2)',advance='no') 'xp',idim,'  '
@@ -81,6 +81,7 @@ subroutine thermal_feedback(ilevel)
         enddo
         write(ilun,'(A5)',advance='no') 'tag  '
         write(ilun,'(A1)') ' '
+        ifout_stars_log = ifout-1
      else
         open(ilun, file=fileloc, status="old", position="append", action="write", form='formatted')
      endif

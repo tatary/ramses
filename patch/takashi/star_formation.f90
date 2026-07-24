@@ -104,8 +104,8 @@ subroutine star_formation(ilevel)
 #endif
 
      inquire(file=fileloc,exist=file_exist)
-     if((.not.file_exist).or.(abs(t-trestart).lt.dtnew(ilevel))) then
-        open(ilun, file=fileloc, form='formatted')
+     if((.not.file_exist).or.(ifout-1.ne.ifout_stars_log)) then
+        open(ilun, file=fileloc, status='replace', form='formatted')
         write(ilun,'(A24)',advance='no') '# event id  ilevel  mp  '
         do idim=1,ndim
            write(ilun,'(A2,I1,A2)',advance='no') 'xp',idim,'  '
@@ -122,6 +122,7 @@ subroutine star_formation(ilevel)
         enddo
         write(ilun,'(A5)',advance='no') 'tag  '
         write(ilun,'(A1)') ' '
+        ifout_stars_log = ifout-1
      else
         open(ilun, file=fileloc, status="old", position="append", action="write", form='formatted')
      endif

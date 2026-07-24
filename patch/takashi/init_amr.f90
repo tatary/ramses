@@ -23,6 +23,11 @@ subroutine init_amr
   character(LEN=128)::ordering2
   character(LEN=80)::fileloc
   character(LEN=5)::nchar,ncharcpu
+  character(LEN=80)::fileloc_star_src,fileloc_star_dst
+  character(LEN=5)::ncharout
+  logical::file_exist_star
+  integer::iunit_src,iunit_dst,ierr_io
+  character::byte_char
   integer,parameter::tag=1100
 #ifndef WITHOUTMPI
   integer::dummy_io,info2,info
@@ -635,6 +640,39 @@ subroutine init_amr
      endif
      if(myid==1)write(*,*)'Restarting at t=',t,' nstep_coarse=',nstep_coarse
      trestart = t
+
+     ! Restore the star/feedback event log snapshot taken by dump_restart (if any),
+     ! so that events logged between the previous regular output and this
+     ! output_restart checkpoint are kept, while any events logged after this
+     ! checkpoint (now stale, since the run is rewound to t=trestart) are dropped.
+     ! See restart_event_logging_fix.md for the full rationale.
+     if(sf_log_properties.and.ifout.gt.1) then
+        call title(ifout-1,ncharout)
+        if(IOGROUPSIZEREP>0) then
+           fileloc_star_dst='output_'//TRIM(ncharout)//'/group_'//TRIM(ncharcpu)//'/stars_'//TRIM(ncharout)//'.out'
+           fileloc_star_src='output_restart/group_'//TRIM(ncharcpu)//'/stars_restart.out'
+        else
+           fileloc_star_dst='output_'//TRIM(ncharout)//'/stars_'//TRIM(ncharout)//'.out'
+           fileloc_star_src='output_restart/stars_restart.out'
+        endif
+        fileloc_star_dst=TRIM(fileloc_star_dst)//TRIM(nchar)
+        fileloc_star_src=TRIM(fileloc_star_src)//TRIM(nchar)
+        inquire(file=fileloc_star_src,exist=file_exist_star)
+        if(file_exist_star) then
+           open(newunit=iunit_src,file=fileloc_star_src,access='stream',&
+                & action='read',form='unformatted',status='old')
+           open(newunit=iunit_dst,file=fileloc_star_dst,access='stream',&
+                & action='write',form='unformatted',status='replace')
+           do
+              read(iunit_src,iostat=ierr_io) byte_char
+              if(ierr_io.ne.0) exit
+              write(iunit_dst) byte_char
+           end do
+           close(iunit_src)
+           close(iunit_dst)
+           ifout_stars_log = ifout-1
+        endif
+     endif
 
      ! determine moment of next output
      tout_next = (floor(t/delta_tout)+1)*delta_tout

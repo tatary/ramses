@@ -229,6 +229,11 @@ subroutine dump_restart
   character(LEN=5)::nchar,ncharcpu
   character(LEN=80)::filename,filename_desc,filedir
   integer::ierr, iunit
+  character(LEN=80)::fileloc,fileloc2
+  character(LEN=5)::ncharout
+  logical::file_exist
+  integer::iunit2
+  character::byte_char
 
   if(nstep_coarse==nstep_coarse_old.and.nstep_coarse>0)return
   if(nstep_coarse==0.and.nrestart>0)return
@@ -267,6 +272,36 @@ subroutine dump_restart
   if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
   if(myid==1.and.print_when_io) write(*,*)'End backup header'
+
+  ! Snapshot the in-progress star/feedback event log (stars_*.out) so that a
+  ! restart from output_restart can resume it without losing events logged
+  ! before this checkpoint or duplicating events logged after it.
+  ! See restart_event_logging_fix.md for the full rationale.
+  if(sf_log_properties.and.ifout.gt.1) then
+     call title(ifout-1,ncharout)
+     if(IOGROUPSIZEREP>0) then
+        fileloc='output_'//TRIM(ncharout)//'/group_'//TRIM(ncharcpu)//'/stars_'//TRIM(ncharout)//'.out'
+     else
+        fileloc='output_'//TRIM(ncharout)//'/stars_'//TRIM(ncharout)//'.out'
+     endif
+     call title(myid,nchar)
+     fileloc=TRIM(fileloc)//TRIM(nchar)
+     inquire(file=fileloc,exist=file_exist)
+     if(file_exist) then
+        fileloc2=TRIM(filedir)//'stars_restart.out'//TRIM(nchar)
+        open(newunit=iunit,file=fileloc,access='stream',&
+             & action='read',form='unformatted',status='old')
+        open(newunit=iunit2,file=fileloc2,access='stream',&
+             & action='write',form='unformatted',status='replace')
+        do
+           read(iunit,iostat=ierr) byte_char
+           if(ierr.ne.0) exit
+           write(iunit2) byte_char
+        end do
+        close(iunit)
+        close(iunit2)
+     endif
+  endif
 
   if(myid==1.and.print_when_io) write(*,*)'Start backup info etc.'
   ! Only master process
