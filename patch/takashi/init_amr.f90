@@ -671,6 +671,15 @@ subroutine init_amr
            close(iunit_src)
            close(iunit_dst)
            ifout_stars_log = ifout-1
+        else
+           ! No dump_restart snapshot available (e.g. output_restart predates
+           ! this fix, or dump_restart was never called this run), so we
+           ! cannot trim the log back to t=trestart. Fall back to keeping
+           ! whatever is already on disk and appending to it, rather than
+           ! discarding it via the status='replace' recreation path in
+           ! feedback.f90/star_formation.f90.
+           inquire(file=fileloc_star_dst,exist=file_exist_star)
+           if(file_exist_star) ifout_stars_log = ifout-1
         endif
      endif
 
