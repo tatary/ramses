@@ -21,7 +21,7 @@ subroutine read_hydro_params(nml_ok)
 
   ! Initial conditions parameters
   namelist/init_params/filetype,initfile,multiple,nregion,region_type &
-       & ,x_center,y_center,z_center,aexp_ini &
+       & ,x_center,y_center,z_center &
        & ,length_x,length_y,length_z,exp_region &
        & ,d_region,u_region,v_region,w_region,p_region &
 #ifdef SOLVERmhd
