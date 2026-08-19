@@ -30,10 +30,10 @@ subroutine backup_part(filename, filename_desc)
   ! Wait for the token
 #ifndef WITHOUTMPI
   if (IOGROUPSIZE > 0) then
-     if (mod(myid-1, IOGROUPSIZE) /= 0) then
-        call MPI_RECV(dummy_io, 1, MPI_INTEGER, myid-1-1, tag, &
-             & MPI_COMM_WORLD, MPI_STATUS_IGNORE, info2)
-     end if
+    if (mod(myid-1, IOGROUPSIZE) /= 0) then
+      call MPI_RECV(dummy_io, 1, MPI_INTEGER, myid-1-1, tag, &
+      & MPI_COMM_WORLD, MPI_STATUS_IGNORE, info2)
+    end if
   end if
 #endif
 
@@ -42,11 +42,11 @@ subroutine backup_part(filename, filename_desc)
   fileloc = TRIM(filename) // TRIM(nchar)
   open(newunit=unit_out, file=TRIM(fileloc), form='unformatted')
   if (myid == 1) then
-     open(newunit=unit_info, file=trim(filename_desc), form='formatted')
-     call dump_header_info(unit_info)
-     dump_info = .true.
+    open(newunit=unit_info, file=trim(filename_desc), form='formatted')
+    call dump_header_info(unit_info)
+    dump_info = .true.
   else
-     dump_info = .false.
+    dump_info = .false.
   end if
 
   rewind(unit_out)
@@ -55,9 +55,9 @@ subroutine backup_part(filename, filename_desc)
   write(unit_out) ndim
   write(unit_out) npart
   if (MC_tracer) then
-     write(unit_out) localseed, tracer_seed
+    write(unit_out) localseed, tracer_seed
   else
-     write(unit_out) localseed
+    write(unit_out) localseed
   end if
   write(unit_out) nstar_tot
   write(unit_out) mstar_tot
@@ -66,33 +66,33 @@ subroutine backup_part(filename, filename_desc)
   ! Write position
   allocate(xdp(1:npart))
   do idim = 1, ndim
-     ipart = 0
-     do i = 1, npartmax
-        if (levelp(i) > 0) then
-           ipart = ipart+1
-           xdp(ipart) = xp(i, idim)
-        end if
-     end do
-     call generic_dump("position_"//dim_keys(idim), ivar, xdp, unit_out, dump_info, unit_info)
+    ipart = 0
+    do i = 1, npartmax
+      if (levelp(i) > 0) then
+        ipart = ipart+1
+        xdp(ipart) = xp(i, idim)
+      end if
+    end do
+    call generic_dump("position_"//dim_keys(idim), ivar, xdp, unit_out, dump_info, unit_info)
   end do
   ! Write velocity
   do  idim = 1, ndim
-     ipart = 0
-     do i = 1, npartmax
-        if (levelp(i) > 0) then
-           ipart = ipart+1
-           xdp(ipart) = vp(i, idim)
-        end if
-     end do
-     call generic_dump("velocity_"//dim_keys(idim), ivar, xdp, unit_out, dump_info, unit_info)
+    ipart = 0
+    do i = 1, npartmax
+      if (levelp(i) > 0) then
+        ipart = ipart+1
+        xdp(ipart) = vp(i, idim)
+      end if
+    end do
+    call generic_dump("velocity_"//dim_keys(idim), ivar, xdp, unit_out, dump_info, unit_info)
   end do
   ! Write mass
   ipart = 0
   do i = 1, npartmax
-     if (levelp(i) > 0) then
-        ipart = ipart+1
-        xdp(ipart) = mp(i)
-     end if
+    if (levelp(i) > 0) then
+      ipart = ipart+1
+      xdp(ipart) = mp(i)
+    end if
   end do
   call generic_dump("mass", ivar, xdp, unit_out, dump_info, unit_info)
   deallocate(xdp)
@@ -100,10 +100,10 @@ subroutine backup_part(filename, filename_desc)
   allocate(ii8(1:npart))
   ipart = 0
   do i = 1, npartmax
-     if (levelp(i) > 0) then
-        ipart = ipart+1
-        ii8(ipart) = idp(i)
-     end if
+    if (levelp(i) > 0) then
+      ipart = ipart+1
+      ii8(ipart) = idp(i)
+    end if
   end do
   call generic_dump("identity", ivar, ii8, unit_out, dump_info, unit_info)
   deallocate(ii8)
@@ -112,10 +112,10 @@ subroutine backup_part(filename, filename_desc)
   allocate(ll(1:npart))
   ipart = 0
   do i = 1, npartmax
-     if (levelp(i) > 0) then
-        ipart = ipart+1
-        ll(ipart) = levelp(i)
-     end if
+    if (levelp(i) > 0) then
+      ipart = ipart+1
+      ll(ipart) = levelp(i)
+    end if
   end do
   call generic_dump("levelp", ivar, ll, unit_out, dump_info, unit_info)
 
@@ -125,20 +125,20 @@ subroutine backup_part(filename, filename_desc)
   allocate(ii1(1:npart))
   ipart = 0
   do i = 1, npartmax
-     if (levelp(i) > 0) then
-        ipart = ipart+1
-        ii1(ipart) = int(typep(i)%family, 1)
-     end if
+    if (levelp(i) > 0) then
+      ipart = ipart+1
+      ii1(ipart) = int(typep(i)%family, 1)
+    end if
   end do
   call generic_dump("family", ivar, ii1, unit_out, dump_info, unit_info)
 
   ! Write tag
   ipart = 0
   do i = 1, npartmax
-     if (levelp(i) > 0) then
-        ipart = ipart+1
-        ii1(ipart) = int(typep(i)%tag, 1)
-     end if
+    if (levelp(i) > 0) then
+      ipart = ipart+1
+      ii1(ipart) = int(typep(i)%tag, 1)
+    end if
   end do
   call generic_dump("tag", ivar, ii1, unit_out, dump_info, unit_info)
   deallocate(ii1)
@@ -148,10 +148,10 @@ subroutine backup_part(filename, filename_desc)
   allocate(xdp(1:npart))
   ipart = 0
   do i = 1, npartmax
-     if (levelp(i) > 0) then
-        ipart = ipart+1
-        xdp(ipart) = ptcl_phi(i)
-     end if
+    if (levelp(i) > 0) then
+      ipart = ipart+1
+      xdp(ipart) = ptcl_phi(i)
+    end if
   end do
   call generic_dump("potential", ivar, xdp, unit_out, dump_info, unit_info)
 
@@ -160,70 +160,70 @@ subroutine backup_part(filename, filename_desc)
 
   ! Write birth epoch
   if (star .or. sink) then
-     allocate(xdp(1:npart))
-     ipart = 0
-     do i = 1, npartmax
+    allocate(xdp(1:npart))
+    ipart = 0
+    do i = 1, npartmax
+      if (levelp(i) > 0) then
+        ipart = ipart+1
+        xdp(ipart) = tp(i)
+      end if
+    end do
+    call generic_dump("birth_time", ivar, xdp, unit_out, dump_info, unit_info)
+    ! Write metallicity
+    if (metal) then
+      ipart = 0
+      do i = 1, npartmax
         if (levelp(i) > 0) then
-           ipart = ipart+1
-           xdp(ipart) = tp(i)
+          ipart = ipart+1
+          xdp(ipart) = zp(i)
         end if
-     end do
-     call generic_dump("birth_time", ivar, xdp, unit_out, dump_info, unit_info)
-     ! Write metallicity
-     if (metal) then
-        ipart = 0
-        do i = 1, npartmax
-           if (levelp(i) > 0) then
-              ipart = ipart+1
-              xdp(ipart) = zp(i)
-           end if
-        end do
-        call generic_dump("metallicity", ivar, xdp, unit_out, dump_info, unit_info)
-     end if
+      end do
+      call generic_dump("metallicity", ivar, xdp, unit_out, dump_info, unit_info)
+    end if
 #ifdef INIT_STELLAR_MASS
-     ! Write initial mass
-     ipart = 0
-     do i = 1, npartmax
-        if (levelp(i) > 0) then
-            ipart = ipart+1
-            xdp(ipart) = mp0(i)
-        end if
-     end do
-     call generic_dump("initial_stellar_mass", ivar, xdp, unit_out, dump_info, unit_info)
+    ! Write initial mass
+    ipart = 0
+    do i = 1, npartmax
+      if (levelp(i) > 0) then
+        ipart = ipart+1
+        xdp(ipart) = mp0(i)
+      end if
+    end do
+    call generic_dump("initial_stellar_mass", ivar, xdp, unit_out, dump_info, unit_info)
 #endif
 #ifdef STELLAR_POPULATION_MASS
-     ! Write initial stellar population mass
-     ipart = 0
-     do i = 1, npartmax
-        if (levelp(i) > 0) then
-            ipart = ipart+1
-            xdp(ipart) = msp0(i)
-        end if
-     end do
-     call generic_dump("initial_stellar_mass", ivar, xdp, unit_out, dump_info, unit_info)
+    ! Write initial stellar population mass
+    ipart = 0
+    do i = 1, npartmax
+      if (levelp(i) > 0) then
+        ipart = ipart+1
+        xdp(ipart) = msp0(i)
+      end if
+    end do
+    call generic_dump("initial_stellar_mass", ivar, xdp, unit_out, dump_info, unit_info)
 #endif
-     deallocate(xdp)
+    deallocate(xdp)
   end if
 
   if (MC_tracer) then
-     ! Dump particle pointer
-     allocate(ll(1:npart))
-     ! Get the idp of the stars on which tracers are attached
-     ipart = 0
-     do i = 1, npartmax
-        if (levelp(i) > 0) then
-           ipart = ipart + 1
-           ! For star tracers, store the id of the star instead of local index
-           if (is_star_tracer(typep(i))) then
-              ll(ipart) = idp(partp(i))
-           else ! store the relative location
-              ll(ipart) = partp(i)
-           end if
+    ! Dump particle pointer
+    allocate(ll(1:npart))
+    ! Get the idp of the stars on which tracers are attached
+    ipart = 0
+    do i = 1, npartmax
+      if (levelp(i) > 0) then
+        ipart = ipart + 1
+        ! For star tracers, store the id of the star instead of local index
+        if (is_star_tracer(typep(i))) then
+          ll(ipart) = idp(partp(i))
+        else ! store the relative location
+          ll(ipart) = partp(i)
         end if
-     end do
+      end if
+    end do
 
-     call generic_dump("partp", ivar, ll, unit_out, dump_info, unit_info)
-     deallocate(ll)
+    call generic_dump("partp", ivar, ll, unit_out, dump_info, unit_info)
+    deallocate(ll)
   end if
 
   !------------!
@@ -233,11 +233,11 @@ subroutine backup_part(filename, filename_desc)
   ! Send the token
 #ifndef WITHOUTMPI
   if (IOGROUPSIZE > 0) then
-     if (mod(myid, IOGROUPSIZE) /= 0 .and. (myid .lt. ncpu)) then
-        dummy_io = 1
-        call MPI_SEND(dummy_io, 1, MPI_INTEGER, myid-1+1, tag, &
-             & MPI_COMM_WORLD, info2)
-     end if
+    if (mod(myid, IOGROUPSIZE) /= 0 .and. (myid .lt. ncpu)) then
+      dummy_io = 1
+      call MPI_SEND(dummy_io, 1, MPI_INTEGER, myid-1+1, tag, &
+      & MPI_COMM_WORLD, info2)
+    end if
   end if
 #endif
 

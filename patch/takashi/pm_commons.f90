@@ -88,9 +88,9 @@ module pm_commons
   ! Particle keys for outputing. They should match the above particle
   ! types, except for 'under' family
   character(len=13), dimension(-NFAMILIES:NFAMILIES), parameter :: particle_family_keys = (/ &
-       ' other_tracer', 'debris_tracer', ' cloud_tracer', '  star_tracer', ' other_tracer', &
-       '   gas_tracer', &
-       '           DM', '         star', '        cloud', '       debris', '        other'/)
+    ' other_tracer', 'debris_tracer', ' cloud_tracer', '  star_tracer', ' other_tracer', &
+    '   gas_tracer', &
+    '           DM', '         star', '        cloud', '       debris', '        other'/)
 
   type(part_t), allocatable, dimension(:) :: typep  ! Particle type array
 
@@ -199,13 +199,13 @@ contains
     type(part_t) :: props2type
 
     if (tpii == 0) then
-       props2type%family = FAM_DM
+      props2type%family = FAM_DM
     else if (idpii > 0) then
-       props2type%family = FAM_STAR
+      props2type%family = FAM_STAR
     else if (idpii < 0) then
-       props2type%family = FAM_CLOUD
+      props2type%family = FAM_CLOUD
     else if (mpii == 0) then
-       props2type%family = FAM_TRACER_GAS
+      props2type%family = FAM_TRACER_GAS
     end if
     props2type%tag = 0
   end function props2type

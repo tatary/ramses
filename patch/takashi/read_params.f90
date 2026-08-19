@@ -31,46 +31,46 @@ subroutine read_params
 #endif
 
 #ifdef LIGHT_MPI_COMM
-   ! RAMSES legacy communicator (from amr_commons.f90)
-   type communicator_legacy
-      integer                            ::ngrid_legacy
-      integer                            ::npart_legacy
-      integer     ,dimension(:)  ,pointer::igrid_legacy
-      integer     ,dimension(:,:),pointer::f_legacy
-      real(kind=8),dimension(:,:),pointer::u_legacy
-      integer(i8b),dimension(:,:),pointer::fp_legacy
-      real(kind=8),dimension(:,:),pointer::up_legacy
-   end type communicator_legacy
-   real(kind=8)::mem_used_legacy_buff, mem_used_new_buff,mem_used_legacy_buff_mg, mem_used_new_buff_mg
-   type(communicator_legacy),allocatable,dimension(:,:)::emission_reception_legacy  ! 2D (ncpu,nlevelmax) data emission/reception/active_mg/emission_mg "heavy" buffer
+  ! RAMSES legacy communicator (from amr_commons.f90)
+  type communicator_legacy
+    integer                            ::ngrid_legacy
+    integer                            ::npart_legacy
+    integer     ,dimension(:)  ,pointer::igrid_legacy
+    integer     ,dimension(:,:),pointer::f_legacy
+    real(kind=8),dimension(:,:),pointer::u_legacy
+    integer(i8b),dimension(:,:),pointer::fp_legacy
+    real(kind=8),dimension(:,:),pointer::up_legacy
+  end type communicator_legacy
+  real(kind=8)::mem_used_legacy_buff, mem_used_new_buff,mem_used_legacy_buff_mg, mem_used_new_buff_mg
+  type(communicator_legacy),allocatable,dimension(:,:)::emission_reception_legacy  ! 2D (ncpu,nlevelmax) data emission/reception/active_mg/emission_mg "heavy" buffer
 #endif
 
   !--------------------------------------------------
   ! Namelist definitions
   !--------------------------------------------------
   namelist/run_params/clumpfind,cosmo,pic,sink,tracer,lightcone,poisson,hydro,rt,verbose,debug &
-       & ,nrestart,ncontrol,nstepmax,nsubcycle,nremap,ordering &
-       & ,bisec_tol,static,overload,cost_weighting,aton,nrestart_quad,restart_remap &
-       & ,static_dm,static_gas,static_stars,convert_birth_times,use_proper_time,remap_pscalar &
-       & ,unbind,make_mergertree,stellar,aexp_ini
+  & ,nrestart,ncontrol,nstepmax,nsubcycle,nremap,ordering &
+  & ,bisec_tol,static,overload,cost_weighting,aton,nrestart_quad,restart_remap &
+  & ,static_dm,static_gas,static_stars,convert_birth_times,use_proper_time,remap_pscalar &
+  & ,unbind,make_mergertree,stellar,aexp_ini
   namelist/output_params/noutput,foutput,aout,tout &
-       & ,tend,delta_tout,aend,delta_aout,gadget_output,walltime_hrs &
-       & ,minutes_dump,restart_hrs
+  & ,tend,delta_tout,aend,delta_aout,gadget_output,walltime_hrs &
+  & ,minutes_dump,restart_hrs
   namelist/amr_params/levelmin,levelmax,ngridmax,ngridtot &
-       & ,npartmax,nparttot,nexpand,boxlen,nlevel_collapse
+  & ,npartmax,nparttot,nexpand,boxlen,nlevel_collapse
   namelist/poisson_params/epsilon,gravity_type,gravity_params &
-       & ,cg_levelmin,cic_levelmax
+  & ,cg_levelmin,cic_levelmax
   namelist/lightcone_params/thetay_cone,thetaz_cone,zmax_cone
   namelist/movie_params/levelmax_frame,nw_frame,nh_frame,ivar_frame &
-       & ,xcentre_frame,ycentre_frame,zcentre_frame &
-       & ,deltax_frame,deltay_frame,deltaz_frame,movie,zoom_only_frame &
-       & ,imovout,imov,tstartmov,astartmov,tendmov,aendmov,proj_axis,movie_vars_txt &
-       & ,theta_camera,phi_camera,dtheta_camera,dphi_camera,focal_camera,dist_camera,ddist_camera &
-       & ,perspective_camera,smooth_frame,shader_frame,tstart_theta_camera,tstart_phi_camera &
-       & ,tend_theta_camera,tend_phi_camera,method_frame,varmin_frame,varmax_frame
+  & ,xcentre_frame,ycentre_frame,zcentre_frame &
+  & ,deltax_frame,deltay_frame,deltaz_frame,movie,zoom_only_frame &
+  & ,imovout,imov,tstartmov,astartmov,tendmov,aendmov,proj_axis,movie_vars_txt &
+  & ,theta_camera,phi_camera,dtheta_camera,dphi_camera,focal_camera,dist_camera,ddist_camera &
+  & ,perspective_camera,smooth_frame,shader_frame,tstart_theta_camera,tstart_phi_camera &
+  & ,tend_theta_camera,tend_phi_camera,method_frame,varmin_frame,varmax_frame
   namelist/tracer_params/MC_tracer,tracer_feed,tracer_feed_fmt &
-       & ,tracer_mass,tracer_first_balance_part_per_cell &
-       & ,tracer_first_balance_levelmin
+  & ,tracer_mass,tracer_first_balance_part_per_cell &
+  & ,tracer_first_balance_levelmin
 
   ! MPI initialization
 #ifndef WITHOUTMPI
@@ -87,55 +87,55 @@ subroutine read_params
   ! Advertise RAMSES
   !--------------------------------------------------
   if(myid==1)then
-  write(*,*)'_/_/_/       _/_/     _/    _/    _/_/_/   _/_/_/_/    _/_/_/  '
-  write(*,*)'_/    _/    _/  _/    _/_/_/_/   _/    _/  _/         _/    _/ '
-  write(*,*)'_/    _/   _/    _/   _/ _/ _/   _/        _/         _/       '
-  write(*,*)'_/_/_/     _/_/_/_/   _/    _/     _/_/    _/_/_/       _/_/   '
-  write(*,*)'_/    _/   _/    _/   _/    _/         _/  _/               _/ '
-  write(*,*)'_/    _/   _/    _/   _/    _/   _/    _/  _/         _/    _/ '
-  write(*,*)'_/    _/   _/    _/   _/    _/    _/_/_/   _/_/_/_/    _/_/_/  '
-  write(*,*)'                        Version 3.0                            '
-  write(*,*)'       written by Romain Teyssier (Princeton University)       '
-  write(*,*)'           (c) CEA 1999-2007, UZH 2008-2021, PU 2022           '
-  write(*,*)' '
-  write(*,'(" Working with nproc = ",I5," for ndim = ",I1)')ncpu,ndim
-  ! Check nvar is not too small
+    write(*,*)'_/_/_/       _/_/     _/    _/    _/_/_/   _/_/_/_/    _/_/_/  '
+    write(*,*)'_/    _/    _/  _/    _/_/_/_/   _/    _/  _/         _/    _/ '
+    write(*,*)'_/    _/   _/    _/   _/ _/ _/   _/        _/         _/       '
+    write(*,*)'_/_/_/     _/_/_/_/   _/    _/     _/_/    _/_/_/       _/_/   '
+    write(*,*)'_/    _/   _/    _/   _/    _/         _/  _/               _/ '
+    write(*,*)'_/    _/   _/    _/   _/    _/   _/    _/  _/         _/    _/ '
+    write(*,*)'_/    _/   _/    _/   _/    _/    _/_/_/   _/_/_/_/    _/_/_/  '
+    write(*,*)'                        Version 3.0                            '
+    write(*,*)'       written by Romain Teyssier (Princeton University)       '
+    write(*,*)'           (c) CEA 1999-2007, UZH 2008-2021, PU 2022           '
+    write(*,*)' '
+    write(*,'(" Working with nproc = ",I5," for ndim = ",I1)')ncpu,ndim
+    ! Check nvar is not too small
 #ifdef SOLVERhydro
-  write(*,'(" Using solver = hydro with nvar = ",I2)')nvar
-  if(nvar<ndim+2)then
-     write(*,*)'You should have: nvar>=ndim+2'
-     write(*,'(" Please recompile with -DNVAR=",I2)')ndim+2
-     call clean_stop
-  endif
+    write(*,'(" Using solver = hydro with nvar = ",I2)')nvar
+    if(nvar<ndim+2)then
+      write(*,*)'You should have: nvar>=ndim+2'
+      write(*,'(" Please recompile with -DNVAR=",I2)')ndim+2
+      call clean_stop
+    endif
 #endif
 #ifdef SOLVERmhd
-  write(*,'(" Using solver = mhd with nvar = ",I2)')nvar
-  if(nvar<8)then
-     write(*,*)'You should have: nvar>=8'
-     write(*,'(" Please recompile with -DNVAR=8")')
-     call clean_stop
-  endif
+    write(*,'(" Using solver = mhd with nvar = ",I2)')nvar
+    if(nvar<8)then
+      write(*,*)'You should have: nvar>=8'
+      write(*,'(" Please recompile with -DNVAR=8")')
+      call clean_stop
+    endif
 #endif
 
-  !Write I/O group size information
-  if(IOGROUPSIZE>0.or.IOGROUPSIZECONE>0.or.IOGROUPSIZEREP>0)write(*,*)' '
-  if(IOGROUPSIZE>0) write(*,*)'IOGROUPSIZE=',IOGROUPSIZE
-  if(IOGROUPSIZECONE>0) write(*,*)'IOGROUPSIZECONE=',IOGROUPSIZECONE
-  if(IOGROUPSIZEREP>0) write(*,*)'IOGROUPSIZEREP=',IOGROUPSIZEREP
-  if(IOGROUPSIZE>0.or.IOGROUPSIZECONE>0.or.IOGROUPSIZEREP>0)write(*,*)' '
+    !Write I/O group size information
+    if(IOGROUPSIZE>0.or.IOGROUPSIZECONE>0.or.IOGROUPSIZEREP>0)write(*,*)' '
+    if(IOGROUPSIZE>0) write(*,*)'IOGROUPSIZE=',IOGROUPSIZE
+    if(IOGROUPSIZECONE>0) write(*,*)'IOGROUPSIZECONE=',IOGROUPSIZECONE
+    if(IOGROUPSIZEREP>0) write(*,*)'IOGROUPSIZEREP=',IOGROUPSIZEREP
+    if(IOGROUPSIZE>0.or.IOGROUPSIZECONE>0.or.IOGROUPSIZEREP>0)write(*,*)' '
 
-  ! Write information about git version
-  call write_gitinfo
+    ! Write information about git version
+    call write_gitinfo
 
-  ! Read namelist filename from command line argument
-  narg = command_argument_count()
-  IF(narg .LT. 1)THEN
-     write(*,*)'You should type: ramses3d input.nml [nrestart]'
-     write(*,*)'File input.nml should contain a parameter namelist'
-     write(*,*)'nrestart is optional'
-     call clean_stop
-  END IF
-  CALL getarg(1,infile)
+    ! Read namelist filename from command line argument
+    narg = command_argument_count()
+    IF(narg .LT. 1)THEN
+      write(*,*)'You should type: ramses3d input.nml [nrestart]'
+      write(*,*)'File input.nml should contain a parameter namelist'
+      write(*,*)'nrestart is optional'
+      call clean_stop
+    END IF
+    CALL getarg(1,infile)
   endif
 #ifndef WITHOUTMPI
   call MPI_BCAST(infile,80,MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
@@ -147,22 +147,22 @@ subroutine read_params
 
   ! Wait for the token
 #ifndef WITHOUTMPI
-     if(IOGROUPSIZE>0) then
-        if (mod(myid-1,IOGROUPSIZE)/=0) then
-           call MPI_RECV(dummy_io,1,MPI_INTEGER,myid-1-1,tag,&
-                & MPI_COMM_WORLD,MPI_STATUS_IGNORE,info2)
-        end if
-     endif
+  if(IOGROUPSIZE>0) then
+    if (mod(myid-1,IOGROUPSIZE)/=0) then
+      call MPI_RECV(dummy_io,1,MPI_INTEGER,myid-1-1,tag,&
+      & MPI_COMM_WORLD,MPI_STATUS_IGNORE,info2)
+    end if
+  endif
 #endif
 
 
   namelist_file=TRIM(infile)
   INQUIRE(file=infile,exist=nml_ok)
   if(.not. nml_ok)then
-     if(myid==1)then
-        write(*,*)'File '//TRIM(infile)//' does not exist'
-     endif
-     call clean_stop
+    if(myid==1)then
+      write(*,*)'File '//TRIM(infile)//' does not exist'
+    endif
+    call clean_stop
   end if
 
   !-------------------------------------------------
@@ -171,7 +171,7 @@ subroutine read_params
 #if NVAR>NDIM+2
   allocate(remap_pscalar(1:nvar-(ndim+2)))
   do i=1,nvar-(ndim+2)
-     remap_pscalar(i) = i+ndim+2
+    remap_pscalar(i) = i+ndim+2
   enddo
 #endif
 
@@ -211,13 +211,13 @@ subroutine read_params
     write(*,*) "      - reception(1:ncpu,1:nlevelmax) : ", mem_used_legacy_buff/2.0e6," MB"
     write(*,*) "      - emission(1:ncpu,1:nlevelmax)  : ", mem_used_legacy_buff/2.0e6," MB"
     if (poisson) then
-        allocate(emission_reception_legacy(1:100, 1:levelmax-1))
-        mem_used_legacy_buff_mg = dble(sizeof(emission_reception_legacy)*2)*ncpu/100.0
-        deallocate(emission_reception_legacy)
-        write(*,*) "  * Old Poisson-related MPI communication structures (active_mg+emission_mg) would have allocated : ", mem_used_legacy_buff_mg/1.0e6," MB"
-        write(*,*) "      - active_mg(1:ncpu,1:nlevelmax-1) : ", mem_used_legacy_buff_mg/2.0e6," MB"
-        write(*,*) "      - emission_mg(1:ncpu,1:nlevelmax-1) : ", mem_used_legacy_buff_mg/2.0e6," MB"
-        mem_used_legacy_buff = mem_used_legacy_buff + mem_used_legacy_buff_mg
+      allocate(emission_reception_legacy(1:100, 1:levelmax-1))
+      mem_used_legacy_buff_mg = dble(sizeof(emission_reception_legacy)*2)*ncpu/100.0
+      deallocate(emission_reception_legacy)
+      write(*,*) "  * Old Poisson-related MPI communication structures (active_mg+emission_mg) would have allocated : ", mem_used_legacy_buff_mg/1.0e6," MB"
+      write(*,*) "      - active_mg(1:ncpu,1:nlevelmax-1) : ", mem_used_legacy_buff_mg/2.0e6," MB"
+      write(*,*) "      - emission_mg(1:ncpu,1:nlevelmax-1) : ", mem_used_legacy_buff_mg/2.0e6," MB"
+      mem_used_legacy_buff = mem_used_legacy_buff + mem_used_legacy_buff_mg
     endif
 
     allocate(reception(1:100, 1:levelmax))
@@ -232,15 +232,15 @@ subroutine read_params
     write(*,*) "       - emission_part(1:nlevelmax)    : ", dble(sizeof(emission_part))/1.0e6," MB"
     write(*,*) "       - reception(1:ncpu,1:nlevelmax) : ", dble(sizeof(reception))*ncpu/1.0e8," MB"
     if (poisson) then
-        allocate(reception(1:100, 1:levelmax-1)) ! active_mg
-        allocate(emission(1:levelmax-1)) ! emission_mg
-        mem_used_new_buff_mg = dble(sizeof(emission)) + dble(sizeof(reception))*ncpu/100.0
-        deallocate(reception)
-        deallocate(emission)
-        write(*,*) "  * New Poisson-related MPI communication structures (emission_mg+active_mg) use : ", mem_used_new_buff_mg/1.0e6," MB"
-        write(*,*) "       - emission_mg(1:nlevelmax-1)         : ", dble(sizeof(emission))/1.0e6," MB"
-        write(*,*) "       - active_mg(1:ncpu,1:nlevelmax-1) : ", dble(sizeof(reception))*ncpu/1.0e8," MB"
-        mem_used_new_buff = mem_used_new_buff + mem_used_new_buff_mg
+      allocate(reception(1:100, 1:levelmax-1)) ! active_mg
+      allocate(emission(1:levelmax-1)) ! emission_mg
+      mem_used_new_buff_mg = dble(sizeof(emission)) + dble(sizeof(reception))*ncpu/100.0
+      deallocate(reception)
+      deallocate(emission)
+      write(*,*) "  * New Poisson-related MPI communication structures (emission_mg+active_mg) use : ", mem_used_new_buff_mg/1.0e6," MB"
+      write(*,*) "       - emission_mg(1:nlevelmax-1)         : ", dble(sizeof(emission))/1.0e6," MB"
+      write(*,*) "       - active_mg(1:ncpu,1:nlevelmax-1) : ", dble(sizeof(reception))*ncpu/1.0e8," MB"
+      mem_used_new_buff = mem_used_new_buff + mem_used_new_buff_mg
     endif
     write(*,*) "    => Overall memory economy : ", (mem_used_legacy_buff-mem_used_new_buff)/1.0e6,"MB"
     write(*,*) "--------------------------------------------------------------------------------------------------------------"
@@ -252,23 +252,23 @@ subroutine read_params
   ! Read optional nrestart command-line argument
   !-------------------------------------------------
   if (myid==1 .and. narg == 2) then
-     CALL getarg(2,cmdarg)
-     read(cmdarg,*) nrestart
+    CALL getarg(2,cmdarg)
+    read(cmdarg,*) nrestart
   endif
 
   if (myid==1 .and. nrestart .gt. 0) then
-     call title(nrestart,nchar)
-     info_file='output_'//TRIM(nchar)//'/info_'//TRIM(nchar)//'.txt'
-     inquire(file=info_file, exist=info_ok)
-     do while(.not. info_ok .and. nrestart .gt. 1)
-        nrestart = nrestart - 1
-        call title(nrestart,nchar)
-        info_file='output_'//TRIM(nchar)//'/info_'//TRIM(nchar)//'.txt'
-        inquire(file=info_file, exist=info_ok)
-     enddo
+    call title(nrestart,nchar)
+    info_file='output_'//TRIM(nchar)//'/info_'//TRIM(nchar)//'.txt'
+    inquire(file=info_file, exist=info_ok)
+    do while(.not. info_ok .and. nrestart .gt. 1)
+      nrestart = nrestart - 1
+      call title(nrestart,nchar)
+      info_file='output_'//TRIM(nchar)//'/info_'//TRIM(nchar)//'.txt'
+      inquire(file=info_file, exist=info_ok)
+    enddo
   else if (myid==1 .and. nrestart .lt. 0)  then
-     info_file='output_restart/info_restart.txt'
-     inquire(file=info_file, exist=info_ok)
+    info_file='output_restart/info_restart.txt'
+    inquire(file=info_file, exist=info_ok)
   endif
 
 #ifndef WITHOUTMPI
@@ -276,15 +276,15 @@ subroutine read_params
 #endif
 
   if (nrestart .gt. 0 .and. .not. info_ok) then
-     if (myid==1) then
-         write(*,*) "Error: Could not find restart file"
-     endif
-     call clean_stop
+    if (myid==1) then
+      write(*,*) "Error: Could not find restart file"
+    endif
+    call clean_stop
   else if (nrestart .lt. 0 .and. .not. info_ok) then
-     if (myid==1) then
-         write(*,*) "Error: Could not find restart file"
-     endif
-     call clean_stop
+    if (myid==1) then
+      write(*,*) "Error: Could not find restart file"
+    endif
+    call clean_stop
   endif
 
 #ifndef WITHOUTMPI
@@ -296,44 +296,44 @@ subroutine read_params
   !-------------------------------------------------
   ! check how many predetermined output times are listed (either give tout or aout)
   if(noutput==0.and..not.all(tout==HUGE(1.0D0)))then
-     do while(tout(noutput+1)<HUGE(1.0D0))
-        noutput = noutput+1
-     enddo
+    do while(tout(noutput+1)<HUGE(1.0D0))
+      noutput = noutput+1
+    enddo
   endif
   if(noutput==0.and..not.all(aout==HUGE(1.0D0)))then
-     do while(aout(noutput+1)<HUGE(1.0D0))
-        noutput = noutput+1
-     enddo
+    do while(aout(noutput+1)<HUGE(1.0D0))
+      noutput = noutput+1
+    enddo
   endif
   ! add final time and expansion factor at the back of the predetermined output list
   if(tend>0)then
-     noutput=noutput+1
-     tout(noutput)=tend
+    noutput=noutput+1
+    tout(noutput)=tend
   endif
   if(aend>0)then
-     noutput=noutput+1
-     aout(noutput)=aend
+    noutput=noutput+1
+    aout(noutput)=aend
   endif
   ! set periodic output params
   tout_next=delta_tout
   aout_next=delta_aout
 
   if(imovout>0) then
-     allocate(tmovout(0:imovout))
-     allocate(amovout(0:imovout))
-     tmovout=1d100
-     amovout=1d100
-     if(tendmov>0)then
-        do i=0,imovout
-           tmovout(i)=(tendmov-tstartmov)*dble(i)/dble(imovout)+tstartmov
-        enddo
-     endif
-     if(aendmov>0)then
-        do i=0,imovout
-           amovout(i)=(aendmov-astartmov)*dble(i)/dble(imovout)+astartmov
-        enddo
-     endif
-     if(tendmov==0.and.aendmov==0)movie=.false.
+    allocate(tmovout(0:imovout))
+    allocate(amovout(0:imovout))
+    tmovout=1d100
+    amovout=1d100
+    if(tendmov>0)then
+      do i=0,imovout
+        tmovout(i)=(tendmov-tstartmov)*dble(i)/dble(imovout)+tstartmov
+      enddo
+    endif
+    if(aendmov>0)then
+      do i=0,imovout
+        amovout(i)=(aendmov-astartmov)*dble(i)/dble(imovout)+astartmov
+      enddo
+    endif
+    if(tendmov==0.and.aendmov==0)movie=.false.
   endif
   !--------------------------------------------------
   ! Check for errors in the namelist so far
@@ -342,36 +342,36 @@ subroutine read_params
   nlevelmax=levelmax
   nml_ok=.true.
   if(levelmin<1)then
-     if(myid==1)write(*,*)'Error in the namelist:'
-     if(myid==1)write(*,*)'levelmin should not be lower than 1 !!!'
-     nml_ok=.false.
+    if(myid==1)write(*,*)'Error in the namelist:'
+    if(myid==1)write(*,*)'levelmin should not be lower than 1 !!!'
+    nml_ok=.false.
   end if
   if(nlevelmax<levelmin)then
-     if(myid==1)write(*,*)'Error in the namelist:'
-     if(myid==1)write(*,*)'levelmax should not be lower than levelmin'
-     nml_ok=.false.
+    if(myid==1)write(*,*)'Error in the namelist:'
+    if(myid==1)write(*,*)'levelmax should not be lower than levelmin'
+    nml_ok=.false.
   end if
   if(ngridmax==0)then
-     if(ngridtot==0)then
-        if(myid==1)write(*,*)'Error in the namelist:'
-        if(myid==1)write(*,*)'Allocate some space for refinements !!!'
-        nml_ok=.false.
-     else
-        ngridmax=int(ngridtot/int(ncpu,kind=8),kind=4)
-     endif
+    if(ngridtot==0)then
+      if(myid==1)write(*,*)'Error in the namelist:'
+      if(myid==1)write(*,*)'Allocate some space for refinements !!!'
+      nml_ok=.false.
+    else
+      ngridmax=int(ngridtot/int(ncpu,kind=8),kind=4)
+    endif
   end if
   if(npartmax==0)then
-     npartmax=int(nparttot/int(ncpu,kind=8),kind=4)
+    npartmax=int(nparttot/int(ncpu,kind=8),kind=4)
   endif
   if(myid>1)verbose=.false.
 
   if(stellar.and.(.not.sink))then
-     if(myid==1)write(*,*)'Error in the namelist:'
-     if(myid==1)write(*,*)'sink=.true. is needed if stellar=.true. !'
-     nml_ok=.false.
+    if(myid==1)write(*,*)'Error in the namelist:'
+    if(myid==1)write(*,*)'sink=.true. is needed if stellar=.true. !'
+    nml_ok=.false.
   endif
   if(sink.and.(.not.pic))then
-     pic=.true.
+    pic=.true.
   endif
   !if(clumpfind.and.(.not.pic))then
   !   pic=.true.
@@ -401,11 +401,11 @@ subroutine read_params
   ! Send the token
 #ifndef WITHOUTMPI
   if(IOGROUPSIZE>0) then
-     if(mod(myid,IOGROUPSIZE)/=0 .and.(myid.lt.ncpu))then
-        dummy_io=1
-        call MPI_SEND(dummy_io,1,MPI_INTEGER,myid-1+1,tag, &
-             & MPI_COMM_WORLD,info2)
-     end if
+    if(mod(myid,IOGROUPSIZE)/=0 .and.(myid.lt.ncpu))then
+      dummy_io=1
+      call MPI_SEND(dummy_io,1,MPI_INTEGER,myid-1+1,tag, &
+      & MPI_COMM_WORLD,info2)
+    end if
   endif
 #endif
 
@@ -413,21 +413,21 @@ subroutine read_params
   ! Max size checks
   !-----------------
   if(nlevelmax>MAXLEVEL)then
-     write(*,*) 'Error: nlevelmax>MAXLEVEL'
-     call clean_stop
+    write(*,*) 'Error: nlevelmax>MAXLEVEL'
+    call clean_stop
   end if
   if(nregion>MAXREGION)then
-     write(*,*) 'Error: nregion>MAXREGION'
-     call clean_stop
+    write(*,*) 'Error: nregion>MAXREGION'
+    call clean_stop
   end if
 #ifndef QUADHILBERT
   if(nlevelmax>=max_level_wout_quadhilbert) then
-     if (myid == 1) then
-        write(*,*) "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        write(*,"(a,i2,a)")"WARNING: running with nlevelmax>=", max_level_wout_quadhilbert, " will likely fail."
-        write(*,*)"It is recommended to compiling with -DQUADHILBERT"
-        write(*,*) "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-     end if
+    if (myid == 1) then
+      write(*,*) "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      write(*,"(a,i2,a)")"WARNING: running with nlevelmax>=", max_level_wout_quadhilbert, " will likely fail."
+      write(*,*)"It is recommended to compiling with -DQUADHILBERT"
+      write(*,*) "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    end if
   end if
 #endif
 
@@ -435,54 +435,54 @@ subroutine read_params
   ! MC tracer
   !-----------------
   if(MC_tracer .and. (.not. tracer))then
-     write(*,*)'Error: you have activated the MC tracer but not the tracers.'
-     call clean_stop
+    write(*,*)'Error: you have activated the MC tracer but not the tracers.'
+    call clean_stop
   end if
 
   if(MC_tracer .and. (.not. pic)) then
-     write(*,*)'Error: you have activated the MC tracer but pic is false.'
-     call clean_stop
+    write(*,*)'Error: you have activated the MC tracer but pic is false.'
+    call clean_stop
   end if
 
   !-----------------------------------
   ! Rearrange level dependent arrays
   !-----------------------------------
   do i=nlevelmax,levelmin,-1
-     nexpand   (i)=nexpand   (i-levelmin+1)
-     nsubcycle (i)=nsubcycle (i-levelmin+1)
-     r_refine  (i)=r_refine  (i-levelmin+1)
-     a_refine  (i)=a_refine  (i-levelmin+1)
-     b_refine  (i)=b_refine  (i-levelmin+1)
-     x_refine  (i)=x_refine  (i-levelmin+1)
-     y_refine  (i)=y_refine  (i-levelmin+1)
-     z_refine  (i)=z_refine  (i-levelmin+1)
-     m_refine  (i)=m_refine  (i-levelmin+1)
-     exp_refine(i)=exp_refine(i-levelmin+1)
-     initfile  (i)=initfile  (i-levelmin+1)
+    nexpand   (i)=nexpand   (i-levelmin+1)
+    nsubcycle (i)=nsubcycle (i-levelmin+1)
+    r_refine  (i)=r_refine  (i-levelmin+1)
+    a_refine  (i)=a_refine  (i-levelmin+1)
+    b_refine  (i)=b_refine  (i-levelmin+1)
+    x_refine  (i)=x_refine  (i-levelmin+1)
+    y_refine  (i)=y_refine  (i-levelmin+1)
+    z_refine  (i)=z_refine  (i-levelmin+1)
+    m_refine  (i)=m_refine  (i-levelmin+1)
+    exp_refine(i)=exp_refine(i-levelmin+1)
+    initfile  (i)=initfile  (i-levelmin+1)
   end do
   do i=1,levelmin-1
-     nexpand   (i)= 1
-     nsubcycle (i)= 1
-     r_refine  (i)=-1
-     a_refine  (i)= 1
-     b_refine  (i)= 1
-     x_refine  (i)= 0
-     y_refine  (i)= 0
-     z_refine  (i)= 0
-     m_refine  (i)=-1
-     exp_refine(i)= 2
-     initfile  (i)= ' '
+    nexpand   (i)= 1
+    nsubcycle (i)= 1
+    r_refine  (i)=-1
+    a_refine  (i)= 1
+    b_refine  (i)= 1
+    x_refine  (i)= 0
+    y_refine  (i)= 0
+    z_refine  (i)= 0
+    m_refine  (i)=-1
+    exp_refine(i)= 2
+    initfile  (i)= ' '
   end do
 
   if(.not.cosmo)then
-     use_proper_time=.false.
-     convert_birth_times=.false.
+    use_proper_time=.false.
+    convert_birth_times=.false.
   endif
 
   if(.not. nml_ok)then
-     if(myid==1)write(*,*)'Too many errors in the namelist'
-     if(myid==1)write(*,*)'Aborting...'
-     call clean_stop
+    if(myid==1)write(*,*)'Too many errors in the namelist'
+    if(myid==1)write(*,*)'Aborting...'
+    call clean_stop
   end if
 
 #ifndef WITHOUTMPI

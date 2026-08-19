@@ -4,7 +4,7 @@ poisson=.true.
 hydro=.true.
 rt=.true.
 nrestart=0
-nremap=4
+nremap=1
 nsubcycle=1,2,2,2,2,2,2,2,2,2
 ncontrol=1
 verbose=.false.
@@ -28,8 +28,8 @@ omega_b=0.048794
 delta_tout=0.6708241192497575 ! 10 Myr
 tend=67.08241192497575 ! 1 Gyr
 walltime_hrs=24
-minutes_dump=10
-restart_hrs=3
+minutes_dump=30
+restart_hrs=1
 /
 
 &AMR_PARAMS
@@ -38,7 +38,7 @@ levelmax=15
 !levelmax=9
 !nexpand=3,3,3,3,3,3,3,3,3,3
 nexpand=1,1,1,1,1,1,1,1,1,1
-ngridtot=50000000
+ngridtot=200000000
 !nparttot=30000000
 npartmax=1000000
 boxlen=100.
@@ -47,7 +47,7 @@ boxlen=100.
 &REFINE_PARAMS
 mass_sph=1.d-7
 m_refine=20*8.,
-jeans_refine=0,4,4,4,4,4,4,4,4,4
+jeans_refine=0,4,8,8,8,8,8,8,8,8
 interpol_var=1
 interpol_type=0
 /
@@ -59,9 +59,9 @@ slope_type=1           ! recommended by Romain for cosmological simulations
 scheme='muscl'         ! don't change
 riemann='hllc'         ! reimann solver
 pressure_fix=.true.    ! recommended by Romain for cosmological simulations
+pressure_fix_cond=1
 beta_fix=0.5           ! recommended by Romain for cosmological simulations
-modify_pressure_fix_cond=.true.
-pressure_fix_maxMach=10.0
+!pressure_fix_maxMach=10.0
 /
 
 &COOLING_PARAMS
@@ -80,9 +80,9 @@ n_star = 0.1
 eps_star = 1.0
 sf_virial=.false.
 sf_model = 6
-sf_trelax=300.0
+sf_trelax=0.0
 sf_tdiss = 0
-sf_compressive = .flase.
+sf_compressive = .false.
 sf_log_properties = .true.
 /
 
@@ -104,7 +104,7 @@ rt_smooth=.true.                ! use this parameter, see rosdahl paper
 rt_courant_factor=0.8           ! courant number for RT timesteps
 rt_c_fraction=0.01              ! fraction of actual lightspeed set to RT lightspeed.
 rt_otsa=.true.                  ! OTSA
-rt_nsubcycle=2                 !If you want to use subcycles with VSLA, you need to compile with rt_step.f90
+rt_nsubcycle=10                 !If you want to use subcycles with VSLA, you need to compile with rt_step.f90
 uv_file='/work/okamtotk/dwarf/ramses_tables/hm12/hm12_ramses.dat'
 cloudy_metal_cooling=.true.
 cloudy_metal_file='/work/okamtotk/dwarf/ramses_tables/cloudy_cooling/cloudy_excess_metal_cooling.bin'
@@ -113,13 +113,14 @@ iPEH_group=3
 rt_isIR=.false.	                ! logical	Assume first photon group represents IR photons, in local thermal equilibrium (LTE) with dust
 rt_isIR_alt=.true.              ! logical	Assume first photon group represents IR photons
 rt_isIRtrap=.false.	            ! logical	Apply trapping of IR photons in optically thick gas, in effect correctly modelling the IR propagation
-is_kIR_T=.ture.
+is_kIR_T=.true.
 rt_star=.true.                 ! do we want star particles to emit radiation?
 rt_esc_frac=1.0d0                ! escape fraction of radiation from those star particles
 sed_dir='/work/okamtotk/dwarf/ramses_tables/SED/bc03_Chabrier'             ! directory which contains SED files
 sedprops_update=1              ! how often to up mean energies and cross sections
 attn_after_chem=.true.         ! absorption will be estimated after chemistry
 rt_skip_convergence=.true.
+relax_x_by_ne=.false.           ! .true.: also accept a subcycle step when the electron budget barely moves (xHI/xHII/xHe tests)
 /
 
 &RT_GROUPS
@@ -167,7 +168,7 @@ units_length  = 0.308567758128200E+22 ! kpc
 
 &DICE_PARAMS
 !ic_file='dice_dw1.g2'         ! Name of the initial conditions file
-ic_file='dice_hu.g2'         ! Name of the initial conditions file
+ic_file='dice_hu_heavy.g2'         ! Name of the initial conditions file
 ic_nfile=1                    ! If greater than one, look for files with name matching ic_file//'.n'
 ic_ifout=1                    ! Change ramses output index for restarts
 ic_format='Gadget2'           ! Format of the initial conditions. 'Gadget1' or 'Gadget2'

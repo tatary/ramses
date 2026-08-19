@@ -107,15 +107,15 @@ module amr_commons
 
   ! Communication structure
   type communicator
-     integer                            ::ngrid
-     integer                            ::npart
-     integer     ,dimension(:)  ,pointer::igrid
-     integer     ,dimension(:,:),pointer::f
-     real(kind=8),dimension(:,:),pointer::u
-     integer(i8b),dimension(:,:),pointer::fp
-     real(kind=8),dimension(:,:),pointer::up
+    integer                            ::ngrid
+    integer                            ::npart
+    integer     ,dimension(:)  ,pointer::igrid
+    integer     ,dimension(:,:),pointer::f
+    real(kind=8),dimension(:,:),pointer::u
+    integer(i8b),dimension(:,:),pointer::fp
+    real(kind=8),dimension(:,:),pointer::up
 #ifdef ATON
-     real(kind=8),dimension(:,:),pointer::u_radiation
+    real(kind=8),dimension(:,:),pointer::u_radiation
 #endif
   end type communicator
 
@@ -123,23 +123,23 @@ module amr_commons
 #ifdef LIGHT_MPI_COMM
   ! ----------- Optimized MPI buffer communicator structures suggested by P. Wautelet on the IDRIS page ------------ !
   ! ----------- http://www.idris.fr/docs/docu/support-avance/ramses.html to reduce the memory footprint ------------ !
-  ! ----------- D. Chapon (CEA Saclay - IRFU).                                                          ------------ !  
+  ! ----------- D. Chapon (CEA Saclay - IRFU).                                                          ------------ !
   ! Actual communication structure holding the data allocatable arrays
   type point_comm
-     integer          ,dimension(:),  pointer::igrid
-     integer          ,dimension(:,:),pointer::f
-     integer(kind=i8b),dimension(:,:),pointer::f8
-     real(kind=8)     ,dimension(:,:),pointer::u
+    integer          ,dimension(:),  pointer::igrid
+    integer          ,dimension(:,:),pointer::f
+    integer(kind=i8b),dimension(:,:),pointer::f8
+    real(kind=8)     ,dimension(:,:),pointer::u
 #ifdef ATON
-     real(kind=8)     ,dimension(:,:),pointer::u_radiation
+    real(kind=8)     ,dimension(:,:),pointer::u_radiation
 #endif
   end type point_comm
 
   ! Light communication (intermediate) structure
   type communicator_light
-     integer                            ::ngrid
-     integer                            ::npart
-     type(point_comm), pointer          ::pcomm
+    integer                            ::ngrid
+    integer                            ::npart
+    type(point_comm), pointer          ::pcomm
   end type communicator_light
 
   type communicator_varoct

@@ -37,10 +37,10 @@ subroutine dump_all
   output_done=.true.
 
   if(IOGROUPSIZEREP>0) then
-     call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
-     filedir='output_'//TRIM(nchar)//'/group_'//TRIM(ncharcpu)//'/'
+    call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
+    filedir='output_'//TRIM(nchar)//'/group_'//TRIM(ncharcpu)//'/'
   else
-     filedir='output_'//TRIM(nchar)//'/'
+    filedir='output_'//TRIM(nchar)//'/'
   endif
 
   call create_output_dirs(filedir)
@@ -57,52 +57,52 @@ subroutine dump_all
   if(myid==1.and.print_when_io) write(*,*)'Start backup info etc.'
   ! Only master process
   if(myid==1)then
-     filename=TRIM(filedir)//'info_'//TRIM(nchar)//'.txt'
-     call output_info(filename)
-     filename=TRIM(filedir)//'makefile.txt'
-     call output_makefile(filename)
-     filename=TRIM(filedir)//'patches.txt'
-     call output_patch(filename)
-     if(cooling .and. .not. neq_chem .and. .not. cooling_ism)then
+    filename=TRIM(filedir)//'info_'//TRIM(nchar)//'.txt'
+    call output_info(filename)
+    filename=TRIM(filedir)//'makefile.txt'
+    call output_makefile(filename)
+    filename=TRIM(filedir)//'patches.txt'
+    call output_patch(filename)
+    if(cooling .and. .not. neq_chem .and. .not. cooling_ism)then
 #ifdef grackle
-        ! hack to prevent segfault
-        if(use_grackle==0) then
-           filename=TRIM(filedir)//'cooling_'//TRIM(nchar)//'.out'
-           call output_cool(filename)
-        end if
-#else
+      ! hack to prevent segfault
+      if(use_grackle==0) then
         filename=TRIM(filedir)//'cooling_'//TRIM(nchar)//'.out'
         call output_cool(filename)
+      end if
+#else
+      filename=TRIM(filedir)//'cooling_'//TRIM(nchar)//'.out'
+      call output_cool(filename)
 #endif
-     end if
-     if(sink)then
-        filename=TRIM(filedir)//'sink_'//TRIM(nchar)//'.csv'
-        call output_sink_csv(filename)
-     endif
-     if(stellar)then
-        filename=TRIM(filedir)//'stellar_'//TRIM(nchar)//'.csv'
-        call output_stellar_csv(filename)
-     end if
-     ! Copy namelist file to output directory
-     filename=TRIM(filedir)//'namelist.txt'
-     OPEN(10, FILE=namelist_file, ACCESS="STREAM", ACTION="READ")
-     OPEN(11, FILE=filename,      ACCESS="STREAM", ACTION="WRITE")
-     DO
-        READ(10, IOSTAT=IERR)nml_char
-        IF (IERR.NE.0) EXIT
-        WRITE(11)nml_char
-     END DO
-     CLOSE(11)
-     CLOSE(10)
-     ! Copy compilation details to output directory
-     filename=TRIM(filedir)//'compilation.txt'
-     OPEN(UNIT=11, FILE=filename, FORM='formatted')
-     write(11,'(" compile date = ",A)')TRIM(builddate)
-     write(11,'(" patch dir    = ",A)')TRIM(patchdir)
-     write(11,'(" remote repo  = ",A)')TRIM(gitrepo)
-     write(11,'(" local branch = ",A)')TRIM(gitbranch)
-     write(11,'(" last commit  = ",A)')TRIM(githash)
-     CLOSE(11)
+    end if
+    if(sink)then
+      filename=TRIM(filedir)//'sink_'//TRIM(nchar)//'.csv'
+      call output_sink_csv(filename)
+    endif
+    if(stellar)then
+      filename=TRIM(filedir)//'stellar_'//TRIM(nchar)//'.csv'
+      call output_stellar_csv(filename)
+    end if
+    ! Copy namelist file to output directory
+    filename=TRIM(filedir)//'namelist.txt'
+    OPEN(10, FILE=namelist_file, ACCESS="STREAM", ACTION="READ")
+    OPEN(11, FILE=filename,      ACCESS="STREAM", ACTION="WRITE")
+    DO
+      READ(10, IOSTAT=IERR)nml_char
+      IF (IERR.NE.0) EXIT
+      WRITE(11)nml_char
+    END DO
+    CLOSE(11)
+    CLOSE(10)
+    ! Copy compilation details to output directory
+    filename=TRIM(filedir)//'compilation.txt'
+    OPEN(UNIT=11, FILE=filename, FORM='formatted')
+    write(11,'(" compile date = ",A)')TRIM(builddate)
+    write(11,'(" patch dir    = ",A)')TRIM(patchdir)
+    write(11,'(" remote repo  = ",A)')TRIM(gitrepo)
+    write(11,'(" local branch = ",A)')TRIM(gitbranch)
+    write(11,'(" last commit  = ",A)')TRIM(githash)
+    CLOSE(11)
   endif
 #ifndef WITHOUTMPI
   if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
@@ -118,81 +118,81 @@ subroutine dump_all
   if(myid==1.and.print_when_io) write(*,*)'End backup amr'
 
   if(hydro)then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup hydro'
-     filename=TRIM(filedir)//'hydro_'//TRIM(nchar)//'.out'
-     filename_desc = trim(filedir)//'hydro_file_descriptor.txt'
-     call backup_hydro(filename, filename_desc)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup hydro'
+    filename=TRIM(filedir)//'hydro_'//TRIM(nchar)//'.out'
+    filename_desc = trim(filedir)//'hydro_file_descriptor.txt'
+    call backup_hydro(filename, filename_desc)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup hydro'
+    if(myid==1.and.print_when_io) write(*,*)'End backup hydro'
   end if
 
 #ifdef RT
   if(rt.or.neq_chem)then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup rt'
-     filename=TRIM(filedir)//'rt_'//TRIM(nchar)//'.out'
-     filename_desc = trim(filedir) // 'rt_file_descriptor.txt'
-     call rt_backup_hydro(filename, filename_desc)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup rt'
+    filename=TRIM(filedir)//'rt_'//TRIM(nchar)//'.out'
+    filename_desc = trim(filedir) // 'rt_file_descriptor.txt'
+    call rt_backup_hydro(filename, filename_desc)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup rt'
+    if(myid==1.and.print_when_io) write(*,*)'End backup rt'
   endif
 #endif
 
   if(pic)then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup part'
-     filename=trim(filedir)//'part_'//trim(nchar)//'.out'
-     filename_desc=TRIM(filedir)//'part_file_descriptor.txt'
-     call backup_part(filename, filename_desc)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup part'
+    filename=trim(filedir)//'part_'//trim(nchar)//'.out'
+    filename_desc=TRIM(filedir)//'part_file_descriptor.txt'
+    call backup_part(filename, filename_desc)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup part'
+    if(myid==1.and.print_when_io) write(*,*)'End backup part'
   end if
 
   if(poisson)then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup poisson'
-     filename=TRIM(filedir)//'grav_'//TRIM(nchar)//'.out'
-     call backup_poisson(filename)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup poisson'
+    filename=TRIM(filedir)//'grav_'//TRIM(nchar)//'.out'
+    call backup_poisson(filename)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup poisson'
+    if(myid==1.and.print_when_io) write(*,*)'End backup poisson'
   end if
 #ifdef ATON
   if(aton)then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup rad'
-     filename=TRIM(filedir)//'rad_'//TRIM(nchar)//'.out'
-     call backup_radiation(filename)
-     filename=TRIM(filedir)//'radgpu_'//TRIM(nchar)//'.out'
-     call store_radiation(filename)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup rad'
+    filename=TRIM(filedir)//'rad_'//TRIM(nchar)//'.out'
+    call backup_radiation(filename)
+    filename=TRIM(filedir)//'radgpu_'//TRIM(nchar)//'.out'
+    call store_radiation(filename)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup rad'
+    if(myid==1.and.print_when_io) write(*,*)'End backup rad'
   end if
 #endif
   if (gadget_output) then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup gadget format'
-     filename=TRIM(filedir)//'gsnapshot_'//TRIM(nchar)
-     call savegadget(filename)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup gadget format'
+    filename=TRIM(filedir)//'gsnapshot_'//TRIM(nchar)
+    call savegadget(filename)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup gadget format'
+    if(myid==1.and.print_when_io) write(*,*)'End backup gadget format'
   end if
 
 #if USE_TURB==1
-     if (turb) then
-        if(myid==1.and.print_when_io) write(*,*)'Start backup turb'
-        if (myid==1) call write_turb_fields(filedir)
+  if (turb) then
+    if(myid==1.and.print_when_io) write(*,*)'Start backup turb'
+    if (myid==1) call write_turb_fields(filedir)
 #ifndef WITHOUTMPI
-        if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-        if(myid==1.and.print_when_io) write(*,*)'End backup turb'
-     end if
+    if(myid==1.and.print_when_io) write(*,*)'End backup turb'
+  end if
 #endif
 
   if(myid==1.and.print_when_io) write(*,*)'Start timer'
@@ -249,11 +249,11 @@ subroutine dump_restart
   output_done=.true.
 
   if(IOGROUPSIZEREP>0) then
-     call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
-     !filedir='output_'//TRIM(nchar)//'/group_'//TRIM(ncharcpu)//'/'
-     filedir='output_restart/group_'//TRIM(ncharcpu)//'/'
+    call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
+    !filedir='output_'//TRIM(nchar)//'/group_'//TRIM(ncharcpu)//'/'
+    filedir='output_restart/group_'//TRIM(ncharcpu)//'/'
   else
-     filedir='output_restart/'
+    filedir='output_restart/'
   endif
 
   call create_output_dirs(filedir)
@@ -264,9 +264,9 @@ subroutine dump_restart
   call output_header(filename)
   filename=TRIM(filedir)//'ifout.txt'
   if (myid == 1) then
-     open(newunit=iunit, file=filename, status='replace', action='write')
-     write(iunit,*) ifout
-     close(iunit)
+    open(newunit=iunit, file=filename, status='replace', action='write')
+    write(iunit,*) ifout
+    close(iunit)
   endif
 #ifndef WITHOUTMPI
   if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
@@ -278,80 +278,80 @@ subroutine dump_restart
   ! before this checkpoint or duplicating events logged after it.
   ! See restart_event_logging_fix.md for the full rationale.
   if(sf_log_properties.and.ifout.gt.1) then
-     call title(ifout-1,ncharout)
-     if(IOGROUPSIZEREP>0) then
-        fileloc='output_'//TRIM(ncharout)//'/group_'//TRIM(ncharcpu)//'/stars_'//TRIM(ncharout)//'.out'
-     else
-        fileloc='output_'//TRIM(ncharout)//'/stars_'//TRIM(ncharout)//'.out'
-     endif
-     call title(myid,nchar)
-     fileloc=TRIM(fileloc)//TRIM(nchar)
-     inquire(file=fileloc,exist=file_exist)
-     if(file_exist) then
-        fileloc2=TRIM(filedir)//'stars_restart.out'//TRIM(nchar)
-        open(newunit=iunit,file=fileloc,access='stream',&
-             & action='read',form='unformatted',status='old')
-        open(newunit=iunit2,file=fileloc2,access='stream',&
-             & action='write',form='unformatted',status='replace')
-        do
-           read(iunit,iostat=ierr) byte_char
-           if(ierr.ne.0) exit
-           write(iunit2) byte_char
-        end do
-        close(iunit)
-        close(iunit2)
-     endif
+    call title(ifout-1,ncharout)
+    if(IOGROUPSIZEREP>0) then
+      fileloc='output_'//TRIM(ncharout)//'/group_'//TRIM(ncharcpu)//'/stars_'//TRIM(ncharout)//'.out'
+    else
+      fileloc='output_'//TRIM(ncharout)//'/stars_'//TRIM(ncharout)//'.out'
+    endif
+    call title(myid,nchar)
+    fileloc=TRIM(fileloc)//TRIM(nchar)
+    inquire(file=fileloc,exist=file_exist)
+    if(file_exist) then
+      fileloc2=TRIM(filedir)//'stars_restart.out'//TRIM(nchar)
+      open(newunit=iunit,file=fileloc,access='stream',&
+      & action='read',form='unformatted',status='old')
+      open(newunit=iunit2,file=fileloc2,access='stream',&
+      & action='write',form='unformatted',status='replace')
+      do
+        read(iunit,iostat=ierr) byte_char
+        if(ierr.ne.0) exit
+        write(iunit2) byte_char
+      end do
+      close(iunit)
+      close(iunit2)
+    endif
   endif
 
   if(myid==1.and.print_when_io) write(*,*)'Start backup info etc.'
   ! Only master process
   if(myid==1)then
-     filename=TRIM(filedir)//'info_restart.txt'
-     call output_info(filename)
-     filename=TRIM(filedir)//'makefile.txt'
-     call output_makefile(filename)
-     filename=TRIM(filedir)//'patches.txt'
-     call output_patch(filename)
-     if(cooling .and. .not. neq_chem .and. .not. cooling_ism)then
+    filename=TRIM(filedir)//'info_restart.txt'
+    call output_info(filename)
+    filename=TRIM(filedir)//'makefile.txt'
+    call output_makefile(filename)
+    filename=TRIM(filedir)//'patches.txt'
+    call output_patch(filename)
+    if(cooling .and. .not. neq_chem .and. .not. cooling_ism)then
 #ifdef grackle
-        ! hack to prevent segfault
-        if(use_grackle==0) then
-           filename=TRIM(filedir)//'cooling_restart.out'
-           call output_cool(filename)
-        end if
-#else
+      ! hack to prevent segfault
+      if(use_grackle==0) then
         filename=TRIM(filedir)//'cooling_restart.out'
         call output_cool(filename)
+      end if
+#else
+      filename=TRIM(filedir)//'cooling_restart.out'
+      call output_cool(filename)
 #endif
-     end if
-     if(sink)then
-        filename=TRIM(filedir)//'sink_restart.csv'
-        call output_sink_csv(filename)
-     endif
-     if(stellar)then
-        filename=TRIM(filedir)//'stellar_restart.csv'
-        call output_stellar_csv(filename)
-     end if
-     ! Copy namelist file to output directory
-     filename=TRIM(filedir)//'namelist.txt'
-     OPEN(10, FILE=namelist_file, ACCESS="STREAM", ACTION="READ")
-     OPEN(11, FILE=filename,      ACCESS="STREAM", ACTION="WRITE")
-     DO
-        READ(10, IOSTAT=IERR)nml_char
-        IF (IERR.NE.0) EXIT
-        WRITE(11)nml_char
-     END DO
-     CLOSE(11)
-     CLOSE(10)
-     ! Copy compilation details to output directory
-     filename=TRIM(filedir)//'compilation.txt'
-     OPEN(UNIT=11, FILE=filename, FORM='formatted')
-     write(11,'(" compile date = ",A)')TRIM(builddate)
-     write(11,'(" patch dir    = ",A)')TRIM(patchdir)
-     write(11,'(" remote repo  = ",A)')TRIM(gitrepo)
-     write(11,'(" local branch = ",A)')TRIM(gitbranch)
-     write(11,'(" last commit  = ",A)')TRIM(githash)
-     CLOSE(11)
+    end if
+    if(sink)then
+      filename=TRIM(filedir)//'sink_restart.csv'
+      call output_sink_csv(filename)
+    endif
+    if(stellar)then
+      filename=TRIM(filedir)//'stellar_restart.csv'
+      call output_stellar_csv(filename)
+    end if
+    ! Copy namelist file to output directory
+    filename=TRIM(filedir)//'namelist.txt'
+    OPEN(10, FILE=namelist_file, ACCESS="STREAM", ACTION="READ")
+    OPEN(11, FILE=filename,      ACCESS="STREAM", ACTION="WRITE")
+    DO
+      READ(10, IOSTAT=IERR)nml_char
+      IF (IERR.NE.0) EXIT
+      WRITE(11)nml_char
+    END DO
+    CLOSE(11)
+    CLOSE(10)
+    ! Copy compilation details to output directory
+    filename=TRIM(filedir)//'compilation.txt'
+    OPEN(UNIT=11, FILE=filename, FORM='formatted')
+    write(11,'(" compile date = ",A)')TRIM(builddate)
+    write(11,'(" patch dir    = ",A)')TRIM(patchdir)
+    write(11,'(" remote repo  = ",A)')TRIM(gitrepo)
+    write(11,'(" local branch = ",A)')TRIM(gitbranch)
+    write(11,'(" last commit  = ",A)')TRIM(githash)
+    CLOSE(11)
   endif
 #ifndef WITHOUTMPI
   if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
@@ -367,81 +367,81 @@ subroutine dump_restart
   if(myid==1.and.print_when_io) write(*,*)'End backup amr'
 
   if(hydro)then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup hydro'
-     filename=TRIM(filedir)//'hydro_restart.out'
-     filename_desc = trim(filedir)//'hydro_file_descriptor.txt'
-     call backup_hydro(filename, filename_desc)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup hydro'
+    filename=TRIM(filedir)//'hydro_restart.out'
+    filename_desc = trim(filedir)//'hydro_file_descriptor.txt'
+    call backup_hydro(filename, filename_desc)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup hydro'
+    if(myid==1.and.print_when_io) write(*,*)'End backup hydro'
   end if
 
 #ifdef RT
   if(rt.or.neq_chem)then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup rt'
-     filename=TRIM(filedir)//'rt_restart.out'
-     filename_desc = trim(filedir) // 'rt_file_descriptor.txt'
-     call rt_backup_hydro(filename, filename_desc)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup rt'
+    filename=TRIM(filedir)//'rt_restart.out'
+    filename_desc = trim(filedir) // 'rt_file_descriptor.txt'
+    call rt_backup_hydro(filename, filename_desc)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup rt'
+    if(myid==1.and.print_when_io) write(*,*)'End backup rt'
   endif
 #endif
 
   if(pic)then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup part'
-     filename=trim(filedir)//'part_restart.out'
-     filename_desc=TRIM(filedir)//'part_file_descriptor.txt'
-     call backup_part(filename, filename_desc)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup part'
+    filename=trim(filedir)//'part_restart.out'
+    filename_desc=TRIM(filedir)//'part_file_descriptor.txt'
+    call backup_part(filename, filename_desc)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup part'
+    if(myid==1.and.print_when_io) write(*,*)'End backup part'
   end if
 
   if(poisson)then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup poisson'
-     filename=TRIM(filedir)//'grav_restart.out'
-     call backup_poisson(filename)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup poisson'
+    filename=TRIM(filedir)//'grav_restart.out'
+    call backup_poisson(filename)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup poisson'
+    if(myid==1.and.print_when_io) write(*,*)'End backup poisson'
   end if
 #ifdef ATON
   if(aton)then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup rad'
-     filename=TRIM(filedir)//'rad_restart.out'
-     call backup_radiation(filename)
-     filename=TRIM(filedir)//'radgpu_restart.out'
-     call store_radiation(filename)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup rad'
+    filename=TRIM(filedir)//'rad_restart.out'
+    call backup_radiation(filename)
+    filename=TRIM(filedir)//'radgpu_restart.out'
+    call store_radiation(filename)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup rad'
+    if(myid==1.and.print_when_io) write(*,*)'End backup rad'
   end if
 #endif
   if (gadget_output) then
-     if(myid==1.and.print_when_io) write(*,*)'Start backup gadget format'
-     filename=TRIM(filedir)//'gsnapshot_restart'
-     call savegadget(filename)
+    if(myid==1.and.print_when_io) write(*,*)'Start backup gadget format'
+    filename=TRIM(filedir)//'gsnapshot_restart'
+    call savegadget(filename)
 #ifndef WITHOUTMPI
-     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-     if(myid==1.and.print_when_io) write(*,*)'End backup gadget format'
+    if(myid==1.and.print_when_io) write(*,*)'End backup gadget format'
   end if
 
 #if USE_TURB==1
-     if (turb) then
-        if(myid==1.and.print_when_io) write(*,*)'Start backup turb'
-        if (myid==1) call write_turb_fields(filedir)
+  if (turb) then
+    if(myid==1.and.print_when_io) write(*,*)'Start backup turb'
+    if (myid==1) call write_turb_fields(filedir)
 #ifndef WITHOUTMPI
-        if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
+    if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-        if(myid==1.and.print_when_io) write(*,*)'End backup turb'
-     end if
+    if(myid==1.and.print_when_io) write(*,*)'End backup turb'
+  end if
 #endif
 
   if(myid==1.and.print_when_io) write(*,*)'Start timer'
@@ -503,14 +503,14 @@ subroutine backup_amr(filename)
   call title(myid,nchar)
   fileloc=TRIM(filename)//TRIM(nchar)
 
-   ! Wait for the token
+  ! Wait for the token
 #ifndef WITHOUTMPI
-     if(IOGROUPSIZE>0) then
-        if (mod(myid-1,IOGROUPSIZE)/=0) then
-           call MPI_RECV(dummy_io,1,MPI_INTEGER,myid-1-1,tag,&
-                & MPI_COMM_WORLD,MPI_STATUS_IGNORE,info2)
-        end if
-     endif
+  if(IOGROUPSIZE>0) then
+    if (mod(myid-1,IOGROUPSIZE)/=0) then
+      call MPI_RECV(dummy_io,1,MPI_INTEGER,myid-1-1,tag,&
+      & MPI_COMM_WORLD,MPI_STATUS_IGNORE,info2)
+    end if
+  endif
 #endif
 
   open(unit=ilun,file=fileloc,form='unformatted')
@@ -542,22 +542,22 @@ subroutine backup_amr(filename)
   write(ilun)numbtot(1:10,1:nlevelmax)
   ! Read boundary linked list
   if(simple_boundary)then
-     write(ilun)headb(1:nboundary,1:nlevelmax)
-     write(ilun)tailb(1:nboundary,1:nlevelmax)
-     write(ilun)numbb(1:nboundary,1:nlevelmax)
+    write(ilun)headb(1:nboundary,1:nlevelmax)
+    write(ilun)tailb(1:nboundary,1:nlevelmax)
+    write(ilun)numbb(1:nboundary,1:nlevelmax)
   end if
   ! Write free memory
   write(ilun)headf,tailf,numbf,used_mem,used_mem_tot
   ! Write cpu boundaries
   write(ilun)ordering
   if(ordering=='bisection') then
-     write(ilun)bisec_wall(1:nbinodes)
-     write(ilun)bisec_next(1:nbinodes,1:2)
-     write(ilun)bisec_indx(1:nbinodes)
-     write(ilun)bisec_cpubox_min(1:ncpu,1:ndim)
-     write(ilun)bisec_cpubox_max(1:ncpu,1:ndim)
+    write(ilun)bisec_wall(1:nbinodes)
+    write(ilun)bisec_next(1:nbinodes,1:2)
+    write(ilun)bisec_indx(1:nbinodes)
+    write(ilun)bisec_cpubox_min(1:ncpu,1:ndim)
+    write(ilun)bisec_cpubox_max(1:ncpu,1:ndim)
   else
-     write(ilun)bound_key(0:ndomain)
+    write(ilun)bound_key(0:ndomain)
   endif
 
   ! Write coarse level
@@ -566,90 +566,90 @@ subroutine backup_amr(filename)
   write(ilun)cpu_map(1:ncoarse)
   ! Write fine levels
   do ilevel=1,nlevelmax
-     do ibound=1,nboundary+ncpu
-        if(ibound<=ncpu)then
-           ncache=numbl(ibound,ilevel)
-           istart=headl(ibound,ilevel)
-        else
-           ncache=numbb(ibound-ncpu,ilevel)
-           istart=headb(ibound-ncpu,ilevel)
-        end if
-        if(ncache>0)then
-           allocate(ind_grid(1:ncache),xdp(1:ncache),iig(1:ncache))
-           ! Write grid index
-           igrid=istart
-           do i=1,ncache
-              ind_grid(i)=igrid
-              igrid=next(igrid)
-           end do
-           write(ilun)ind_grid
-           ! Write next index
-           do i=1,ncache
-              iig(i)=next(ind_grid(i))
-           end do
-           write(ilun)iig
-           ! Write prev index
-           do i=1,ncache
-              iig(i)=prev(ind_grid(i))
-           end do
-           write(ilun)iig
-           ! Write grid center
-           do idim=1,ndim
-              do i=1,ncache
-                 xdp(i)=xg(ind_grid(i),idim)
-              end do
-              write(ilun)xdp
-           end do
-           ! Write father index
-           do i=1,ncache
-              iig(i)=father(ind_grid(i))
-           end do
-           write(ilun)iig
-           ! Write nbor index
-           do ind=1,twondim
-              do i=1,ncache
-                 iig(i)=nbor(ind_grid(i),ind)
-              end do
-              write(ilun)iig
-           end do
-           ! Write son index
-           do ind=1,twotondim
-              iskip=ncoarse+(ind-1)*ngridmax
-              do i=1,ncache
-                 iig(i)=son(ind_grid(i)+iskip)
-              end do
-              write(ilun)iig
-           end do
-           ! Write cpu map
-           do ind=1,twotondim
-              iskip=ncoarse+(ind-1)*ngridmax
-              do i=1,ncache
-                 iig(i)=cpu_map(ind_grid(i)+iskip)
-              end do
-              write(ilun)iig
-           end do
-           ! Write refinement map
-           do ind=1,twotondim
-              iskip=ncoarse+(ind-1)*ngridmax
-              do i=1,ncache
-                 iig(i)=flag1(ind_grid(i)+iskip)
-              end do
-              write(ilun)iig
-           end do
-           deallocate(xdp,iig,ind_grid)
-        end if
-     end do
+    do ibound=1,nboundary+ncpu
+      if(ibound<=ncpu)then
+        ncache=numbl(ibound,ilevel)
+        istart=headl(ibound,ilevel)
+      else
+        ncache=numbb(ibound-ncpu,ilevel)
+        istart=headb(ibound-ncpu,ilevel)
+      end if
+      if(ncache>0)then
+        allocate(ind_grid(1:ncache),xdp(1:ncache),iig(1:ncache))
+        ! Write grid index
+        igrid=istart
+        do i=1,ncache
+          ind_grid(i)=igrid
+          igrid=next(igrid)
+        end do
+        write(ilun)ind_grid
+        ! Write next index
+        do i=1,ncache
+          iig(i)=next(ind_grid(i))
+        end do
+        write(ilun)iig
+        ! Write prev index
+        do i=1,ncache
+          iig(i)=prev(ind_grid(i))
+        end do
+        write(ilun)iig
+        ! Write grid center
+        do idim=1,ndim
+          do i=1,ncache
+            xdp(i)=xg(ind_grid(i),idim)
+          end do
+          write(ilun)xdp
+        end do
+        ! Write father index
+        do i=1,ncache
+          iig(i)=father(ind_grid(i))
+        end do
+        write(ilun)iig
+        ! Write nbor index
+        do ind=1,twondim
+          do i=1,ncache
+            iig(i)=nbor(ind_grid(i),ind)
+          end do
+          write(ilun)iig
+        end do
+        ! Write son index
+        do ind=1,twotondim
+          iskip=ncoarse+(ind-1)*ngridmax
+          do i=1,ncache
+            iig(i)=son(ind_grid(i)+iskip)
+          end do
+          write(ilun)iig
+        end do
+        ! Write cpu map
+        do ind=1,twotondim
+          iskip=ncoarse+(ind-1)*ngridmax
+          do i=1,ncache
+            iig(i)=cpu_map(ind_grid(i)+iskip)
+          end do
+          write(ilun)iig
+        end do
+        ! Write refinement map
+        do ind=1,twotondim
+          iskip=ncoarse+(ind-1)*ngridmax
+          do i=1,ncache
+            iig(i)=flag1(ind_grid(i)+iskip)
+          end do
+          write(ilun)iig
+        end do
+        deallocate(xdp,iig,ind_grid)
+      end if
+    end do
   end do
   close(ilun)
 
   ! Send the token
 #ifndef WITHOUTMPI
   if(IOGROUPSIZE>0) then
-     if(mod(myid,IOGROUPSIZE)/=0 .and.(myid.lt.ncpu))then
-        dummy_io=1
-        call MPI_SEND(dummy_io,1,MPI_INTEGER,myid-1+1,tag, &
-             & MPI_COMM_WORLD,info2)
-     end if
+    if(mod(myid,IOGROUPSIZE)/=0 .and.(myid.lt.ncpu))then
+      dummy_io=1
+      call MPI_SEND(dummy_io,1,MPI_INTEGER,myid-1+1,tag, &
+      & MPI_COMM_WORLD,info2)
+    end if
   endif
 #endif
 
@@ -689,11 +689,11 @@ subroutine output_info(filename)
   fileloc=TRIM(filename)
   open(unit=ilun,file=fileloc,form='formatted',iostat=ierr)
   if(ierr .ne. 0)then
-     write(*,*) 'Error - Could not write ',fileloc
+    write(*,*) 'Error - Could not write ',fileloc
 #ifndef WITHOUTMPI
-     call MPI_ABORT(MPI_COMM_WORLD,1,ierr)
+    call MPI_ABORT(MPI_COMM_WORLD,1,ierr)
 #else
-     stop
+    stop
 #endif
   endif
 
@@ -723,17 +723,17 @@ subroutine output_info(filename)
   ! Write ordering information
   write(ilun,'("ordering type=",A80)')ordering
   if(ordering=='bisection') then
-     do icpu=1,ncpu
-        ! write 2*ndim floats for cpu bound box
-        write(ilun,'(E23.15)')bisec_cpubox_min(icpu,:),bisec_cpubox_max(icpu,:)
-        ! write 1 float for cpu load
-        write(ilun,'(E23.15)')dble(bisec_cpu_load(icpu))
-     end do
+    do icpu=1,ncpu
+      ! write 2*ndim floats for cpu bound box
+      write(ilun,'(E23.15)')bisec_cpubox_min(icpu,:),bisec_cpubox_max(icpu,:)
+      ! write 1 float for cpu load
+      write(ilun,'(E23.15)')dble(bisec_cpu_load(icpu))
+    end do
   else
-     write(ilun,'("   DOMAIN   ind_min                 ind_max")')
-     do idom=1,ndomain
-        write(ilun,'(I8,1X,E23.15,1X,E23.15)')idom,bound_key(idom-1),bound_key(idom)
-     end do
+    write(ilun,'("   DOMAIN   ind_min                 ind_max")')
+    do idom=1,ndomain
+      write(ilun,'(I8,1X,E23.15,1X,E23.15)')idom,bound_key(idom-1),bound_key(idom)
+    end do
   endif
 
   close(ilun)
@@ -765,21 +765,21 @@ subroutine output_header(filename)
 
   if(verbose)write(*,*)'Entering output_header'
   if(myid==1)then
-     ! Open file
-     fileloc=TRIM(filename)
-     open(newunit=ilun,file=fileloc,form='formatted')
+    ! Open file
+    fileloc=TRIM(filename)
+    open(newunit=ilun,file=fileloc,form='formatted')
   end if
 
   ! Compute total number of particles
   ! Count number of particles
   npart_family_loc = 0; npart_all_loc = 0
   do ipart = 1, npartmax
-     ! Only used particles have a levelp > 0
-     if (levelp(ipart) > 0) then
-        npart_all_loc = npart_all_loc + 1
-        ifam = typep(ipart)%family
-        npart_family_loc(ifam) = npart_family_loc(ifam) + 1
-     end if
+    ! Only used particles have a levelp > 0
+    if (levelp(ipart) > 0) then
+      npart_all_loc = npart_all_loc + 1
+      ifam = typep(ipart)%family
+      npart_family_loc(ifam) = npart_family_loc(ifam) + 1
+    end if
   end do
 
 #ifndef WITHOUTMPI
@@ -796,35 +796,35 @@ subroutine output_header(filename)
 #endif
 
   if (myid == 1) then
-     write(ilun, '(a1,a12,a10)') '#', 'Family', 'Count'
-     do ifam = -NFAMILIES, NFAMILIES
-        write(ilun, '(a13, i10)') &
-             trim(particle_family_keys(ifam)), npart_family(ifam)
-     end do
-     write(ilun, '(a13, i10)') &
-          'undefined', npart_all - sum(npart_family)
+    write(ilun, '(a1,a12,a10)') '#', 'Family', 'Count'
+    do ifam = -NFAMILIES, NFAMILIES
+      write(ilun, '(a13, i10)') &
+        trim(particle_family_keys(ifam)), npart_family(ifam)
+    end do
+    write(ilun, '(a13, i10)') &
+      'undefined', npart_all - sum(npart_family)
   end if
 
   if (myid == 1) then
-     ! Keep track of what particle fields are present
-     write(ilun,*)'Particle fields'
-     write(ilun,'(a)',advance='no')'pos vel mass iord level family tag '
+    ! Keep track of what particle fields are present
+    write(ilun,*)'Particle fields'
+    write(ilun,'(a)',advance='no')'pos vel mass iord level family tag '
 #ifdef OUTPUT_PARTICLE_POTENTIAL
-     write(ilun,'(a)',advance='no')'phi '
+    write(ilun,'(a)',advance='no')'phi '
 #endif
-     if(star.or.sink) then
-        write(ilun,'(a)',advance='no')'tform '
-        if(metal) then
-           write(ilun,'(a)',advance='no')'metal '
-        endif
+    if(star.or.sink) then
+      write(ilun,'(a)',advance='no')'tform '
+      if(metal) then
+        write(ilun,'(a)',advance='no')'metal '
+      endif
 #ifdef INIT_STELLAR_MASS
-        write(ilun,'(a)',advance='no')'mform '
+      write(ilun,'(a)',advance='no')'mform '
 #endif
 #ifdef STELLAR_POPULATION_MASS
-        write(ilun,'(a)',advance='no')'mpop '
+      write(ilun,'(a)',advance='no')'mpop '
 #endif
-     endif
-     close(ilun)
+    endif
+    close(ilun)
 
   endif
 
@@ -901,19 +901,19 @@ subroutine savegadget(filename)
   header%unused = ' '
 
   do idim=1,ndim
-     ipart=0
-     do i=1,npartmax
-        if(levelp(i)>0)then
-           ipart=ipart+1
-           if (ipart .gt. npart) then
-                write(*,*) myid, "Ipart=",ipart, "exceeds", npart
-                call clean_stop
-           endif
-           pos(idim, ipart)=real(xp(i,idim) * boxlen_ini , kind=4)
-           vel(idim, ipart)=real(vp(i,idim) * gadgetvfact , kind=4)
-           if (idim.eq.1) ids(ipart) = idp(i)
-        end if
-     end do
+    ipart=0
+    do i=1,npartmax
+      if(levelp(i)>0)then
+        ipart=ipart+1
+        if (ipart .gt. npart) then
+          write(*,*) myid, "Ipart=",ipart, "exceeds", npart
+          call clean_stop
+        endif
+        pos(idim, ipart)=real(xp(i,idim) * boxlen_ini , kind=4)
+        vel(idim, ipart)=real(vp(i,idim) * gadgetvfact , kind=4)
+        if (idim.eq.1) ids(ipart) = idp(i)
+      end if
+    end do
   end do
 
   call gadgetwritefile(filename, myid-1, header, pos, vel, ids)

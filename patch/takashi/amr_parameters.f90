@@ -93,7 +93,7 @@ module amr_parameters
   integer::nbileafnodes=2                  ! Max number of leaf (terminal) nodes
   real(dp)::bisec_tol=0.05d0               ! Tolerance for bisection load balancing
 
-                                 ! Step parameters
+  ! Step parameters
   integer::nrestart=0            ! New run or backup file number
   integer::nrestart_quad=0       ! Restart with double precision Hilbert keys
   real(dp)::trestart=0           ! Restart time
@@ -215,18 +215,29 @@ module amr_parameters
   logical ::sf_imf=.false.              ! Activate IMF sampling for SN feedback when resolution allows it
   logical ::sf_compressive=.false.      ! Advect compressive and solenoidal turbulence terms separately
   logical ::cooling_ism = .false.      ! Use cooling module from Audit & Hennebelle 2005 (non-RT)
-                                        ! instead of ramses classical cooling
-  logical :: modify_pressure_fix_cond = .false. !modify pressure-fix condition (add extra condition of e_th < 0.5 * e_kin; this may be needed to take into account SN feedback in some cells)
-  real(dp) :: pressure_fix_maxMach = 1d1   !maximum Mach number for coservative update (used if modify_pressure_fix_cond = .true.)
+  ! instead of ramses classical cooling
+  integer :: pressure_fix_cond = 1
+  ! Pressure-fix selection criterion:
+  !   0: Original RAMSES criterion:
+  !      apply the pressure fix when e_cons < e_trunc.
+  !   1: Energy-increasing-only criterion:
+  !      apply the pressure fix only when e_cons < e_trunc and
+  !      e_cons < e_prim. This prevents the pressure fix from reducing
+  !      the thermal energy, which can otherwise erase injected feedback energy.
+  !   2: High-Mach-flow criterion:
+  !      apply the pressure fix only when e_cons < e_trunc and
+  !      e_cons < 2 * e_kin / pressure_fix_maxMach**2.
+  !      This confines the correction to sufficiently high-Mach flows.
+  real(dp) :: pressure_fix_maxMach = 1d1  ! Mach-number threshold used when pressure_fix_cond = 2
   logical :: Zsolar_Asplund=.false.
 
   ! EOS parameters
   character(len=20)::barotropic_eos_form='legacy'  !Type of barotropic EOS: choose from:
-                                        !'isothermal': constant temperature T0
-                                        !'polytrope': T = T0*(rho/rho0)**(gamma-1) or P ~ rho**gamma for ideal gas
-                                        !'double_polytrope': isothermal with T0 below rho0 and polytropic with gamma above
-                                        !'custom': for patching your own eos
-                                        !'legacy': same as polytrop but using the old n_star, g_star and T2_star
+  !'isothermal': constant temperature T0
+  !'polytrope': T = T0*(rho/rho0)**(gamma-1) or P ~ rho**gamma for ideal gas
+  !'double_polytrope': isothermal with T0 below rho0 and polytropic with gamma above
+  !'custom': for patching your own eos
+  !'legacy': same as polytrop but using the old n_star, g_star and T2_star
   real(dp)::polytrope_rho=1.0d50        ! sets rho0 in EOS = density normalisation or knee-density, in g/cm3
   real(dp)::polytrope_rho_cu=1.0d50     ! rho0 in code units
   real(dp)::polytrope_index=1.0d0       ! sets gamma in EOS = polytropic index
@@ -284,7 +295,7 @@ module amr_parameters
   integer,dimension(1:50)::movie_var_number=1
 
 
-                                                 ! Refinement parameters for each level
+  ! Refinement parameters for each level
   real(dp),dimension(1:MAXLEVEL)::m_refine =-1   ! Lagrangian threshold
   real(dp),dimension(1:MAXLEVEL)::r_refine =-1   ! Radius of refinement region
   real(dp),dimension(1:MAXLEVEL)::x_refine = 0   ! Center of refinement region
