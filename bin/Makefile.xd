@@ -21,7 +21,8 @@ INIT_STELLAR_MASS = 1
 # define stellar population mass separately from the initial stellar mass
 STELLAR_POPULATION_MASS = 1
 # Patch
-DICE =../patch/takashi/to_dice
+#DICE =../patch/takashi/to_dice
+#DICE =
 PATCH =../patch/takashi
 # Use RT? 1=Yes, 0=No
 RT = 1
