@@ -54,7 +54,7 @@ def write_script(str, snapnum, new)
     outputfile.print "#SBATCH --mail-user=t.t.okamoto@gmail.com\n"
     #outputfile.print ". /work/opt/local/bin/enable-oneapi.sh \n"
     outputfile.print "source /work/opt/local/bin/enable-cpe.sh \n"
-    outputfile.print "module swich PrgEnv-cray PrgEnv-gnu \n"
+    outputfile.print "module switch PrgEnv-cray PrgEnv-gnu \n"
     outputfile.print "export SLURM_MPI_TYPE=pmi2 \n"
     outputfile.print "export LD_LIBRARY_PATH=/lib64:${LD_LIBRARY_PATH} \n"
     #outputfile.print "export FI_OFI_RXM_USE_SRX=0 \n" 

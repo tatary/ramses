@@ -11,7 +11,7 @@
 #module add gsl/115
 #module add cray-hdf5/1.8.16
 
-#module swich PrgEnv-cray PrgEnv-gnu
+#module switch PrgEnv-cray PrgEnv-gnu
 #module add gsl/2.4_gnu-7.3
 #module add fftw/2.1.5.9
 #module add cray-hdf5/1.10.1.1

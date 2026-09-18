@@ -51,7 +51,7 @@ def write_script(str, snapnum, new)
     #outputfile.print "#SBATCH --time=00:30:00\n"   
     #outputfile.print ". /work/opt/local/bin/enable-oneapi.sh \n"
     outputfile.print "source /work/opt/local/bin/enable-cpe.sh \n"
-    outputfile.print "module swich PrgEnv-cray PrgEnv-gnu \n"
+    outputfile.print "module switch PrgEnv-cray PrgEnv-gnu \n"
     outputfile.print "\n"
     outputfile.print "cd ${SLURM_SUBMIT_DIR}\n"
     if new == 1
