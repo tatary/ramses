@@ -57,15 +57,9 @@ recursive subroutine amr_step(ilevel,icount)
           call make_virtual_fine_int(cpu_map(1),i)
           if(hydro)then
 #ifdef SOLVERmhd
-            do ivar=1,nvar+3
+            call make_virtual_fine_dp_nv(uold,nvar+3,1,nvar+3,i)
 #else
-            do ivar=1,nvar
-#endif
-              call make_virtual_fine_dp(uold(1,ivar),i)
-#ifdef SOLVERmhd
-            end do
-#else
-            end do
+            call make_virtual_fine_dp_nv(uold,nvar,1,nvar,i)
 #endif
             if(momentum_feedback>0)call make_virtual_fine_dp(pstarold(1),i)
             if(strict_equilibrium>0)call make_virtual_fine_dp(rho_eq(1),i)
@@ -74,17 +68,13 @@ recursive subroutine amr_step(ilevel,icount)
           end if
 #ifdef RT
           if(rt)then
-            do ivar=1,nrtvar
-              call make_virtual_fine_dp(rtuold(1,ivar),i)
-            end do
+            call make_virtual_fine_dp_nv(rtuold,nrtvar,1,nrtvar,i)
             if(simple_boundary)call rt_make_boundary_hydro(i)
           end if
 #endif
           if(poisson)then
             call make_virtual_fine_dp(phi(1),i)
-            do idim=1,ndim
-              call make_virtual_fine_dp(f(1,idim),i)
-            end do
+            call make_virtual_fine_dp_nv(f,ndim,1,ndim,i)
             if(simple_boundary)call make_boundary_force(i)
           end if
         end if
@@ -298,15 +288,9 @@ recursive subroutine amr_step(ilevel,icount)
 
       ! Update boundaries
 #ifdef SOLVERmhd
-      do ivar=1,nvar+3
+      call make_virtual_fine_dp_nv(uold,nvar+3,1,nvar+3,ilevel)
 #else
-      do ivar=1,nvar
-#endif
-        call make_virtual_fine_dp(uold(1,ivar),ilevel)
-#ifdef SOLVERmhd
-      end do
-#else
-      end do
+      call make_virtual_fine_dp_nv(uold,nvar,1,nvar,ilevel)
 #endif
       if(simple_boundary)call make_boundary_hydro(ilevel)
 
@@ -441,22 +425,29 @@ recursive subroutine amr_step(ilevel,icount)
   !-----------
   if((hydro).and.(.not.static_gas))then
 
+    ! Start the reverse update of the boundaries (virtual cells -> owner)
+    ! before the hydro solver: godunov_fine only modifies the active cells
+    ! of level ilevel and the coarser neighbour cells, never the virtual
+    ! cells of level ilevel, so the communication overlaps with the solver.
+    ! The received contributions are added after the solver, exactly as
+    ! in the blocking version.
+    call timer('hydro - rev ghostzones','start')
+#ifdef SOLVERmhd
+    call make_virtual_reverse_dp_start(unew,nvar+3,1,nvar+3,ilevel,1)
+#else
+    call make_virtual_reverse_dp_start(unew,nvar,1,nvar,ilevel,1)
+#endif
+
     ! Hyperbolic solver
     call timer('hydro - godunov','start')
     call godunov_fine(ilevel)
 
-    ! Reverse update boundaries
+    ! Complete the reverse update of the boundaries
     call timer('hydro - rev ghostzones','start')
 #ifdef SOLVERmhd
-    do ivar=1,nvar+3
+    call make_virtual_reverse_dp_end(unew,nvar+3,1,nvar+3,ilevel,1)
 #else
-    do ivar=1,nvar
-#endif
-      call make_virtual_reverse_dp(unew(1,ivar),ilevel)
-#ifdef SOLVERmhd
-    end do
-#else
-    end do
+    call make_virtual_reverse_dp_end(unew,nvar,1,nvar,ilevel,1)
 #endif
     ! MC Tracer
     ! Communicate fluxes accross boundaries
@@ -556,15 +547,9 @@ recursive subroutine amr_step(ilevel,icount)
   if((hydro).and.(.not.static_gas))then
     call timer('hydro - ghostzones','start')
 #ifdef SOLVERmhd
-    do ivar=1,nvar+3
+    call make_virtual_fine_dp_nv(uold,nvar+3,1,nvar+3,ilevel)
 #else
-    do ivar=1,nvar
-#endif
-      call make_virtual_fine_dp(uold(1,ivar),ilevel)
-#ifdef SOLVERmhd
-    end do
-#else
-    end do
+    call make_virtual_fine_dp_nv(uold,nvar,1,nvar,ilevel)
 #endif
     if(momentum_feedback>0)call make_virtual_fine_dp(pstarold(1),ilevel)
     if(strict_equilibrium>0)call make_virtual_fine_dp(rho_eq(1),ilevel)
@@ -692,15 +677,19 @@ subroutine rt_step(ilevel)
     if(rt_sink) call sink_RT_feedback(ilevel,dtnew(ilevel))
 #endif
 
+    ! Start the reverse update of the boundaries before the solver
+    ! (rt_godunov_fine and add_rt_sources never modify the virtual cells
+    ! of level ilevel), complete it after: the communication overlaps
+    ! with the solver.
+    call make_virtual_reverse_dp_start(rtunew,nrtvar,1,nrtvar,ilevel,2)
+
     ! Hyperbolic solver
     if(rt_advect) call rt_godunov_fine(ilevel,dtnew(ilevel))
 
     call add_rt_sources(ilevel,dtnew(ilevel))
 
-    ! Reverse update boundaries
-    do ivar=1,nrtvar
-      call make_virtual_reverse_dp(rtunew(1,ivar),ilevel)
-    end do
+    ! Complete the reverse update of the boundaries
+    call make_virtual_reverse_dp_end(rtunew,nrtvar,1,nrtvar,ilevel,2)
 
     ! Set rtuold equal to rtunew
     call rt_set_uold(ilevel)
@@ -709,9 +698,7 @@ subroutine rt_step(ilevel)
     if(neq_chem.or.cooling.or.T2_star>0.0.or.barotropic_eos)call cooling_fine(ilevel)
     call timer('radiative transfer','start')
 
-    do ivar=1,nrtvar
-      call make_virtual_fine_dp(rtuold(1,ivar),ilevel)
-    end do
+    call make_virtual_fine_dp_nv(rtuold,nrtvar,1,nrtvar,ilevel)
     if(simple_boundary)call rt_make_boundary_hydro(ilevel)
 
     t_left = t_left - dtnew(ilevel)

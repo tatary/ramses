@@ -5,6 +5,7 @@ hydro=.true.
 rt=.true.
 nrestart=0
 nremap=1
+balance_per_level=.true.   ! level ごとに独立した domain decomposition (既定 .false. = 従来通り)
 nsubcycle=1,2,2,2,2,2,2,2,2,2
 ncontrol=1
 verbose=.false.

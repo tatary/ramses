@@ -84,7 +84,7 @@ module amr_commons
 
   ! Hilbert key
   real(qdp),allocatable,dimension(:)::hilbert_key
-  real(qdp),allocatable,dimension(:)::bound_key,bound_key2
+  real(qdp),allocatable,dimension(:,:)::bound_key,bound_key2  ! (0:ndomain,1:nlevelmax): domain boundaries per grid level
   real(qdp)                         ::order_all_min,order_all_max
 
   ! Recursive bisection
@@ -169,6 +169,18 @@ module amr_commons
     integer(kind=i8b),allocatable,dimension(:,:):: f8
   end type communicator_varpart
 #endif
+
+  ! State of the non-blocking reverse exchanges
+  ! (see make_virtual_reverse_dp_start/end in virtual_boundaries.f90)
+  integer,parameter::nasync=2
+  type async_exchange
+     logical::active=.false.
+     integer::ilevel=0,iv1=0,iv2=0
+     integer::countsend=0,countrecv=0
+     integer,allocatable,dimension(:)::reqsend,reqrecv,roff
+     real(kind=8),allocatable,dimension(:)::sendbuf,recvbuf
+  end type async_exchange
+  type(async_exchange),dimension(1:nasync)::async_rev
 
   ! Active grid, emission and reception communicators
   type(communicator),allocatable,dimension(:)  ::active               ! 1D (1:nlevelmax) array => leave as is

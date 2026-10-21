@@ -45,7 +45,7 @@ subroutine authorize_fine(ilevel)
   ! Array flag1 for virtual cells is used as temporary work space.
   ! -------------------------------------------------------------------
   integer::ismooth,ibound,ngrid,i,ncache,iskip,igrid,ind,icpu
-  integer::ix,iy,iz,idim,nx_loc,isub
+  integer::ix,iy,iz,idim,nx_loc,isub,jlevel
   integer,dimension(1:3)::n_nbor
   integer,dimension(1:nvector),save::ind_grid,ind_cell
   integer,dimension(1:nvector,0:twondim),save::igridn
@@ -147,13 +147,18 @@ subroutine authorize_fine(ilevel)
         if (ordering /= 'bisection') then
           ! Compute minimum and maximum ordering key
           call cmp_minmaxorder(xx,order_min,order_max,dx_loc,ngrid)
-          ! Determine if cell is authorized
-          do isub=1,overload
-            do i=1,ngrid
-              if(    order_max(i)>bound_key(myid-1+(isub-1)*ncpu).and.&
-              & order_min(i)<bound_key(myid  +(isub-1)*ncpu) )then
-                flag2(ind_cell(i))=1
-              endif
+          ! Determine if cell is authorized: a virtual cell at level ilevel
+          ! must be kept if any of its descendants (grids at levels
+          ! ilevel+1..nlevelmax) can belong to myid, i.e. if its key range
+          ! intersects the myid domain of any finer level.
+          do jlevel=ilevel+1,nlevelmax
+            do isub=1,overload
+              do i=1,ngrid
+                if(    order_max(i)>bound_key(myid-1+(isub-1)*ncpu,jlevel).and.&
+                & order_min(i)<bound_key(myid  +(isub-1)*ncpu,jlevel) )then
+                  flag2(ind_cell(i))=1
+                endif
+              end do
             end do
           end do
         else ! recursive bisection method
@@ -175,12 +180,14 @@ subroutine authorize_fine(ilevel)
         ! For load balancing operations
         if(balance)then
           if(ordering/='bisection') then
-            do isub=1,overload
-              do i=1,ngrid
-                if(    order_max(i)>bound_key2(myid-1+(isub-1)*ncpu).and.&
-                & order_min(i)<bound_key2(myid  +(isub-1)*ncpu) )then
-                  flag2(ind_cell(i))=1
-                endif
+            do jlevel=ilevel+1,nlevelmax
+              do isub=1,overload
+                do i=1,ngrid
+                  if(    order_max(i)>bound_key2(myid-1+(isub-1)*ncpu,jlevel).and.&
+                  & order_min(i)<bound_key2(myid  +(isub-1)*ncpu,jlevel) )then
+                    flag2(ind_cell(i))=1
+                  endif
+                end do
               end do
             end do
           else
@@ -1774,3 +1781,361 @@ end subroutine build_comm
 !################################################################
 !################################################################
 !################################################################
+!################################################################
+!################################################################
+!################################################################
+!################################################################
+subroutine make_virtual_fine_dp_nv(xx,nvtot,iv1,iv2,ilevel)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::nvtot,iv1,iv2,ilevel
+  real(dp),dimension(1:ncoarse+ngridmax*twotondim,1:nvtot)::xx
+  ! -------------------------------------------------------------------
+  ! Same as make_virtual_fine_dp (owner -> virtual copies) for the
+  ! variables iv1..iv2 of the 2D array xx, sent in ONE message per
+  ! neighbouring cpu instead of one message per variable.
+  ! Buffer layout for a (cpu,level) block: ((ivar,ind),igrid) with igrid
+  ! fastest, identical on both sides.
+  ! -------------------------------------------------------------------
+#ifndef WITHOUTMPI
+  integer::icpu,i,j,iv,ncache,iskip,nv,ibuf,info
+  integer,parameter::tag=103
+  integer::countsend,countrecv,nsend,nrecv
+  integer,dimension(ncpu)::reqsend,reqrecv
+  integer,dimension(MPI_STATUS_SIZE,ncpu)::statuses
+  integer,dimension(ncpu)::soff,roff
+  real(kind=8),allocatable,dimension(:)::sendbuf,recvbuf
+#ifdef LIGHT_MPI_COMM
+  integer::idx,offset,ngrids
+#endif
+#endif
+
+  if(numbtot(1,ilevel)==0)return
+  if(iv2<iv1)return
+  if(verbose)write(*,111)ilevel,iv1,iv2
+
+#ifndef WITHOUTMPI
+  nv=iv2-iv1+1
+
+  ! Post receives (one block per cpu owning my virtual grids)
+  nrecv=0
+  do icpu=1,ncpu
+     roff(icpu)=nrecv
+     nrecv=nrecv+reception(icpu,ilevel)%ngrid*twotondim*nv
+  end do
+  allocate(recvbuf(1:max(nrecv,1)))
+  countrecv=0
+  do icpu=1,ncpu
+     ncache=reception(icpu,ilevel)%ngrid
+     if(ncache>0)then
+        countrecv=countrecv+1
+        call MPI_IRECV(recvbuf(roff(icpu)+1),ncache*twotondim*nv, &
+             & MPI_DOUBLE_PRECISION,icpu-1,tag,MPI_COMM_WORLD,reqrecv(countrecv),info)
+     end if
+  end do
+
+  ! Gather and send (one block per cpu holding my grids as virtual)
+#ifdef LIGHT_MPI_COMM
+  nsend=emission(ilevel)%ngrids_tot*twotondim*nv
+  allocate(sendbuf(1:max(nsend,1)))
+  offset=0; ibuf=0; countsend=0
+  do idx=1,emission(ilevel)%nactive
+     ngrids=emission(ilevel)%ngrids(idx)
+     do iv=iv1,iv2
+        do j=1,twotondim
+           iskip=ncoarse+(j-1)*ngridmax
+           do i=1,ngrids
+              sendbuf(ibuf+i)=xx(emission(ilevel)%igrid(offset+i)+iskip,iv)
+           end do
+           ibuf=ibuf+ngrids
+        end do
+     end do
+     countsend=countsend+1
+     call MPI_ISEND(sendbuf(ibuf-ngrids*twotondim*nv+1),ngrids*twotondim*nv, &
+          & MPI_DOUBLE_PRECISION,emission(ilevel)%cpuid(idx)-1,tag,MPI_COMM_WORLD,reqsend(countsend),info)
+     offset=offset+ngrids
+  end do
+#else
+  nsend=0
+  do icpu=1,ncpu
+     soff(icpu)=nsend
+     nsend=nsend+emission(icpu,ilevel)%ngrid*twotondim*nv
+  end do
+  allocate(sendbuf(1:max(nsend,1)))
+  countsend=0
+  do icpu=1,ncpu
+     ncache=emission(icpu,ilevel)%ngrid
+     if(ncache>0)then
+        ibuf=soff(icpu)
+        do iv=iv1,iv2
+           do j=1,twotondim
+              iskip=ncoarse+(j-1)*ngridmax
+              do i=1,ncache
+                 sendbuf(ibuf+i)=xx(emission(icpu,ilevel)%igrid(i)+iskip,iv)
+              end do
+              ibuf=ibuf+ncache
+           end do
+        end do
+        countsend=countsend+1
+        call MPI_ISEND(sendbuf(soff(icpu)+1),ncache*twotondim*nv, &
+             & MPI_DOUBLE_PRECISION,icpu-1,tag,MPI_COMM_WORLD,reqsend(countsend),info)
+     end if
+  end do
+#endif
+
+  ! Wait for receives and scatter into the virtual grids
+  call MPI_WAITALL(countrecv,reqrecv,statuses,info)
+  do icpu=1,ncpu
+     ncache=reception(icpu,ilevel)%ngrid
+     if(ncache>0)then
+        ibuf=roff(icpu)
+        do iv=iv1,iv2
+           do j=1,twotondim
+              iskip=ncoarse+(j-1)*ngridmax
+              do i=1,ncache
+#ifdef LIGHT_MPI_COMM
+                 xx(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,iv)=recvbuf(ibuf+i)
+#else
+                 xx(reception(icpu,ilevel)%igrid(i)+iskip,iv)=recvbuf(ibuf+i)
+#endif
+              end do
+              ibuf=ibuf+ncache
+           end do
+        end do
+     end if
+  end do
+
+  ! Wait for sends
+  call MPI_WAITALL(countsend,reqsend,statuses,info)
+  deallocate(sendbuf,recvbuf)
+#endif
+
+111 format('   Entering make_virtual_fine_dp_nv for level ',I2,' vars ',I3,'-',I3)
+
+end subroutine make_virtual_fine_dp_nv
+!################################################################
+!################################################################
+!################################################################
+!################################################################
+subroutine make_virtual_reverse_dp_nv(xx,nvtot,iv1,iv2,ilevel)
+  use amr_commons
+  implicit none
+  integer::nvtot,iv1,iv2,ilevel
+  real(dp),dimension(1:ncoarse+ngridmax*twotondim,1:nvtot)::xx
+  ! -------------------------------------------------------------------
+  ! Blocking version of the aggregated reverse exchange (virtual copies
+  ! -> owner, contributions are added): start immediately followed by end.
+  ! -------------------------------------------------------------------
+  call make_virtual_reverse_dp_start(xx,nvtot,iv1,iv2,ilevel,nasync)
+  call make_virtual_reverse_dp_end(xx,nvtot,iv1,iv2,ilevel,nasync)
+end subroutine make_virtual_reverse_dp_nv
+!################################################################
+!################################################################
+!################################################################
+!################################################################
+subroutine make_virtual_reverse_dp_start(xx,nvtot,iv1,iv2,ilevel,ih)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::nvtot,iv1,iv2,ilevel,ih
+  real(dp),dimension(1:ncoarse+ngridmax*twotondim,1:nvtot)::xx
+  ! -------------------------------------------------------------------
+  ! First half of a non-blocking reverse exchange (virtual copies ->
+  ! owner) for the variables iv1..iv2 of xx, one message per cpu:
+  ! the values of the virtual cells are packed and sent, the receives
+  ! are posted. The data are added into the owner cells by
+  ! make_virtual_reverse_dp_end. Between start and end, xx must not be
+  ! modified in the virtual cells of level ilevel, and the owner cells
+  ! may be modified freely (the received contributions are added at end).
+  ! ih selects one of the nasync slots (1 is used for unew, 2 for rtunew).
+  ! -------------------------------------------------------------------
+#ifndef WITHOUTMPI
+  integer::icpu,i,j,iv,ncache,iskip,nv,ibuf,info,tag
+  integer::countsend,countrecv,nsend,nrecv
+  integer,dimension(ncpu)::soff
+#ifdef LIGHT_MPI_COMM
+  integer::idx,offset,ngrids
+#endif
+#endif
+
+  if(ih<1.or.ih>nasync)then
+     write(*,*)'make_virtual_reverse_dp_start: invalid slot',ih
+     call clean_stop
+  end if
+  if(async_rev(ih)%active)then
+     write(*,*)'make_virtual_reverse_dp_start: slot',ih,' already active (level', &
+          & async_rev(ih)%ilevel,')'
+     call clean_stop
+  end if
+  if(numbtot(1,ilevel)==0)return
+  if(iv2<iv1)return
+  if(verbose)write(*,111)ilevel,iv1,iv2
+
+#ifndef WITHOUTMPI
+  nv=iv2-iv1+1
+  tag=200+ih
+  async_rev(ih)%active=.true.
+  async_rev(ih)%ilevel=ilevel
+  async_rev(ih)%iv1=iv1
+  async_rev(ih)%iv2=iv2
+  if(.not.allocated(async_rev(ih)%reqsend))allocate(async_rev(ih)%reqsend(1:ncpu))
+  if(.not.allocated(async_rev(ih)%reqrecv))allocate(async_rev(ih)%reqrecv(1:ncpu))
+  if(.not.allocated(async_rev(ih)%roff))allocate(async_rev(ih)%roff(1:ncpu))
+
+  ! Post receives: contributions to my grids held as virtual by icpu
+#ifdef LIGHT_MPI_COMM
+  nrecv=emission(ilevel)%ngrids_tot*twotondim*nv
+  allocate(async_rev(ih)%recvbuf(1:max(nrecv,1)))
+  countrecv=0; ibuf=0
+  do idx=1,emission(ilevel)%nactive
+     ngrids=emission(ilevel)%ngrids(idx)
+     countrecv=countrecv+1
+     call MPI_IRECV(async_rev(ih)%recvbuf(ibuf+1),ngrids*twotondim*nv, &
+          & MPI_DOUBLE_PRECISION,emission(ilevel)%cpuid(idx)-1,tag,MPI_COMM_WORLD, &
+          & async_rev(ih)%reqrecv(countrecv),info)
+     ibuf=ibuf+ngrids*twotondim*nv
+  end do
+#else
+  nrecv=0
+  do icpu=1,ncpu
+     async_rev(ih)%roff(icpu)=nrecv
+     nrecv=nrecv+emission(icpu,ilevel)%ngrid*twotondim*nv
+  end do
+  allocate(async_rev(ih)%recvbuf(1:max(nrecv,1)))
+  countrecv=0
+  do icpu=1,ncpu
+     ncache=emission(icpu,ilevel)%ngrid
+     if(ncache>0)then
+        countrecv=countrecv+1
+        call MPI_IRECV(async_rev(ih)%recvbuf(async_rev(ih)%roff(icpu)+1),ncache*twotondim*nv, &
+             & MPI_DOUBLE_PRECISION,icpu-1,tag,MPI_COMM_WORLD,async_rev(ih)%reqrecv(countrecv),info)
+     end if
+  end do
+#endif
+  async_rev(ih)%countrecv=countrecv
+
+  ! Gather the virtual cells and send them to their owner
+  nsend=0
+  do icpu=1,ncpu
+     soff(icpu)=nsend
+     nsend=nsend+reception(icpu,ilevel)%ngrid*twotondim*nv
+  end do
+  allocate(async_rev(ih)%sendbuf(1:max(nsend,1)))
+  countsend=0
+  do icpu=1,ncpu
+     ncache=reception(icpu,ilevel)%ngrid
+     if(ncache>0)then
+        ibuf=soff(icpu)
+        do iv=iv1,iv2
+           do j=1,twotondim
+              iskip=ncoarse+(j-1)*ngridmax
+              do i=1,ncache
+#ifdef LIGHT_MPI_COMM
+                 async_rev(ih)%sendbuf(ibuf+i)=xx(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,iv)
+#else
+                 async_rev(ih)%sendbuf(ibuf+i)=xx(reception(icpu,ilevel)%igrid(i)+iskip,iv)
+#endif
+              end do
+              ibuf=ibuf+ncache
+           end do
+        end do
+        countsend=countsend+1
+        call MPI_ISEND(async_rev(ih)%sendbuf(soff(icpu)+1),ncache*twotondim*nv, &
+             & MPI_DOUBLE_PRECISION,icpu-1,tag,MPI_COMM_WORLD,async_rev(ih)%reqsend(countsend),info)
+     end if
+  end do
+  async_rev(ih)%countsend=countsend
+#endif
+
+111 format('   Entering make_virtual_reverse_dp_start for level ',I2,' vars ',I3,'-',I3)
+
+end subroutine make_virtual_reverse_dp_start
+!################################################################
+!################################################################
+!################################################################
+!################################################################
+subroutine make_virtual_reverse_dp_end(xx,nvtot,iv1,iv2,ilevel,ih)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::nvtot,iv1,iv2,ilevel,ih
+  real(dp),dimension(1:ncoarse+ngridmax*twotondim,1:nvtot)::xx
+  ! -------------------------------------------------------------------
+  ! Second half of the non-blocking reverse exchange: wait for the
+  ! contributions and add them into the owner cells.
+  ! -------------------------------------------------------------------
+#ifndef WITHOUTMPI
+  integer::icpu,i,j,iv,ncache,iskip,nv,ibuf,info
+  integer,dimension(MPI_STATUS_SIZE,ncpu)::statuses
+#ifdef LIGHT_MPI_COMM
+  integer::idx,offset,ngrids
+#endif
+#endif
+
+  if(ih<1.or.ih>nasync)then
+     write(*,*)'make_virtual_reverse_dp_end: invalid slot',ih
+     call clean_stop
+  end if
+  if(numbtot(1,ilevel)==0)return
+  if(iv2<iv1)return
+  if(.not.async_rev(ih)%active)then
+     write(*,*)'make_virtual_reverse_dp_end: slot',ih,' is not active'
+     call clean_stop
+  end if
+  if(async_rev(ih)%ilevel/=ilevel.or.async_rev(ih)%iv1/=iv1.or.async_rev(ih)%iv2/=iv2)then
+     write(*,*)'make_virtual_reverse_dp_end: mismatch with start',ih,ilevel,iv1,iv2, &
+          & async_rev(ih)%ilevel,async_rev(ih)%iv1,async_rev(ih)%iv2
+     call clean_stop
+  end if
+  if(verbose)write(*,111)ilevel,iv1,iv2
+
+#ifndef WITHOUTMPI
+  nv=iv2-iv1+1
+
+  ! Wait for receives and add contributions into the owner cells
+  call MPI_WAITALL(async_rev(ih)%countrecv,async_rev(ih)%reqrecv,statuses,info)
+#ifdef LIGHT_MPI_COMM
+  offset=0; ibuf=0
+  do idx=1,emission(ilevel)%nactive
+     ngrids=emission(ilevel)%ngrids(idx)
+     do iv=iv1,iv2
+        do j=1,twotondim
+           iskip=ncoarse+(j-1)*ngridmax
+           do i=1,ngrids
+              xx(emission(ilevel)%igrid(offset+i)+iskip,iv)= &
+                   & xx(emission(ilevel)%igrid(offset+i)+iskip,iv)+async_rev(ih)%recvbuf(ibuf+i)
+           end do
+           ibuf=ibuf+ngrids
+        end do
+     end do
+     offset=offset+ngrids
+  end do
+#else
+  do icpu=1,ncpu
+     ncache=emission(icpu,ilevel)%ngrid
+     if(ncache>0)then
+        ibuf=async_rev(ih)%roff(icpu)
+        do iv=iv1,iv2
+           do j=1,twotondim
+              iskip=ncoarse+(j-1)*ngridmax
+              do i=1,ncache
+                 xx(emission(icpu,ilevel)%igrid(i)+iskip,iv)= &
+                      & xx(emission(icpu,ilevel)%igrid(i)+iskip,iv)+async_rev(ih)%recvbuf(ibuf+i)
+              end do
+              ibuf=ibuf+ncache
+           end do
+        end do
+     end if
+  end do
+#endif
+
+  ! Wait for sends and release buffers
+  call MPI_WAITALL(async_rev(ih)%countsend,async_rev(ih)%reqsend,statuses,info)
+  deallocate(async_rev(ih)%sendbuf,async_rev(ih)%recvbuf)
+#endif
+  async_rev(ih)%active=.false.
+
+111 format('   Entering make_virtual_reverse_dp_end for level ',I2,' vars ',I3,'-',I3)
+
+end subroutine make_virtual_reverse_dp_end

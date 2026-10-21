@@ -59,6 +59,10 @@ subroutine dump_all
   if(myid==1)then
     filename=TRIM(filedir)//'info_'//TRIM(nchar)//'.txt'
     call output_info(filename)
+    if(ordering/='bisection')then
+      filename=TRIM(filedir)//'info_levelkeys_'//TRIM(nchar)//'.txt'
+      call output_level_keys(filename)
+    endif
     filename=TRIM(filedir)//'makefile.txt'
     call output_makefile(filename)
     filename=TRIM(filedir)//'patches.txt'
@@ -308,6 +312,10 @@ subroutine dump_restart
   if(myid==1)then
     filename=TRIM(filedir)//'info_restart.txt'
     call output_info(filename)
+    if(ordering/='bisection')then
+      filename=TRIM(filedir)//'info_levelkeys_'//TRIM(nchar)//'.txt'
+      call output_level_keys(filename)
+    endif
     filename=TRIM(filedir)//'makefile.txt'
     call output_makefile(filename)
     filename=TRIM(filedir)//'patches.txt'
@@ -557,7 +565,7 @@ subroutine backup_amr(filename)
     write(ilun)bisec_cpubox_min(1:ncpu,1:ndim)
     write(ilun)bisec_cpubox_max(1:ncpu,1:ndim)
   else
-    write(ilun)bound_key(0:ndomain)
+    write(ilun)bound_key(0:ndomain,1)
   endif
 
   ! Write coarse level
@@ -640,6 +648,11 @@ subroutine backup_amr(filename)
       end if
     end do
   end do
+  ! Per-level cpu boundaries (trailing records, see read_level_bound_key)
+  if(ordering/='bisection')then
+    write(ilun)nlevelmax
+    write(ilun)bound_key(0:ndomain,1:nlevelmax)
+  endif
   close(ilun)
 
   ! Send the token
@@ -670,6 +683,7 @@ subroutine output_info(filename)
   real(dp)::scale
   real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v
   character(LEN=80)::fileloc
+  logical::uniform
 
   if(verbose)write(*,*)'Entering output_info'
 
@@ -731,9 +745,20 @@ subroutine output_info(filename)
     end do
   else
     write(ilun,'("   DOMAIN   ind_min                 ind_max")')
-    do idom=1,ndomain
-      write(ilun,'(I8,1X,E23.15,1X,E23.15)')idom,bound_key(idom-1),bound_key(idom)
-    end do
+    call check_bound_key_uniform(uniform)
+    if(uniform)then
+      do idom=1,ndomain
+        write(ilun,'(I8,1X,E23.15,1X,E23.15)')idom,bound_key(idom-1,1),bound_key(idom,1)
+      end do
+    else
+      ! Per-level decomposition: no single key interval describes a domain.
+      ! Write the full range for every domain so that post-processing tools
+      ! selecting files by Hilbert key read all of them (conservative).
+      ! The true per-level table is in info_levelkeys_XXXXX.txt.
+      do idom=1,ndomain
+        write(ilun,'(I8,1X,E23.15,1X,E23.15)')idom,order_all_min,order_all_max
+      end do
+    end if
   endif
 
   close(ilun)
@@ -973,3 +998,34 @@ subroutine create_output_dirs(filedir)
 
 
 end subroutine create_output_dirs
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine output_level_keys(filename)
+  use amr_commons
+  implicit none
+  character(LEN=80)::filename
+  !----------------------------------------------------------------------
+  ! Write the per-level domain boundaries (Hilbert keys) in a text file.
+  !----------------------------------------------------------------------
+  integer::ilun,ilevel,idom
+  character(LEN=80)::fileloc
+
+  if(verbose)write(*,*)'Entering output_level_keys'
+  ilun=11
+  fileloc=TRIM(filename)
+  open(unit=ilun,file=fileloc,form='formatted')
+  write(ilun,'("ncpu        =",I11)')ncpu
+  write(ilun,'("ndomain     =",I11)')ndomain
+  write(ilun,'("nlevelmax   =",I11)')nlevelmax
+  write(ilun,'("ordering type=",A80)')ordering
+  write(ilun,'("   LEVEL   DOMAIN   ind_min                 ind_max")')
+  do ilevel=1,nlevelmax
+    do idom=1,ndomain
+      write(ilun,'(I8,1X,I8,1X,E23.15,1X,E23.15)')ilevel,idom,bound_key(idom-1,ilevel),bound_key(idom,ilevel)
+    end do
+  end do
+  close(ilun)
+
+end subroutine output_level_keys

@@ -87,6 +87,7 @@ module amr_parameters
   real(dp)::boxlen=1.0D0                   ! Box length along x direction
   character(len=128)::ordering='hilbert'
   logical::cost_weighting=.true.           ! Activate load balancing according to cpu time
+  logical::balance_per_level=.false.      ! Independent domain decomposition (bound_key) for each level
   ! Recursive bisection tree parameters
   integer::nbilevelmax=1                   ! Max steps of bisection partitioning
   integer::nbinodes=3                      ! Max number of internal nodes

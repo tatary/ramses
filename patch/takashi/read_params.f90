@@ -50,7 +50,7 @@ subroutine read_params
   !--------------------------------------------------
   namelist/run_params/clumpfind,cosmo,pic,sink,tracer,lightcone,poisson,hydro,rt,verbose,debug &
   & ,nrestart,ncontrol,nstepmax,nsubcycle,nremap,ordering &
-  & ,bisec_tol,static,overload,cost_weighting,aton,nrestart_quad,restart_remap &
+  & ,bisec_tol,static,overload,cost_weighting,balance_per_level,aton,nrestart_quad,restart_remap &
   & ,static_dm,static_gas,static_stars,convert_birth_times,use_proper_time,remap_pscalar &
   & ,unbind,make_mergertree,stellar,aexp_ini
   namelist/output_params/noutput,foutput,aout,tout &
@@ -179,6 +179,10 @@ subroutine read_params
   rewind(1)
   read(1,NML=run_params)
   rewind(1)
+  if(balance_per_level.and.ordering=='bisection')then
+    if(myid==1)write(*,*)'balance_per_level is not compatible with ordering=bisection'
+    call clean_stop
+  end if
   read(1,NML=output_params)
   rewind(1)
   read(1,NML=amr_params)
