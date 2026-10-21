@@ -57,7 +57,7 @@ scheme='muscl'         ! don't change
 riemann='hllc'         ! reimann solver
 pressure_fix=.true.    ! recommended by Romain for cosmological simulations
 beta_fix=0.5           ! recommended by Romain for cosmological simulations
-modify_pressure_fix_cond=.true.
+pressure_fix_cond=2
 pressure_fix_maxMach=10.0
 /
 

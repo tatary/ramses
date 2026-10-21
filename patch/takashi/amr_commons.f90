@@ -32,6 +32,9 @@ module amr_commons
 
   ! MPI variables
   integer::ncpu,ndomain,myid,overload=1
+#ifdef SOLVERmhd
+  logical::mhd_feedback_active=.false.   ! Set by thermal_feedback when a magnetic loop was injected (Mizuki Ono)
+#endif
 
   ! Friedman model variables
   integer::n_frw

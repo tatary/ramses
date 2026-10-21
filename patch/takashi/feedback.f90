@@ -208,6 +208,16 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   integer::irad
 #endif
   integer ,dimension(1:ncpu,1:IRandNumSize)::allseed
+#ifdef SOLVERmhd
+!------------------------------------------------------------------------
+! Added by Mizuki Ono (2026/06/13)
+!------------------------------------------------------------------------
+  integer::c_loop(8)
+  real(dp)::B_inj_loop,sum_dot_loop
+  integer::S_zminus,S_zplus,S_yminus,S_yplus,S_xminus,S_xplus
+  logical::ok_inject_loop
+  integer::ind_loop
+#endif
 
   ! If necessary, initialize random number generator
   if(localseed(1)==-1)then
@@ -432,6 +442,129 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
       ethermal(j) = (f_esn * ethermal(j) + dE_winds)/vol_loc(j)
       !ethermal(j)=ethermal(j)+mejecta*ESN/vol_loc(j)
       mp(ind_part(j))=mp(ind_part(j))-mejecta
+#ifdef SOLVERmhd
+!------------------------------------------------------------------------
+! Added by Mizuki Ono (2026/06/13)
+!------------------------------------------------------------------------
+         if (ethermal(j) > 0.0D0) then
+            ! Loop injection for magnetic field feedback
+            ok_inject_loop = .false.
+            if (ok(j)) then
+               ok_inject_loop = .true.
+               do ind_loop=1,8
+                  c_loop(ind_loop)=ncoarse+(ind_loop-1)*ngridmax+igrid(j)
+                  if (son(c_loop(ind_loop)) > 0) ok_inject_loop = .false.
+               end do
+            end if
+
+            if (ok_inject_loop) then
+               mhd_feedback_active = .true.
+
+               ! B_inj = sqrt(0.02 * epsilon_SN)
+               ! epsilon_SN is the SN energy density in the NGP cell, which is ethermal(j)
+               B_inj_loop = sqrt(2.0D0 * f_esn_loop * ethermal(j))
+
+               ! Loop 1: Edge z- = (0, 0, -1/2)
+               sum_dot_loop = uold(c_loop(4),6) - uold(c_loop(4),7) - uold(c_loop(2),6) + uold(c_loop(3),7)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_zminus = 1
+               else
+                  S_zminus = -1
+               end if
+               unew(c_loop(3),nvar+1) = unew(c_loop(3),nvar+1) + S_zminus * B_inj_loop
+               unew(c_loop(4),6)      = unew(c_loop(4),6)      + S_zminus * B_inj_loop
+               unew(c_loop(2),nvar+2) = unew(c_loop(2),nvar+2) - S_zminus * B_inj_loop
+               unew(c_loop(4),7)      = unew(c_loop(4),7)      - S_zminus * B_inj_loop
+               unew(c_loop(1),nvar+1) = unew(c_loop(1),nvar+1) - S_zminus * B_inj_loop
+               unew(c_loop(2),6)      = unew(c_loop(2),6)      - S_zminus * B_inj_loop
+               unew(c_loop(1),nvar+2) = unew(c_loop(1),nvar+2) + S_zminus * B_inj_loop
+               unew(c_loop(3),7)      = unew(c_loop(3),7)      + S_zminus * B_inj_loop
+
+               ! Loop 2: Edge z+ = (0, 0, 1/2)
+               sum_dot_loop = uold(c_loop(8),6) - uold(c_loop(8),7) - uold(c_loop(6),6) + uold(c_loop(7),7)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_zplus = 1
+               else
+                  S_zplus = -1
+               end if
+               unew(c_loop(7),nvar+1) = unew(c_loop(7),nvar+1) + S_zplus * B_inj_loop
+               unew(c_loop(8),6)      = unew(c_loop(8),6)      + S_zplus * B_inj_loop
+               unew(c_loop(6),nvar+2) = unew(c_loop(6),nvar+2) - S_zplus * B_inj_loop
+               unew(c_loop(8),7)      = unew(c_loop(8),7)      - S_zplus * B_inj_loop
+               unew(c_loop(5),nvar+1) = unew(c_loop(5),nvar+1) - S_zplus * B_inj_loop
+               unew(c_loop(6),6)      = unew(c_loop(6),6)      - S_zplus * B_inj_loop
+               unew(c_loop(5),nvar+2) = unew(c_loop(5),nvar+2) + S_zplus * B_inj_loop
+               unew(c_loop(7),7)      = unew(c_loop(7),7)      + S_zplus * B_inj_loop
+
+               ! Loop 3: Edge y- = (0, -1/2, 0)
+               sum_dot_loop = uold(c_loop(6),6) - uold(c_loop(6),8) - uold(c_loop(2),6) + uold(c_loop(5),8)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_yminus = 1
+               else
+                  S_yminus = -1
+               end if
+               unew(c_loop(5),nvar+1) = unew(c_loop(5),nvar+1) + S_yminus * B_inj_loop
+               unew(c_loop(6),6)      = unew(c_loop(6),6)      + S_yminus * B_inj_loop
+               unew(c_loop(2),nvar+3) = unew(c_loop(2),nvar+3) - S_yminus * B_inj_loop
+               unew(c_loop(6),8)      = unew(c_loop(6),8)      - S_yminus * B_inj_loop
+               unew(c_loop(1),nvar+1) = unew(c_loop(1),nvar+1) - S_yminus * B_inj_loop
+               unew(c_loop(2),6)      = unew(c_loop(2),6)      - S_yminus * B_inj_loop
+               unew(c_loop(1),nvar+3) = unew(c_loop(1),nvar+3) + S_yminus * B_inj_loop
+               unew(c_loop(5),8)      = unew(c_loop(5),8)      + S_yminus * B_inj_loop
+
+               ! Loop 4: Edge y+ = (0, 1/2, 0)
+               sum_dot_loop = uold(c_loop(8),6) - uold(c_loop(8),8) - uold(c_loop(4),6) + uold(c_loop(7),8)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_yplus = 1
+               else
+                  S_yplus = -1
+               end if
+               unew(c_loop(7),nvar+1) = unew(c_loop(7),nvar+1) + S_yplus * B_inj_loop
+               unew(c_loop(8),6)      = unew(c_loop(8),6)      + S_yplus * B_inj_loop
+               unew(c_loop(4),nvar+3) = unew(c_loop(4),nvar+3) - S_yplus * B_inj_loop
+               unew(c_loop(8),8)      = unew(c_loop(8),8)      - S_yplus * B_inj_loop
+               unew(c_loop(3),nvar+1) = unew(c_loop(3),nvar+1) - S_yplus * B_inj_loop
+               unew(c_loop(4),6)      = unew(c_loop(4),6)      - S_yplus * B_inj_loop
+               unew(c_loop(3),nvar+3) = unew(c_loop(3),nvar+3) + S_yplus * B_inj_loop
+               unew(c_loop(7),8)      = unew(c_loop(7),8)      + S_yplus * B_inj_loop
+
+               ! Loop 5: Edge x- = (-1/2, 0, 0)
+               sum_dot_loop = uold(c_loop(7),7) - uold(c_loop(7),8) - uold(c_loop(3),7) + uold(c_loop(5),8)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_xminus = 1
+               else
+                  S_xminus = -1
+               end if
+               unew(c_loop(5),nvar+2) = unew(c_loop(5),nvar+2) + S_xminus * B_inj_loop
+               unew(c_loop(7),7)      = unew(c_loop(7),7)      + S_xminus * B_inj_loop
+               unew(c_loop(3),nvar+3) = unew(c_loop(3),nvar+3) - S_xminus * B_inj_loop
+               unew(c_loop(7),8)      = unew(c_loop(7),8)      - S_xminus * B_inj_loop
+               unew(c_loop(1),nvar+2) = unew(c_loop(1),nvar+2) - S_xminus * B_inj_loop
+               unew(c_loop(3),7)      = unew(c_loop(3),7)      - S_xminus * B_inj_loop
+               unew(c_loop(1),nvar+3) = unew(c_loop(1),nvar+3) + S_xminus * B_inj_loop
+               unew(c_loop(5),8)      = unew(c_loop(5),8)      + S_xminus * B_inj_loop
+
+               ! Loop 6: Edge x+ = (1/2, 0, 0)
+               sum_dot_loop = uold(c_loop(8),7) - uold(c_loop(8),8) - uold(c_loop(4),7) + uold(c_loop(6),8)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_xplus = 1
+               else
+                  S_xplus = -1
+               end if
+               unew(c_loop(6),nvar+2) = unew(c_loop(6),nvar+2) + S_xplus * B_inj_loop
+               unew(c_loop(8),7)      = unew(c_loop(8),7)      + S_xplus * B_inj_loop
+               unew(c_loop(4),nvar+3) = unew(c_loop(4),nvar+3) - S_xplus * B_inj_loop
+               unew(c_loop(8),8)      = unew(c_loop(8),8)      - S_xplus * B_inj_loop
+               unew(c_loop(2),nvar+2) = unew(c_loop(2),nvar+2) - S_xplus * B_inj_loop
+               unew(c_loop(4),7)      = unew(c_loop(4),7)      - S_xplus * B_inj_loop
+               unew(c_loop(2),nvar+3) = unew(c_loop(2),nvar+3) + S_xplus * B_inj_loop
+               unew(c_loop(6),8)      = unew(c_loop(6),8)      + S_xplus * B_inj_loop
+
+               ! Convert 1% SN energy to magnetic loop energy
+               ethermal(j) = ethermal(j) * 0.99D0
+            end if
+         end if
+#endif
       if(sf_log_properties .and. (ethermal(j) .gt. (1.01*dE_winds/vol_loc(j)))) then
         write(ilun,'(I10)',advance='no') 1
         write(ilun,'(2I10,E24.12)',advance='no') idp(ind_part(j)),ilevel,mp(ind_part(j))

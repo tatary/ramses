@@ -156,7 +156,7 @@ endif
 LIBS = $(LIBMPI) $(LIBS_GRACKLE) $(LIBS_TURB)
 #############################################################################
 # Sources directories are searched in this exact order
-VPATH = $(DICE_MHD):$(DICE):$(PATCH):../$(SOLVER):../aton:
+VPATH = $(DICE_MHD):$(DICE):$(PATCH)/$(SOLVER):$(PATCH):../$(SOLVER):../aton:
 ifeq ($(RT),1)
    VPATH += ../rt:
 endif

@@ -21,8 +21,9 @@ INIT_STELLAR_MASS = 1
 # define stellar population mass separately from the initial stellar mass
 STELLAR_POPULATION_MASS = 1
 # Patch
-#DICE =../patch/takashi/to_dice
-#DICE =
+#DICE_MHD =../patch/takashi/to_dice/mhd
+DICE_MHD =
+DICE =../patch/takashi/to_dice
 PATCH =../patch/takashi
 # Use RT? 1=Yes, 0=No
 RT = 1
@@ -199,7 +200,7 @@ endif
 LIBS = $(LIBMPI) $(LIBS_GRACKLE) $(LIBS_TURB)
 #############################################################################
 # Sources directories are searched in this exact order
-VPATH = $(DICE):$(PATCH):../$(SOLVER):../aton:
+VPATH = $(DICE):$(PATCH)/$(SOLVER):$(PATCH):../$(SOLVER):../aton:
 ifeq ($(RT),1)
    VPATH += ../rt:
 endif

@@ -660,7 +660,10 @@ subroutine init_uold(ilevel)
   ! the hydro scheme. unew is set to zero in virtual boundaries.
   !--------------------------------------------------------------------------
   integer::i,ivar,ind,icpu,iskip,idim
-  real(dp)::u,e
+  real(dp)::u,ek
+#ifdef SOLVERmhd
+  real(dp)::b,eb
+#endif
   real(dp)::scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2
 
   call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
@@ -686,6 +689,14 @@ subroutine init_uold(ilevel)
       end do
     end do
   end do
+#ifdef SOLVERmhd
+  ! Initialize magnetic fields before energy calculation to ensure
+  ! magnetic energy (eb) is correctly available.
+  ! set constant magnetic field
+  CALL mag_constant(ilevel)
+  ! toroidal field
+  CALL mag_compute(ilevel)
+#endif
   ! Set cell averaged kinetic energy
   do ind=1,twotondim
     iskip=ncoarse+(ind-1)*ngridmax
@@ -705,22 +716,26 @@ subroutine init_uold(ilevel)
           uold(active(ilevel)%igrid(i)+iskip,ivar_refine) = 1.0*uold(active(ilevel)%igrid(i)+iskip,1)
         endif
       endif
-      e = 0d0
+      ek = 0d0
       do idim=1,ndim
-        e = e+0.5*uold(active(ilevel)%igrid(i)+iskip,idim+1)**2/uold(active(ilevel)%igrid(i)+iskip,1)
+        ek = ek+0.5*uold(active(ilevel)%igrid(i)+iskip,idim+1)**2/uold(active(ilevel)%igrid(i)+iskip,1)
       enddo
-      uold(active(ilevel)%igrid(i)+iskip,ndim+2) = uold(active(ilevel)%igrid(i)+iskip,ndim+2)+e
+#ifdef SOLVERmhd
+      ! Cell-centered field from the left and right face values.
+      eb = 0d0
+      do idim=1,3
+        b = 0.5d0*(uold(active(ilevel)%igrid(i)+iskip,idim+5) &
+             +uold(active(ilevel)%igrid(i)+iskip,idim+nvar))
+        eb = eb+0.5d0*b**2
+      enddo
+      uold(active(ilevel)%igrid(i)+iskip,ndim+2) = uold(active(ilevel)%igrid(i)+iskip,ndim+2)+ek+eb
+#else
+      uold(active(ilevel)%igrid(i)+iskip,ndim+2) = uold(active(ilevel)%igrid(i)+iskip,ndim+2)+ek
+#endif
     end do
   end do
 
-#ifdef SOLVERmhd
-  ! set constant magnetic field
-  CALL mag_constant(ilevel)
-  ! toroidal field
-  CALL mag_compute(ilevel)
-#endif
-
-  ! Set uold to 0 for virtual boundary cells
+ ! Set uold to 0 for virtual boundary cells
   do icpu=1,ncpu
     do ind=1,twotondim
       iskip=ncoarse+(ind-1)*ngridmax
