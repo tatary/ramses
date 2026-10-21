@@ -70,7 +70,7 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
 - 分割: `load_balance.f90` (`cmp_new_cpu_map`, `cmp_new_bound_key_per_level`,
   `cmp_cpumap(x,c,nn,ilevel)`, `cmp_cpumap_leaf`), `virtual_boundaries.f90`
   (`authorize_fine`, `build_comm`, 通信ルーチン), `refine_utils.f90` (`make_grid_fine`)。
-- level ごとの分割の設計・検証結果: `patch/takashi/level_domain_decomposition.md`。
+- level ごとの分割の設計・検証結果: `patch/takashi/docs/level_domain_decomposition.md`。
 - 通信: `make_virtual_fine_dp[_nv]` (owner → ghost), `make_virtual_reverse_dp[_nv]`
   (ghost → owner, 加算), `make_virtual_reverse_dp_start/end` (非同期)。
   reverse の start/end の間で level ilevel の仮想セルを書き換えてはいけない。
@@ -79,5 +79,5 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
 ## 作業の進め方
 
 - 物理結果を変えない変更 (通信順序の入れ替え等) は出力の bit 一致で確認する。
-- 大きな変更は設計メモを `patch/takashi/*.md` に残す (日本語でよい)。
+- 大きな変更は設計メモを `patch/takashi/docs/` に残す (日本語でよい)。やり残しは `patch/takashi/TODO.md` に集約する。
 - commit メッセージ・PR は日本語でも英語でも可。commit は頼まれたときだけ。

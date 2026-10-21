@@ -33,7 +33,7 @@
 
 ## 2. level ごとの domain decomposition (balance_per_level) の改善案
 
-設計と検証結果は `level_domain_decomposition.md`。
+設計と検証結果は `docs/level_domain_decomposition.md`。
 
 - **ghost oct の増加を抑える重み付け** (優先度高):
   level `l` の分割を決めるコストに、細かい level `m>l` のコストの一部 (例: 係数 α ×
@@ -79,4 +79,4 @@
   不要なものは削除して状態をはっきりさせたい。
 - 今回追加したファイル (要 `git add`): `load_balance.f90, refine_utils.f90,
   sink_particle.f90, flag_formation_sites.f90, init_tracer.f90,
-  level_domain_decomposition.md, TODO.md, tests/`。
+  docs/level_domain_decomposition.md, TODO.md, tests/` (2026-10-21 commit 済み)。
