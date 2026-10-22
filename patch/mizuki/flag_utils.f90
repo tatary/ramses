@@ -457,9 +457,9 @@ subroutine userflag_fine(ilevel)
                         if (nstar < nvector) then
                            nstar = nstar + 1
                            ind_part_star(nstar) = ipart
-                           father_star(nstar) = father(igrid_fine)
                            icell_parent = (father(igrid_fine) - ncoarse - 1) / ngridmax + 1
                            ind_grid_star(nstar) = father(igrid_fine) - ncoarse - (icell_parent - 1) * ngridmax
+                           father_star(nstar) = father(ind_grid_star(nstar))
                         endif
                         exit
                      endif
