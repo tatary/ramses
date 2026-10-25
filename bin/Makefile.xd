@@ -106,7 +106,8 @@ ifeq ($(COMPILER),GNU)
       F90 = gfortran
       FFLAGS += -DWITHOUTMPI
    endif
-   F90 += -ffree-line-length-none -fimplicit-none
+   F90 += -ffree-line-length-none -fimplicit-none -ffpe-summary=none
+   # F90 += -ffree-line-length-none -fimplicit-none
    FC += -ffree-line-length-none -fimplicit-none
    ifeq ($(DEBUG),1)
       F90 += -g -O0 -fbacktrace -fbounds-check -Wuninitialized -Wall
@@ -154,7 +155,8 @@ ifeq ($(COMPILER),XD-GNU)
    FFLAGS = -cpp $(DEFINES)
    F90 = ftn
    FC = ftn
-   F90 += -fallow-argument-mismatch -ffree-line-length-none -fimplicit-none
+   F90 += -fallow-argument-mismatch -ffree-line-length-none -fimplicit-none -ffpe-summary=none
+   # F90 += -fallow-argument-mismatch -ffree-line-length-none -fimplicit-none
    FC += -fallow-argument-mismatch -ffree-line-length-none -fimplicit-none
    ifeq ($(DEBUG),1)
       F90 += -g -O0 -fbacktrace -fbounds-check -Wuninitialized -Wall

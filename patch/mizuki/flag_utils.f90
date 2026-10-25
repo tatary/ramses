@@ -291,7 +291,7 @@ subroutine userflag_fine(ilevel)
   ! some user-defined physical criteria at the level ilevel.
   ! -------------------------------------------------------------------
   integer::i,ncache,nok,ix,iy,iz,iskip
-  integer::igrid,ind,idim,ngrid,ipart,next_part,ig,nstar,cur_igrid,cur_ipart,nok_star,ig_fine,igrid_fine,icell_parent
+  integer::igrid,ind,idim,ngrid,ipart,next_part,ig,nstar,cur_igrid,cur_ipart,nok_star,ig_fine,igrid_fine,icell_parent,icell_host,ind_cell_host
   integer::nx_loc
   integer,dimension(1:nvector),save::ind_grid,ind_cell
   integer,dimension(1:nvector),save::ind_grid_star,ind_cell_star,ind_part_star,father_star
@@ -530,7 +530,11 @@ subroutine userflag_fine(ilevel)
                   end if
                end do
                do ix=1,twotondim
-                  ind_grid_nbor(twotondim+ix)=son(nbors_father_cells(i,ind_grid_nbor(ix)))
+                  if (nbors_father_cells(i,ind_grid_nbor(ix)) > 0) then
+                     ind_grid_nbor(twotondim+ix)=son(nbors_father_cells(i,ind_grid_nbor(ix)))
+                  else
+                     ind_grid_nbor(twotondim+ix)=0
+                  end if
                   if (ind_grid_nbor(twotondim+ix) > 0) then
                      ind_cell_nbor(twotondim+ix) = ncoarse + (ind_cell_nbor(ix) - 1) * ngridmax + ind_grid_nbor(twotondim+ix)
                      if (flag1(ind_cell_nbor(twotondim+ix)) == 0) then
@@ -540,6 +544,22 @@ subroutine userflag_fine(ilevel)
                      end if
                   end if
                end do
+
+               ! Ensure the star particle host cell in cur_igrid is always flagged
+               do idim=1,ndim
+                  id_loc(idim)=int(x_part(idim))
+                  icd_loc(idim)=id_loc(idim)-2*(id_loc(idim)/2)
+               end do
+               icell_host = 1
+               do idim=1,ndim
+                  icell_host = icell_host + icd_loc(idim)*2**(idim-1)
+               end do
+               ind_cell_host = ncoarse + (icell_host - 1) * ngridmax + cur_igrid
+               if (flag1(ind_cell_host) == 0) then
+                  flag1(ind_cell_host) = 1
+                  nflag = nflag + 1
+                  nok_star = nok_star + 1
+               end if
                
                ! if (nok_star > 0) then
                !    write(*,*) 'DEBUG_STAR_REFINE: Time=', t, &

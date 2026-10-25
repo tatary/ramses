@@ -106,6 +106,7 @@ module amr_parameters
   ! Output parameters
   integer::iout=1                ! Increment for output times
   integer::ifout=1               ! Increment for output files
+  integer::ifout_stars_log=-1    ! Last output number for which stars_*.out was (re)created this session
   integer::noutput=0             ! Total number of predefined outputs
   integer::foutput=1000000       ! Frequency of outputs
   logical::gadget_output=.false. ! Output in gadget format

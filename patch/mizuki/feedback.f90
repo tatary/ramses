@@ -39,7 +39,7 @@ subroutine thermal_feedback(ilevel)
   logical::file_exist
   integer,parameter::tag=1120
 
-  if(sf_log_properties) then
+  if(sf_log_properties.and.ifout.gt.1) then
      call title(ifout-1,nchar)
      if(IOGROUPSIZEREP>0) then
         call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
@@ -63,8 +63,8 @@ subroutine thermal_feedback(ilevel)
 #endif
 
      inquire(file=fileloc,exist=file_exist)
-     if(.not.file_exist) then
-        open(ilun, file=fileloc, form='formatted')
+     if((.not.file_exist).or.(ifout-1.ne.ifout_stars_log)) then
+        open(ilun, file=fileloc, status='replace', form='formatted')
         write(ilun,'(A24)',advance='no') '# event id  ilevel  mp  '
         do idim=1,ndim
            write(ilun,'(A2,I1,A2)',advance='no') 'xp',idim,'  '
@@ -81,6 +81,7 @@ subroutine thermal_feedback(ilevel)
         enddo
         write(ilun,'(A5)',advance='no') 'tag  '
         write(ilun,'(A1)') ' '
+        ifout_stars_log = ifout-1
      else
         open(ilun, file=fileloc, status="old", position="append", action="write", form='formatted')
      endif
@@ -215,6 +216,11 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   real(dp)::B_inj_loop,sum_dot_loop
   integer::S_zminus,S_zplus,S_yminus,S_yplus,S_xminus,S_xplus
   integer::ind_loop
+  real(dp),dimension(1:ndim)::dd_loop
+  integer,dimension(1:ndim)::id_loop,ig_loop,igg_loop,igd_loop,icg_loop,icd_loop
+  integer,dimension(1:twotondim)::kg_loop,icell_loop,igrid_loop
+  integer::ix_loop,iy_loop,ind_father_loop
+  logical::ok_loop
 #endif
 
   ! If necessary, initialize random number generator
@@ -454,9 +460,68 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                ! epsilon_SN is the SN energy density in the NGP cell, which is ethermal(j)
                B_inj_loop = sqrt(2.0D0 * f_esn_loop * (ethermal(j)-dE_winds/vol_loc(j)))
 
-               do ind_loop=1,8
-                  c_loop(ind_loop)=ncoarse+(ind_loop-1)*ngridmax+igrid(j)
+               ! Find 2x2x2 cell cube around the star particle across neighbor grids
+               do idim = 1, ndim
+                  dd_loop(idim) = x(j,idim) + 0.5D0
+                  id_loop(idim) = int(dd_loop(idim))
+                  ig_loop(idim) = id_loop(idim) - 1
+                  igg_loop(idim) = ig_loop(idim) / 2
+                  igd_loop(idim) = id_loop(idim) / 2
+                  icg_loop(idim) = ig_loop(idim) - 2 * igg_loop(idim)
+                  icd_loop(idim) = id_loop(idim) - 2 * igd_loop(idim)
                end do
+
+               do ix_loop = 1, twotondim
+                  iy_loop = ix_loop - 1
+                  kg_loop(ix_loop) = 1
+                  icell_loop(ix_loop) = 1
+                  if (mod(iy_loop,2) == 0) then
+                     kg_loop(ix_loop) = kg_loop(ix_loop) + igg_loop(1)
+                     icell_loop(ix_loop) = icell_loop(ix_loop) + icg_loop(1)
+                  else
+                     kg_loop(ix_loop) = kg_loop(ix_loop) + igd_loop(1)
+                     icell_loop(ix_loop) = icell_loop(ix_loop) + icd_loop(1)
+                  end if
+                  if (ndim > 1) then
+                     if (mod(iy_loop/2,2) == 0) then
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 3 * igg_loop(2)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 2 * icg_loop(2)
+                     else
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 3 * igd_loop(2)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 2 * icd_loop(2)
+                     end if
+                  end if
+                  if (ndim > 2) then
+                     if (mod(iy_loop/4,2) == 0) then
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 9 * igg_loop(3)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 4 * icg_loop(3)
+                     else
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 9 * igd_loop(3)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 4 * icd_loop(3)
+                     end if
+                  end if
+               end do
+
+               ok_loop = .true.
+               do ix_loop = 1, twotondim
+                  ind_father_loop = nbors_father_cells(ind_grid_part(j), kg_loop(ix_loop))
+                  if (ind_father_loop > 0) then
+                     igrid_loop(ix_loop) = son(ind_father_loop)
+                     if (igrid_loop(ix_loop) > 0) then
+                        c_loop(ix_loop) = ncoarse + (icell_loop(ix_loop) - 1) * ngridmax + igrid_loop(ix_loop)
+                     else
+                        ok_loop = .false.
+                     end if
+                  else
+                     ok_loop = .false.
+                  end if
+               end do
+
+               if (.not. ok_loop) then
+                  ! Warning: neighbor cells are not properly refined at this level
+                  write(*,*) 'WARNING: Loop B injection skipped - unrefined neighbor cell at ilevel=', ilevel, &
+                             ' StarID=', idp(ind_part(j)), ' myid=', myid
+               else
 
                ! Loop 1: Edge z- = (0, 0, -1/2)
                sum_dot_loop = uold(c_loop(4),6) - uold(c_loop(4),7) - uold(c_loop(2),6) + uold(c_loop(3),7)
@@ -556,6 +621,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 
                ! ethermal(j) = ethermal(j) * (1-f_esn_loop)
                write(*,*) 'FEEDBACK B = ', B_inj_loop * scale_B_muG, ' muG  StarID = ', idp(ind_part(j))
+               end if
             end if
          end if
 #endif
