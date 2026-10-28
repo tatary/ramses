@@ -745,8 +745,10 @@ subroutine cmp_new_bound_key_per_level
   ! Boundaries are placed at the maximum key of the father cell of an
   ! oct, so that the ownership of an oct (decided from the key of its
   ! father cell centre) is never ambiguous.
-  ! Levels below levelmin take the decomposition of levelmin and
-  ! levels without any oct take the decomposition of the coarser level.
+  ! With balance_tolerance>0 the boundaries of a level are moved, within
+  ! the allowed imbalance, towards those of the next finer level (nested
+  ! decompositions, fewer ghost octs); levels below balance_level_min
+  ! copy the decomposition of that level.
   ! Work space: hilbert_key (keys), flag1 (cost), flag2 (sort index).
   !---------------------------------------------------------------------
   integer::igrid,ncache,ngrid,ngrid_loc,ngrid_lev
@@ -766,13 +768,12 @@ subroutine cmp_new_bound_key_per_level
   integer,dimension(1:overload,1:nlevelmax)::ngrid_sub
   integer,dimension(1:nlevelmax)::ngrid_off
   integer(kind=8)::wflag
-  real(qdp),dimension(0:ndomain,1:nlevelmax)::bound_key_loc
+  real(qdp),dimension(0:ndomain)::bkey_loc
+  real(kind=8),dimension(0:ndomain)::bex,bex_tot,klo,khi,klo_tot,khi_tot
+  real(kind=8)::dom_cost,wtol,tol,bnew
   integer,dimension(1:MAXLEVEL),save::niter_cost
   logical,dimension(1:nlevelmax)::has_cost
-  integer::ilev_ref
-#ifdef QUADHILBERT
-  real(kind=8),dimension(0:ndomain,1:nlevelmax)::bigdbl,bigtmp
-#endif
+  integer::j,lmax_pop,lmin_bal,lref
 
   ! Local constants
   nx_loc=icoarse_max-icoarse_min+1
@@ -866,22 +867,59 @@ subroutine cmp_new_bound_key_per_level
   cost_old=cost_loc
 #endif
 
-  bound_key_loc=0.0d0; bound_key2=0.0d0
+  ! Finest populated level, lowest level balanced on its own, tolerance
   has_cost=.false.
+  lmax_pop=0
   do ilevel=1,nlevelmax
+     if(sum(cost_old(1:ndomain,ilevel))>0d0)then
+        has_cost(ilevel)=.true.
+        lmax_pop=ilevel
+     end if
+  end do
+  lmin_bal=min(max(balance_level_min,levelmin),nlevelmax)
+  tol=min(max(balance_tolerance,0d0),0.9d0)   ! max relative deviation of a domain cost
+
+  !----------------------------------------------------------------
+  ! Levels are processed from the finest populated one downwards.
+  ! The finest level is balanced exactly. For a coarser level each
+  ! boundary may be placed anywhere in the window of octs whose
+  ! cumulative cost is within +-tol/2*(cost/ndomain) of the exact
+  ! quantile (so a domain cost deviates by at most +-tol from the
+  ! mean); inside that window the position closest to the
+  ! boundary of the reference (next finer balanced) level is taken,
+  ! which nests the decompositions and reduces the ghost octs.
+  ! Levels below lmin_bal copy the decomposition of lmin_bal, empty
+  ! levels copy the finer level, levels above the finest populated
+  ! level copy it.
+  !----------------------------------------------------------------
+  bound_key2=0.0d0
+  lref=0
+  do ilevel=lmax_pop,1,-1
+     if(.not.has_cost(ilevel))then
+        bound_key2(0:ndomain,ilevel)=bound_key2(0:ndomain,ilevel+1)
+        cycle
+     end if
+     if(ilevel<lmin_bal.and.lref>0)then
+        bound_key2(0:ndomain,ilevel)=bound_key2(0:ndomain,lref)
+        cycle
+     end if
+
      incost_tot = 0D0
      incost_old(0) = 0D0
      do idom = 1,ndomain
         incost_tot = incost_tot + cost_old(idom,ilevel)
         incost_old(idom) = incost_tot
      end do
-     if(incost_tot<=0d0)cycle
-     has_cost(ilevel)=.true.
-     incost_new(0) = 0D0
-     do idom = 1,ndomain
-        incost_new(idom) = incost_new(idom-1) + incost_tot/dble(ndomain) ! Exact load balancing
+     dom_cost=incost_tot/dble(ndomain)
+     do idom = 0,ndomain
+        incost_new(idom) = dble(idom)*dom_cost ! Exact load balancing
      end do
-     ! Compute new cpu boundaries for this level
+     wtol=0d0
+     if(lref>0)wtol=0.5d0*tol*dom_cost   ! half per boundary: windows never overlap
+
+     ! Scan the local octs (sorted by key): exact boundaries and windows
+     bkey_loc=0.0d0
+     klo=huge(1d0); khi=-1d0
      ioff=ngrid_off(ilevel)
      do isub=1,overload
         if(ngrid_sub(isub,ilevel)>0)then
@@ -896,50 +934,61 @@ subroutine cmp_new_bound_key_per_level
            local_cost=incost_old(myid-1+(isub-1)*ncpu)
            do ind_long=1,ngrid_sub(isub,ilevel)
               cell_cost=dble(flag1(ioff+flag2(ioff+ind_long)))
+              ! This oct is a candidate first oct of domain j+1 if the
+              ! cost accumulated before it lies in the window of boundary j
+              if(wtol>0d0)then
+                 j=nint(local_cost/dom_cost)
+                 if(j>=1.and.j<=ndomain-1)then
+                    if(abs(local_cost-incost_new(j))<=wtol)then
+                       klo(j)=min(klo(j),real(hilbert_key(ioff+ind_long),kind=8))
+                       khi(j)=max(khi(j),real(hilbert_key(ioff+ind_long),kind=8))
+                    end if
+                 end if
+              end if
               local_cost=local_cost+cell_cost
               if (i > ndomain) exit
               if(incost_new(i)<local_cost)then
-                 bound_key_loc(i,ilevel)=hilbert_key(ioff+ind_long)
+                 bkey_loc(i)=hilbert_key(ioff+ind_long)
                  i=i+1
               endif
            end do
         end if
         ioff=ioff+ngrid_sub(isub,ilevel)
      end do
-  end do
+
+     bex=real(bkey_loc,kind=8)
 #ifndef WITHOUTMPI
-#ifdef QUADHILBERT
-  bigdbl= real(bound_key_loc,kind=8)
-  bigtmp= 0.0d0
-  call MPI_ALLREDUCE(bigdbl,bigtmp,(ndomain+1)*nlevelmax,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
-  bound_key2 = real(bigtmp,kind=qdp)
+     call MPI_ALLREDUCE(bex,bex_tot,ndomain+1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+     if(wtol>0d0)then
+        call MPI_ALLREDUCE(klo,klo_tot,ndomain+1,MPI_DOUBLE_PRECISION,MPI_MIN,MPI_COMM_WORLD,info)
+        call MPI_ALLREDUCE(khi,khi_tot,ndomain+1,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,info)
+     end if
 #else
-  call MPI_ALLREDUCE(bound_key_loc,bound_key2,(ndomain+1)*nlevelmax,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+     bex_tot=bex; klo_tot=klo; khi_tot=khi
 #endif
-#else
-  bound_key2=bound_key_loc
-#endif
-  do ilevel=1,nlevelmax
+
+     do idom=1,ndomain-1
+        bnew=bex_tot(idom)
+        if(wtol>0d0)then
+           if(klo_tot(idom)<=khi_tot(idom))then
+              if(real(bound_key2(idom,lref),kind=8)<klo_tot(idom))then
+                 bnew=klo_tot(idom)
+              else if(real(bound_key2(idom,lref),kind=8)>khi_tot(idom))then
+                 bnew=khi_tot(idom)
+              else
+                 bound_key2(idom,ilevel)=bound_key2(idom,lref) ! nested boundary
+                 cycle
+              end if
+           end if
+        end if
+        bound_key2(idom,ilevel)=real(bnew,kind=qdp)
+     end do
      bound_key2(0,ilevel)      =order_all_min
      bound_key2(ndomain,ilevel)=order_all_max
+     lref=ilevel
   end do
-
-  !----------------------------------------------------------------
-  ! Levels without cost copy the decomposition of the coarser level;
-  ! levels below levelmin take the decomposition of levelmin.
-  !----------------------------------------------------------------
-  ilev_ref=0
-  do ilevel=levelmin,nlevelmax
-     if(has_cost(ilevel))then
-        ilev_ref=ilevel
-     else if(ilev_ref>0)then
-        bound_key2(0:ndomain,ilevel)=bound_key2(0:ndomain,ilev_ref)
-     else
-        bound_key2(0:ndomain,ilevel)=bound_key(0:ndomain,ilevel)
-     end if
-  end do
-  do ilevel=1,levelmin-1
-     bound_key2(0:ndomain,ilevel)=bound_key2(0:ndomain,levelmin)
+  do ilevel=lmax_pop+1,nlevelmax
+     bound_key2(0:ndomain,ilevel)=bound_key2(0:ndomain,lmax_pop)
   end do
 
   if(myid==1.and.verbose)then

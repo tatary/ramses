@@ -88,6 +88,8 @@ module amr_parameters
   character(len=128)::ordering='hilbert'
   logical::cost_weighting=.true.           ! Activate load balancing according to cpu time
   logical::balance_per_level=.false.      ! Independent domain decomposition (bound_key) for each level
+  integer::balance_level_min=0             ! balance_per_level: lowest level balanced on its own (0: levelmin); coarser levels copy it
+  real(dp)::balance_tolerance=0.0d0        ! balance_per_level: allowed relative deviation of a domain cost per level; boundaries are moved within it towards the finer level
   ! Recursive bisection tree parameters
   integer::nbilevelmax=1                   ! Max steps of bisection partitioning
   integer::nbinodes=3                      ! Max number of internal nodes

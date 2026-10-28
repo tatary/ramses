@@ -6,6 +6,8 @@ rt=.true.
 nrestart=0
 nremap=1
 balance_per_level=.true.   ! level ごとに独立した domain decomposition (既定 .false. = 従来通り)
+!balance_level_min=13      ! これより粗い level は level 13 の分割をコピー (ghost 抑制, 既定 0=levelmin)
+!balance_tolerance=0.3     ! level ごとの許容不均衡。境界を細かい level に寄せて ghost を減らす (既定 0)
 nsubcycle=1,2,2,2,2,2,2,2,2,2
 ncontrol=1
 verbose=.false.

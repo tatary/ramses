@@ -1,6 +1,6 @@
 # やり残し・既知の問題 (引き継ぎメモ)
 
-最終更新: 2026-10-21 (level ごとの domain decomposition の作業時点)
+最終更新: 2026-10-28 (level ごとの domain decomposition の本番不整合の診断追加)
 
 ## 1. 既知のバグ
 
@@ -31,17 +31,43 @@
 - NIONS=4 ビルドで ion の添字 (`ixHII` 等) が設定されず `group_csn(…,0)` を参照。
   本番では常に rt=.true. なので実害なし。テスト時の罠。
 
+### 1d. balance_per_level で本番 896 ランクの grid 所有者と authorize が食い違う — **未解決**
+- 2026-10-27: `make_grid_fine` が新 grid のセルの `cpu_map` を `bound_key(:,ilevel)` で決めていた
+  (正しくは `bound_key(:,ilevel+1)`) のを修正。`build_comm` に「他 CPU が自分の仮想 grid として
+  持っているのに自分に実体がない」検出を追加。
+- 2026-10-28: 修正版でも本番 (flat-329902, `balance_level_min=13`) で 5 coarse step 目に level 15 で
+  検出が発火 (cpu 622, 27 grids)。手元 (8/32 ランク, levelmax 8) では再現せず、コード上の矛盾も
+  見つかっていない。`build_comm` の検出を集団診断 (`debug_missing_owner`: holder 側の親セル情報と
+  owner 側の木の走査を出力) に拡張した。次の本番ジョブのログ (`MISSING` / `OWNER` 行) で原因を
+  特定する。詳細は `docs/level_domain_decomposition.md` 4b-2。
+- 疑うべき候補: 所有者側が親セルを持っていない (祖先のどこかで authorize が外れている) か、
+  持っているのに refine していない (flag1 の同期漏れ) か。`OWNER` 行の最深 level と T/F で切り分ける。
+
+### 1e. (修正済 2026-10-28) `feedback.f90` の SN イベントログで添字違い (上流由来)
+- `feedbk` の `sf_log_properties` ブロック末尾 `typep(ind_part(i))%tag` が、ループ変数 `j` の
+  ところで古い `i` を使っていた (上流 `pm/feedback.f90:405` も同じ)。`sf_log_properties=.true.`
+  で SN が起きると `typep(0)` を読み、-O2 では segfault、bounds check では
+  "Index '0' of dimension 1 of array 'typep'"。`j` に修正。`patch/mizuki/feedback.f90` にも同じ行がある
+  (そちらは触っていない)。本番 namelist は `sf_log_properties=.true.` なので本番でも踏み得た。
+
 ## 2. level ごとの domain decomposition (balance_per_level) の改善案
 
 設計と検証結果は `docs/level_domain_decomposition.md`。
 
-- **ghost oct の増加を抑える重み付け** (優先度高):
-  level `l` の分割を決めるコストに、細かい level `m>l` のコストの一部 (例: 係数 α ×
-  level m の oct 数) を足し、分割が level 間で入れ子に近づくようにする。各 level の
-  均等化は少し崩れるが、粗い level の ghost (細かい level の担当領域の footprint) が
-  減る。DICE の円盤 (level 6-7 で ghost が 2-3 倍) や zoom の遷移 level に効く。
-  実装場所: `load_balance.f90` の `cmp_new_bound_key_per_level` (コスト `wflag` の計算)。
-- 適用 level の限定オプション (`balance_level_min` のようなもの)。効果は限定的。
+**2026-10-28 の結論: 見送り。** 本番 (896 ランク) の 4 ジョブで、RT を除いた step 時間は単一分割と
+差がなく (165-177 s vs 170-188 s)、level 15 を完全均等にしても RT subcycle 1 回 0.39 s は変わらず、
+grid メモリは 27% → 36-39% に増えた (docs 4c)。加えて原因未特定の不整合 (1d) が残る。
+既定 `balance_per_level=.false.` なら単一分割と bit 一致なのでコードは残す。手元の長い再現テスト
+(levelmax 10, 24 ランク, level_min=8, τ=0) は 121 coarse step まで不整合なしで、途中で止めた。
+次に効くのは RT step の内訳 (通信か冷却か): 単一分割で `nstepmax` を小さくして正常終了させ timer 表を見る。
+
+- **ghost 抑制 (2026-10-27 実装済)**: `balance_level_min` (粗い level は指定 level の分割をコピー) と
+  `balance_tolerance` (許容不均衡の範囲で境界を 1 つ細かい level に寄せる)。設計と目安は
+  `docs/level_domain_decomposition.md` 4c。**本番 (896 ランク) での値探索は未着手**:
+  単一分割 / per-level τ=0 / τ=0.3 / τ=0.45 / balance_level_min=13 を同じ restart から流し、
+  ghost 合計・`Level l has N grids (min,max,avg)`・coarse step 時間を比べる。
+  これでも ghost が 2 倍以内にならなければ、項 1 (自分の grid の子が他人の grid) を消すには
+  upload を子の所有者側で行う大改造が要るので、per-level 自体を見送る判断もあり得る。
 - 4 ランク DICE+RT テスト (`tests/dice_rt_amr.nml`) の timer では、load balance 0.97→0.88 s,
   godunov の CPU 間ばらつき 0.015→0.031 s, 合計 9.39→9.23 s で差は小さい (4 ランクでは
   偏り自体が小さいため)。効果の評価は本番の CPU 数でないと意味がない。

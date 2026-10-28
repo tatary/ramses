@@ -285,7 +285,7 @@ subroutine make_grid_coarse(ind_cell,ibound,boundary_region)
         do idim=1,ndim
            xx(1,idim)=(xx(1,idim)-skip_loc(idim))*scale
         end do
-        call cmp_cpumap(xx,cc,1,1)
+        call cmp_cpumap(xx,cc,1,2)
         cpu_map(iskip+ind_grid_son)=cc(1)
      end do
   end if
@@ -736,7 +736,7 @@ subroutine make_grid_fine(ind_grid,ind_cell,ind,ilevel,nn,ibound,boundary_region
               xx(i,idim)=(xx(i,idim)-skip_loc(idim))*scale
            end do
         end do
-        call cmp_cpumap(xx,cc,nn,ilevel)
+        call cmp_cpumap(xx,cc,nn,ilevel+1)
         iskip=ncoarse+(j-1)*ngridmax
         do i=1,nn
            cpu_map(iskip+ind_grid_son(i))=cc(i)

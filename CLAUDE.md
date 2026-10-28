@@ -54,6 +54,7 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
   (hm12_ramses.dat) へのシンボリックリンクを置いて使う。データは Google Drive の
   `マイドライブ/codes/ramses_data/` にある (本番 namelist は /mnt/synology1 を指す)。
 - `balance_per_level=.true.` を `&RUN_PARAMS` に足すと level ごとの分割になる。
+  ghost を抑えるオプションは `balance_level_min`, `balance_tolerance` (docs 4c 節)。
 
 ## namelist の落とし穴
 
