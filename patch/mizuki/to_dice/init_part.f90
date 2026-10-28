@@ -1817,6 +1817,9 @@ contains
 #ifdef INIT_STELLAR_MASS
                       mp0(ipart) = mm(i)
 #endif
+#ifdef STELLAR_POPULATION_MASS
+                      msp0(ipart) = mm(i)
+#endif
                    endif
                    if(type_index.gt.2)then
                       if(star)then

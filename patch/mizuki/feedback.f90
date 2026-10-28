@@ -39,7 +39,7 @@ subroutine thermal_feedback(ilevel)
   logical::file_exist
   integer,parameter::tag=1120
 
-  if(sf_log_properties) then
+  if(sf_log_properties.and.ifout.gt.1) then
      call title(ifout-1,nchar)
      if(IOGROUPSIZEREP>0) then
         call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
@@ -63,8 +63,8 @@ subroutine thermal_feedback(ilevel)
 #endif
 
      inquire(file=fileloc,exist=file_exist)
-     if(.not.file_exist) then
-        open(ilun, file=fileloc, form='formatted')
+     if((.not.file_exist).or.(ifout-1.ne.ifout_stars_log)) then
+        open(ilun, file=fileloc, status='replace', form='formatted')
         write(ilun,'(A24)',advance='no') '# event id  ilevel  mp  '
         do idim=1,ndim
            write(ilun,'(A2,I1,A2)',advance='no') 'xp',idim,'  '
@@ -81,6 +81,7 @@ subroutine thermal_feedback(ilevel)
         enddo
         write(ilun,'(A5)',advance='no') 'tag  '
         write(ilun,'(A1)') ' '
+        ifout_stars_log = ifout-1
      else
         open(ilun, file=fileloc, status="old", position="append", action="write", form='formatted')
      endif
@@ -188,7 +189,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   real(dp)::delta_x,tau_factor,rad_factor
   real(dp)::dx,dx_loc,scale,birth_time,current_time,t_age_Gyr, dt_Gyr
   real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v, scale_mcgs
-  real(dp):: scale_Msol, m_in_sol
+  real(dp):: scale_Msol, m_in_sol, scale_B_muG
   real(dp)::Msne, nSNCC, nSNIa, nSN_tot, Mej, Mej_winds, dE_winds, dMz, v_ej
   ! Grid based arrays
   real(dp),dimension(1:nvector,1:ndim),save::x0
@@ -214,8 +215,12 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   integer::c_loop(8)
   real(dp)::B_inj_loop,sum_dot_loop
   integer::S_zminus,S_zplus,S_yminus,S_yplus,S_xminus,S_xplus
-  logical::ok_inject_loop
   integer::ind_loop
+  real(dp),dimension(1:ndim)::dd_loop
+  integer,dimension(1:ndim)::id_loop,ig_loop,igg_loop,igd_loop,icg_loop,icd_loop
+  integer,dimension(1:twotondim)::kg_loop,icell_loop,igrid_loop
+  integer::ix_loop,iy_loop,ind_father_loop
+  logical::ok_loop
 #endif
 
   ! If necessary, initialize random number generator
@@ -229,6 +234,8 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
   scale_mcgs = scale_d * scale_l**3 ! get mass in units of g
   scale_Msol = scale_d * scale_l**3 / M_sun ! get mass in units of M_sun
+  ! Conversion factor for magnetic field from code unit to micro Gauss (CGS)
+  scale_B_muG = sqrt(4.0D0 * acos(-1.0D0) * scale_d) * scale_v * 1.0D6
 
   ! Mesh spacing in that level
   dx=0.5D0**ilevel
@@ -445,23 +452,76 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 !------------------------------------------------------------------------
 ! Added by Mizuki Ono (2026/06/13)
 !------------------------------------------------------------------------
-         if (ethermal(j) > 0.0D0) then
-            ! Loop injection for magnetic field feedback
-            ok_inject_loop = .false.
+         if ((ethermal(j) .gt. (1.01*dE_winds/vol_loc(j))) .and. f_esn_loop > 0.0D0 .and. t_age_Gyr .le. agemax) then
             if (ok(j)) then
-               ok_inject_loop = .true.
-               do ind_loop=1,8
-                  c_loop(ind_loop)=ncoarse+(ind_loop-1)*ngridmax+igrid(j)
-                  if (son(c_loop(ind_loop)) > 0) ok_inject_loop = .false.
-               end do
-            end if
-
-            if (ok_inject_loop) then
                mhd_feedback_active = .true.
 
                ! B_inj = sqrt(0.02 * epsilon_SN)
                ! epsilon_SN is the SN energy density in the NGP cell, which is ethermal(j)
-               B_inj_loop = sqrt(2.0D0 * f_esn_loop * ethermal(j))
+               B_inj_loop = sqrt(2.0D0 * f_esn_loop * (ethermal(j)-dE_winds/vol_loc(j)))
+
+               ! Find 2x2x2 cell cube around the star particle across neighbor grids
+               do idim = 1, ndim
+                  dd_loop(idim) = x(j,idim) + 0.5D0
+                  id_loop(idim) = int(dd_loop(idim))
+                  ig_loop(idim) = id_loop(idim) - 1
+                  igg_loop(idim) = ig_loop(idim) / 2
+                  igd_loop(idim) = id_loop(idim) / 2
+                  icg_loop(idim) = ig_loop(idim) - 2 * igg_loop(idim)
+                  icd_loop(idim) = id_loop(idim) - 2 * igd_loop(idim)
+               end do
+
+               do ix_loop = 1, twotondim
+                  iy_loop = ix_loop - 1
+                  kg_loop(ix_loop) = 1
+                  icell_loop(ix_loop) = 1
+                  if (mod(iy_loop,2) == 0) then
+                     kg_loop(ix_loop) = kg_loop(ix_loop) + igg_loop(1)
+                     icell_loop(ix_loop) = icell_loop(ix_loop) + icg_loop(1)
+                  else
+                     kg_loop(ix_loop) = kg_loop(ix_loop) + igd_loop(1)
+                     icell_loop(ix_loop) = icell_loop(ix_loop) + icd_loop(1)
+                  end if
+                  if (ndim > 1) then
+                     if (mod(iy_loop/2,2) == 0) then
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 3 * igg_loop(2)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 2 * icg_loop(2)
+                     else
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 3 * igd_loop(2)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 2 * icd_loop(2)
+                     end if
+                  end if
+                  if (ndim > 2) then
+                     if (mod(iy_loop/4,2) == 0) then
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 9 * igg_loop(3)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 4 * icg_loop(3)
+                     else
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 9 * igd_loop(3)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 4 * icd_loop(3)
+                     end if
+                  end if
+               end do
+
+               ok_loop = .true.
+               do ix_loop = 1, twotondim
+                  ind_father_loop = nbors_father_cells(ind_grid_part(j), kg_loop(ix_loop))
+                  if (ind_father_loop > 0) then
+                     igrid_loop(ix_loop) = son(ind_father_loop)
+                     if (igrid_loop(ix_loop) > 0) then
+                        c_loop(ix_loop) = ncoarse + (icell_loop(ix_loop) - 1) * ngridmax + igrid_loop(ix_loop)
+                     else
+                        ok_loop = .false.
+                     end if
+                  else
+                     ok_loop = .false.
+                  end if
+               end do
+
+               if (.not. ok_loop) then
+                  ! Warning: neighbor cells are not properly refined at this level
+                  write(*,*) 'WARNING: Loop B injection skipped - unrefined neighbor cell at ilevel=', ilevel, &
+                             ' StarID=', idp(ind_part(j)), ' myid=', myid
+               else
 
                ! Loop 1: Edge z- = (0, 0, -1/2)
                sum_dot_loop = uold(c_loop(4),6) - uold(c_loop(4),7) - uold(c_loop(2),6) + uold(c_loop(3),7)
@@ -559,8 +619,9 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                unew(c_loop(2),nvar+3) = unew(c_loop(2),nvar+3) + S_xplus * B_inj_loop
                unew(c_loop(6),8)      = unew(c_loop(6),8)      + S_xplus * B_inj_loop
 
-               ! Convert 1% SN energy to magnetic loop energy
-               ethermal(j) = ethermal(j) * 0.99D0
+               ! ethermal(j) = ethermal(j) * (1-f_esn_loop)
+               write(*,*) 'FEEDBACK B = ', B_inj_loop * scale_B_muG, ' muG  StarID = ', idp(ind_part(j))
+               end if
             end if
          end if
 #endif

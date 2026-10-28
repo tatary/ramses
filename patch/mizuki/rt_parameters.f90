@@ -40,7 +40,7 @@ module rt_parameters
   logical::isH2=.false.                             !                          H2 tracked?
   integer::ixHI=0, ixHII=0, ixHeII=0, ixHeIII=0     !      Indexes of ionization fractions
   logical::is_SED_single_Z=.false.                  !                   Tracks if single Z
-                                                    !                 in SED interpolation
+  !                 in SED interpolation
 
   ! RT_PARAMS namelist--------------------------------------------------------------------
   logical::rt_advect=.false.           ! Advection of photons?                           !
@@ -66,7 +66,7 @@ module rt_parameters
   real(dp)::rt_floor_xHII=1d-10        ! Ionization state floor for refinement           !
   real(dp)::rt_c_fraction=1d0          ! Actual lightspeed fraction for RT lightspeed    !
   integer::rt_nsubcycle=1              ! Maximum number of RT-steps during one hydro/    !
-                                       ! gravity/etc timestep                            !
+  ! gravity/etc timestep                            !
   logical::rt_otsa=.true.              ! Use on-the-spot approximation                   !
   logical::rt_isDiffuseUVsrc=.false.   ! UV emission from low-density cells              !
   real(dp)::rt_UVsrc_nHmax=-1d0        ! Density threshold for UV emission               !
@@ -82,6 +82,7 @@ module rt_parameters
   character(LEN=128)::cloudy_metal_file='' ! File containing cloudy metallicity cooling tables   !
   logical::attn_after_chem=.false.     ! calculate attenuation after chemistry           !
   logical::rt_skip_convergence=.false. ! skip convergence check for the photon density and fluxes !
+  logical::relax_x_by_ne=.false.       ! relax the xHI/xHII/xHe subcycle tests using the electron budget (TO ADDED) !
 
   ! RT_GROUPS namelist--------------------------------------------------------------------
   integer::sedprops_update=-1                      ! Update sedprops from star populations
@@ -121,7 +122,7 @@ module rt_parameters
   real(dp),dimension(1:MAXREGION)   ::rt_v_region=0.                         ! Photon flux
   real(dp),dimension(1:MAXREGION)   ::rt_w_region=0.                         ! Photon flux
 
-   ! RT source regions parameters----------------------------------------------------------
+  ! RT source regions parameters----------------------------------------------------------
   integer                           ::rt_nsource=0
   character(LEN=10),dimension(1:MAXREGION)::rt_source_type='square'
   real(dp),dimension(1:MAXREGION)   ::rt_src_x_center=0.

@@ -291,9 +291,11 @@ subroutine userflag_fine(ilevel)
   ! some user-defined physical criteria at the level ilevel.
   ! -------------------------------------------------------------------
   integer::i,ncache,nok,ix,iy,iz,iskip
-  integer::igrid,ind,idim,ngrid,ipart,next_part
+  integer::igrid,ind,idim,ngrid,ipart,next_part,ig,nstar,cur_igrid,cur_ipart,nok_star,ig_fine,igrid_fine,icell_parent,icell_host,ind_cell_host
   integer::nx_loc
   integer,dimension(1:nvector),save::ind_grid,ind_cell
+  integer,dimension(1:nvector),save::ind_grid_star,ind_cell_star,ind_part_star,father_star
+  integer,dimension(1:twotondim*2)::ind_grid_nbor,ind_cell_nbor
 
   logical,dimension(1:nvector),save::ok
 
@@ -305,8 +307,8 @@ subroutine userflag_fine(ilevel)
   real(dp),dimension(1:ndim)::x_part,dd_part,x0_part
 
   logical::prevent_refine
-  integer,dimension(1:1,1:threetondim)::nbors_father_cells
-  integer,dimension(1:1,1:twotondim)::nbors_father_grids
+  integer,dimension(1:nvector,1:threetondim),save::nbors_father_cells
+  integer,dimension(1:nvector,1:twotondim),save::nbors_father_grids
   integer,dimension(1:ndim)::igg_loc,igd_loc,icg_loc,icd_loc,ig_loc,id_loc
   real(dp),parameter::agemax = 0.044d0
 
@@ -416,94 +418,180 @@ subroutine userflag_fine(ilevel)
      end do
      ! End loop over cells
 
+     !------------------------------------------------------------------------
+     ! Added by Mizuki Ono (2026/07/15)
+     !------------------------------------------------------------------------ 
+      if(star)then
+         nstar=0
+         
+         ! 1. Find star particles only to identify grids with any star particle
+         do ig=1,ngrid
+            ipart=headp(ind_grid(ig))
+            do while (ipart>0)
+               next_part=nextp(ipart)
+               if(is_star(typep(ipart)))then
+                  if((t-tp(ipart))*scale_t/Gyr2sec<agemax)then
+                     if (nstar < nvector) then
+                        nstar=nstar+1
+                        ind_part_star(nstar)=ipart
+                        ind_grid_star(nstar)=ind_grid(ig)
+                        father_star(nstar)=father(ind_grid(ig))
+                     endif
+                     exit
+                  end if
+               end if
+               ipart = next_part
+            end do
+         end do
+         
+         ! 2. Find star particles belonging to levelmax (ilevel+1) grids
+         ! to flag them for refinement (preventing derefinement)
+         if (ilevel == nlevelmax - 1) then
+            do ig_fine = 1, active(ilevel+1)%ngrid
+               igrid_fine = active(ilevel+1)%igrid(ig_fine)
+               ipart = headp(igrid_fine)
+               do while (ipart > 0)
+                  next_part = nextp(ipart)
+                  if (is_star(typep(ipart))) then
+                     if ((t-tp(ipart))*scale_t/Gyr2sec < agemax) then
+                        if (nstar < nvector) then
+                           nstar = nstar + 1
+                           ind_part_star(nstar) = ipart
+                           icell_parent = (father(igrid_fine) - ncoarse - 1) / ngridmax + 1
+                           ind_grid_star(nstar) = father(igrid_fine) - ncoarse - (icell_parent - 1) * ngridmax
+                           father_star(nstar) = father(ind_grid_star(nstar))
+                        endif
+                        exit
+                     endif
+                  end if
+                  ipart = next_part
+               end do
+            end do
+         endif
+        
+        ! Flag processing
+        if(nstar>0)then
+           call get3cubefather(father_star(1:nstar),nbors_father_cells,nbors_father_grids,nstar,ilevel)
+            do i=1,nstar
+               cur_ipart=ind_part_star(i)
+               cur_igrid=ind_grid_star(i)
+               
+               ! Lower left corner of 3x3x3 grid-cube
+               do idim=1,ndim
+                  x0_part(idim)=xg(cur_igrid,idim)-3.0D0*dx
+               end do
+               
+               ! Rescale position at level ilevel
+               do idim=1,ndim
+                  x_part(idim)=xp(cur_ipart, idim)/scale+skip_loc(idim)
+                  x_part(idim)=(x_part(idim)-x0_part(idim))/dx
+               end do
+               
+               ! Compute parent cells and grids indexes
+               do idim = 1, ndim
+                  dd_part(idim)=x_part(idim)+0.5D0
+                  id_loc(idim)=int(dd_part(idim))
+                  ig_loc(idim)=id_loc(idim)-1
+                  igg_loc(idim)=ig_loc(idim)/2
+                  igd_loc(idim)=id_loc(idim)/2
+                  icg_loc(idim)=ig_loc(idim)-2*igg_loc(idim)
+                  icd_loc(idim)=id_loc(idim)-2*igd_loc(idim)
+               end do
+               
+               nok_star = 0
+               do ix=1,twotondim
+                  iy=ix-1
+                  ind_grid_nbor(ix)=1
+                  ind_cell_nbor(ix)=1
+                  if (mod(iy,2)==0) then
+                     ind_grid_nbor(ix)=ind_grid_nbor(ix)+igg_loc(1)
+                     ind_cell_nbor(ix)=ind_cell_nbor(ix)+icg_loc(1)
+                  else
+                     ind_grid_nbor(ix)=ind_grid_nbor(ix)+igd_loc(1)
+                     ind_cell_nbor(ix)=ind_cell_nbor(ix)+icd_loc(1)
+                  end if
+                  if (ndim>1)then
+                     if (mod(iy/2,2)==0) then
+                        ind_grid_nbor(ix)=ind_grid_nbor(ix)+3*igg_loc(2)
+                        ind_cell_nbor(ix)=ind_cell_nbor(ix)+2*icg_loc(2)
+                     else
+                        ind_grid_nbor(ix)=ind_grid_nbor(ix)+3*igd_loc(2)
+                        ind_cell_nbor(ix)=ind_cell_nbor(ix)+2*icd_loc(2)
+                     end if
+                  end if
+                  if(ndim>2)then
+                     if (mod(iy/4,2)==0) then
+                        ind_grid_nbor(ix)=ind_grid_nbor(ix)+9*igg_loc(3)
+                        ind_cell_nbor(ix)=ind_cell_nbor(ix)+4*icg_loc(3)
+                     else
+                        ind_grid_nbor(ix)=ind_grid_nbor(ix)+9*igd_loc(3)
+                        ind_cell_nbor(ix)=ind_cell_nbor(ix)+4*icd_loc(3)
+                     end if
+                  end if
+               end do
+               do ix=1,twotondim
+                  if (nbors_father_cells(i,ind_grid_nbor(ix)) > 0) then
+                     ind_grid_nbor(twotondim+ix)=son(nbors_father_cells(i,ind_grid_nbor(ix)))
+                  else
+                     ind_grid_nbor(twotondim+ix)=0
+                  end if
+                  if (ind_grid_nbor(twotondim+ix) > 0) then
+                     ind_cell_nbor(twotondim+ix) = ncoarse + (ind_cell_nbor(ix) - 1) * ngridmax + ind_grid_nbor(twotondim+ix)
+                     if (flag1(ind_cell_nbor(twotondim+ix)) == 0) then
+                        flag1(ind_cell_nbor(twotondim+ix)) = 1
+                        nflag = nflag + 1
+                        nok_star = nok_star + 1
+                     end if
+                  end if
+               end do
+
+               ! Ensure the star particle host cell in cur_igrid is always flagged
+               do idim=1,ndim
+                  id_loc(idim)=int(x_part(idim))
+                  icd_loc(idim)=id_loc(idim)-2*(id_loc(idim)/2)
+               end do
+               icell_host = 1
+               do idim=1,ndim
+                  icell_host = icell_host + icd_loc(idim)*2**(idim-1)
+               end do
+               ind_cell_host = ncoarse + (icell_host - 1) * ngridmax + cur_igrid
+               if (flag1(ind_cell_host) == 0) then
+                  flag1(ind_cell_host) = 1
+                  nflag = nflag + 1
+                  nok_star = nok_star + 1
+               end if
+               
+               ! if (nok_star > 0) then
+               !    write(*,*) 'DEBUG_STAR_REFINE: Time=', t, &
+               !               ' TargetLevel=', ilevel+1, &
+               !               ' StarID=', idp(cur_ipart), &
+               !               ' Pos=', xp(cur_ipart, 1:ndim), &
+               !               ' NewlyFlaggedCells=', nok_star
+               ! endif
+            end do
+        end if
+     end if
+
   end do
   ! End loop over grids
 
   !------------------------------------------------------------------------
-  ! Added by Mizuki Ono (2026/06/25)
-  !------------------------------------------------------------------------ 
-  if(star)then
-     do ind=1, active(ilevel)%ngrid
-        igrid=active(ilevel)%igrid(ind)
-        ipart=headp(igrid)
-        do while (ipart>0)
-           next_part=nextp(ipart)
-           if(is_star(typep(ipart)))then
-              if((t-tp(ipart))*scale_t/Gyr2sec<agemax)then
-                  ! Lower left corner of 3x3x3 grid-cube
-                  do idim=1,ndim
-                     x0_part(idim)=xg(igrid,idim)-3.0D0*dx
-                  end do
+  ! MPI Synchronization for boundary-crossing refinement flags
+  !------------------------------------------------------------------------
+#ifndef WITHOUTMPI
+  ! Gather flag1 values from virtual cells and add them to real cells (reverse sync)
+  call make_virtual_reverse_int(flag1(1),ilevel)
 
-                  ! Gather 27 neighboring father cells (should be present anytime !)
-                  ind_cell(1)=father(igrid)
-                  call get3cubefather(ind_cell,nbors_father_cells,nbors_father_grids,1,ilevel)
-
-                  ! Rescale position at level ilevel
-                  do idim=1,ndim
-                     x_part(idim)=xp(ipart, idim)/scale+skip_loc(idim)
-                     x_part(idim)=(x_part(idim)-x0_part(idim))/dx
-                  end do
-
-                  ! Compute parent cells and grids indexes
-                  do idim = 1, ndim
-                     dd_part(idim)=x_part(idim)+0.5D0
-                     id_loc(idim)=int(dd_part(idim))
-                     ig_loc(idim)=id_loc(idim)-1
-                     igg_loc(idim)=ig_loc(idim)/2
-                     igd_loc(idim)=id_loc(idim)/2
-                     icg_loc(idim)=ig_loc(idim)-2*igg_loc(idim)
-                     icd_loc(idim)=id_loc(idim)-2*igd_loc(idim)
-                  end do
-                 do i=1,twotondim
-                    ix=i-1
-                    ind_grid(i)=1
-                    ind_cell(i)=1
-                    iy=mod(ix,2)
-                    if (iy==0) then
-                       ind_grid(i)=ind_grid(i)+igg_loc(1)
-                       ind_cell(i)=ind_cell(i)+icg_loc(1)
-                    else
-                       ind_grid(i)=ind_grid(i)+igd_loc(1)
-                       ind_cell(i)=ind_cell(i)+icd_loc(1)
-                    end if
-                    if (ndim>1)then
-                       iy=mod(ix/2,2)
-                       if(iy==0)then
-                          ind_grid(i)=ind_grid(i)+3*igg_loc(2)
-                          ind_cell(i)=ind_cell(i)+2*icg_loc(2)
-                       else
-                          ind_grid(i)=ind_grid(i)+3*igd_loc(2)
-                          ind_cell(i)=ind_cell(i)+2*icd_loc(2)
-                       end if
-                    end if
-                    if(ndim>2)then
-                       iy=mod(ix/4,2)
-                       if(iy==0)then
-                          ind_grid(i)=ind_grid(i)+9*igg_loc(3)
-                          ind_cell(i)=ind_cell(i)+4*icg_loc(3)
-                       else
-                          ind_grid(i)=ind_grid(i)+9*igd_loc(3)
-                          ind_cell(i)=ind_cell(i)+4*icd_loc(3)
-                       end if
-                    end if
-                 end do
-                 do i=1,twotondim
-                    ind_grid(twotondim+i)=son(nbors_father_cells(1,ind_grid(i)))
-                    if (ind_grid(twotondim+i) > 0) then
-                       ind_cell(twotondim+i) = ncoarse + (ind_cell(i) - 1) * ngridmax + ind_grid(twotondim+i)
-                       if (flag1(ind_cell(twotondim+i)) == 0) then
-                          flag1(ind_cell(twotondim+i)) = 1
-                          nflag = nflag + 1
-                       end if
-                    end if
-                 end do
-              end if
-           end if
-           ipart = next_part
-        end do
+  ! Clamp flag1 values to 0 or 1
+  do ind=1,twotondim
+     iskip=ncoarse+(ind-1)*ngridmax
+     do i=1,active(ilevel)%ngrid
+        if (flag1(active(ilevel)%igrid(i)+iskip) > 1) then
+           flag1(active(ilevel)%igrid(i)+iskip) = 1
+        end if
      end do
-  end if
+  end do
+#endif
 
   ! Do the same for hydro solver
   if(hydro)call hydro_flag(ilevel)
