@@ -448,6 +448,46 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
          ethermal(j) = (f_esn * ethermal(j) + dE_winds)/vol_loc(j)
          !ethermal(j)=ethermal(j)+mejecta*ESN/vol_loc(j)
          mp(ind_part(j))=mp(ind_part(j))-mejecta
+!------------------------------------------------------------------------
+! Modified by Mizuki Ono (2026/10/28)
+! Record log (sf_log_properties) before MHD loop injection (grid update).
+!------------------------------------------------------------------------
+         if(sf_log_properties .and. (ethermal(j) .gt. (1.01*dE_winds/vol_loc(j)))) then
+            write(ilun,'(I10)',advance='no') 1
+            write(ilun,'(2I10,E24.12)',advance='no') idp(ind_part(j)),ilevel,mp(ind_part(j))
+            do idim=1,ndim
+               write(ilun,'(E24.12)',advance='no') xp(ind_part(j),idim)
+            enddo
+            do idim=1,ndim
+               write(ilun,'(E24.12)',advance='no') vp(ind_part(j),idim)
+            enddo
+            write(ilun,'(E24.12)',advance='no') unew(indp(j),1)
+            do ivar=2,nvar
+               if(ivar.eq.ndim+2)then
+                  e=0.0d0
+                  do idim=1,ndim
+                     e=e+0.5d0*unew(indp(j),idim+1)**2/max(unew(indp(j),1),smallr)
+                  enddo
+#if NENER>0
+                  do irad=0,nener-1
+                     e=e+unew(indp(j),inener+irad)
+                  enddo
+#endif
+#ifdef SOLVERmhd
+                  do idim=1,ndim
+                     e=e+0.125d0*(unew(indp(j),idim+ndim+2)+unew(indp(j),idim+nvar))**2
+                  enddo
+#endif
+                  ! Temperature
+                  uvar=(gamma-1.0d0)*(unew(indp(j),ndim+2)-e)*scale_T2
+               else
+                  uvar=unew(indp(j),ivar)
+               endif
+               write(ilun,'(E24.12)',advance='no') uvar/unew(indp(j),1)
+            enddo
+               write(ilun,'(I10)',advance='no') typep(ind_part(i))%tag
+               write(ilun,'(A1)') ' '
+         endif
 #ifdef SOLVERmhd
 !------------------------------------------------------------------------
 ! Added by Mizuki Ono (2026/06/13)
@@ -625,42 +665,6 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
             end if
          end if
 #endif
-         if(sf_log_properties .and. (ethermal(j) .gt. (1.01*dE_winds/vol_loc(j)))) then
-            write(ilun,'(I10)',advance='no') 1
-            write(ilun,'(2I10,E24.12)',advance='no') idp(ind_part(j)),ilevel,mp(ind_part(j))
-            do idim=1,ndim
-               write(ilun,'(E24.12)',advance='no') xp(ind_part(j),idim)
-            enddo
-            do idim=1,ndim
-               write(ilun,'(E24.12)',advance='no') vp(ind_part(j),idim)
-            enddo
-            write(ilun,'(E24.12)',advance='no') unew(indp(j),1)
-            do ivar=2,nvar
-               if(ivar.eq.ndim+2)then
-                  e=0.0d0
-                  do idim=1,ndim
-                     e=e+0.5d0*unew(indp(j),idim+1)**2/max(unew(indp(j),1),smallr)
-                  enddo
-#if NENER>0
-                  do irad=0,nener-1
-                     e=e+unew(indp(j),inener+irad)
-                  enddo
-#endif
-#ifdef SOLVERmhd
-                  do idim=1,ndim
-                     e=e+0.125d0*(unew(indp(j),idim+ndim+2)+unew(indp(j),idim+nvar))**2
-                  enddo
-#endif
-                  ! Temperature
-                  uvar=(gamma-1.0d0)*(unew(indp(j),ndim+2)-e)*scale_T2
-               else
-                  uvar=unew(indp(j),ivar)
-               endif
-               write(ilun,'(E24.12)',advance='no') uvar/unew(indp(j),1)
-            enddo
-               write(ilun,'(I10)',advance='no') typep(ind_part(i))%tag
-               write(ilun,'(A1)') ' '
-         endif
       end do
    endif
 
@@ -709,6 +713,15 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
          do idim=1,ndim
              e=e+0.5d0*unew(indp(j),idim+1)**2/max(unew(indp(j),1),smallr)
          end do
+#ifdef SOLVERmhd
+!------------------------------------------------------------------------
+! Modified by Mizuki Ono (2026/10/28)
+! Subtract magnetic energy in addition to kinetic energy from total energy.
+!------------------------------------------------------------------------
+         do idim=1,ndim
+             e=e+0.125d0*(unew(indp(j),idim+ndim+2)+unew(indp(j),idim+nvar))**2
+         end do
+#endif
          uvar=(gamma-1.0d0)*(unew(indp(j),ndim+2)-e)*scale_T2/max(unew(indp(j),1),smallr)
          write(*,*) 'FEEDBACK T2 = ', uvar, ' mgas = ', unew(indp(j),1)*vol_loc(j)*scale_Msol, ' Msol'
      endif
