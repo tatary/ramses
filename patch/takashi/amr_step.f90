@@ -398,14 +398,33 @@ recursive subroutine amr_step(ilevel,icount)
       do icpu=1,ncpu
         do j=1,twotondim
           iskip=ncoarse+(j-1)*ngridmax
-          do i=1,reception(icpu,ilevel)%ngrid
-            unew(reception(icpu,ilevel)%igrid(i)+iskip,6)=0.0
-            unew(reception(icpu,ilevel)%igrid(i)+iskip,7)=0.0
-            unew(reception(icpu,ilevel)%igrid(i)+iskip,8)=0.0
-            unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+1)=0.0
-            unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+2)=0.0
-            unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+3)=0.0
-          end do
+          if (reception(icpu,ilevel)%ngrid > 0) then
+#ifdef LIGHT_MPI_COMM
+            if (associated(reception(icpu,ilevel)%pcomm)) then
+              if (associated(reception(icpu,ilevel)%pcomm%igrid)) then
+                do i=1,reception(icpu,ilevel)%ngrid
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,6)=0.0
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,7)=0.0
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,8)=0.0
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,nvar+1)=0.0
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,nvar+2)=0.0
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,nvar+3)=0.0
+                end do
+              end if
+            end if
+#else
+            if (associated(reception(icpu,ilevel)%igrid)) then
+              do i=1,reception(icpu,ilevel)%ngrid
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,6)=0.0
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,7)=0.0
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,8)=0.0
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+1)=0.0
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+2)=0.0
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+3)=0.0
+              end do
+            end if
+#endif
+          end if
         end do
       end do
     end if

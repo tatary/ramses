@@ -20,6 +20,14 @@
 - このファイルがあると HEAD でも変更後でも DICE 銀河が初回 load balance 直後に落ちる。
   develop (このファイルなし) は落ちない。修正するまでは外してビルドするのが安全。
 - 修正したら `git add` して追跡下に置くこと。
+- **2026-10-28 追記**: origin/mizuki (4112010f) の新版は問題 1 (`son(0)`) にガードが入り ghost の flag を
+  `make_virtual_reverse_int` で戻す同期も加わったが、**問題 2 は未修正**。`tests/dice_amr.nml` を
+  bounds check 付き 8 ランクで流すと最初の coarse step で `userflag_fine` の
+  `nbors_father_cells(i,ind_grid_nbor(ix))` (533 行) が添字 28-33 (上限 27) になり、続く
+  `flag1(ind_cell_nbor(...))` (540 行) が負の添字になる。これは takashi に移植した場合だけでなく、
+  mizuki ブランチそのもの (`patch/mizuki`, SOLVER=mhd, `riemann='hlld'` に変更した同じ namelist) でも
+  同じ行・同じ添字で再現する。原因は粒子が親セルの 3×3×3 の外にある場合 (`igg_loc/igd_loc`=3)。
+  新版は `patch/takashi/flag_utils.f90.mizuki` として置いてある (ビルド対象外)。
 
 ### 1b. `to_dice/init_part.f90`: `zp` の確保条件
 - `zp` (粒子金属量) は `if(star.or.sink)` の中で `if(metal)` のときだけ確保されるが、
