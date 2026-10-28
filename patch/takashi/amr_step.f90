@@ -683,14 +683,17 @@ subroutine rt_step(ilevel)
   i_substep = 0
   do while (t_left > 0)                      !                RT sub-cycle
     i_substep = i_substep + 1
+    call timer('rt - courant','start')
     call get_rt_courant_coarse(dt_rt)
     ! Temporarily change timestep length to rt step:
     dtnew(ilevel) = MIN(t_left, dt_rt/2**(ilevel-levelmin))
     t = t + dtnew(ilevel) ! Shift the time forwards one dt_rt
 
     ! If (myid==1) write(*,900) dt_hydro, dtnew(ilevel), i_substep, ilevel
+    call timer('rt - set unew','start')
     if (i_substep > 1) call rt_set_unew(ilevel)
 
+    call timer('rt - star feedback','start')
     if(rt_star) call star_RT_feedback(ilevel,dtnew(ilevel))
 #if NDIM==3
     if(rt_sink) call sink_RT_feedback(ilevel,dtnew(ilevel))
@@ -700,33 +703,40 @@ subroutine rt_step(ilevel)
     ! (rt_godunov_fine and add_rt_sources never modify the virtual cells
     ! of level ilevel), complete it after: the communication overlaps
     ! with the solver.
+    call timer('rt - rev ghostzones','start')
     call make_virtual_reverse_dp_start(rtunew,nrtvar,1,nrtvar,ilevel,2)
 
     ! Hyperbolic solver
+    call timer('rt - godunov','start')
     if(rt_advect) call rt_godunov_fine(ilevel,dtnew(ilevel))
 
+    call timer('rt - sources','start')
     call add_rt_sources(ilevel,dtnew(ilevel))
 
     ! Complete the reverse update of the boundaries
+    call timer('rt - rev ghostzones','start')
     call make_virtual_reverse_dp_end(rtunew,nrtvar,1,nrtvar,ilevel,2)
 
     ! Set rtuold equal to rtunew
+    call timer('rt - set uold','start')
     call rt_set_uold(ilevel)
 
     call timer('cooling','start')
     if(neq_chem.or.cooling.or.T2_star>0.0.or.barotropic_eos)call cooling_fine(ilevel)
-    call timer('radiative transfer','start')
+    call timer('rt - ghostzones','start')
 
     call make_virtual_fine_dp_nv(rtuold,nrtvar,1,nrtvar,ilevel)
     if(simple_boundary)call rt_make_boundary_hydro(ilevel)
 
     t_left = t_left - dtnew(ilevel)
   end do                                   !          End RT subcycle loop
+  call timer('rt - upload fine','start')
   dtnew(ilevel) = dt_hydro                 ! Restore hydro timestep length
   t = t_save       ! Restore original time (otherwise tiny roundoff error)
 
   ! Restriction operator to update coarser level split cells
   call rt_upload_fine(ilevel)
+  call timer('radiative transfer','start')
 
   if (myid==1 .and. rt_nsubcycle .gt. 1) write(*,901) ilevel, i_substep
 
