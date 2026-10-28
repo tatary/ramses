@@ -277,8 +277,8 @@ write_gitinfo.o: FORCE
 write_makefile.o: FORCE
 	../utils/scripts/cr_write_makefile.sh $(MAKEFILE_LIST)
 	$(F90) -O0 -c write_makefile.f90 -o $@
-write_patch.o: FORCE
-	../utils/scripts/cr_write_patch.sh $(PATCH)
+write_patch.o: $(wildcard $(patsubst %,%/*.f90,$(subst :, ,$(PATCH))))
+	$(PATCH)/cr_write_patch.sh $(PATCH)
 	$(F90) -O0 -c write_patch.f90 -o $@
 %.o:%.F
 	$(F90) $(FFLAGS) -c $^ -o $@ $(LIBS_OBJ) $(LIBS_OBJ_TURB)
