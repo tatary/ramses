@@ -90,6 +90,20 @@ grid メモリは 27% → 36-39% に増えた (docs 4c)。加えて原因未特�
 - 旧コードは新しい `amr_*.out` (末尾に level ごとの key が追加) を restart できない
   (level 1 の分割だけ読まれ cpu_map と矛盾する)。
 
+## 2b. RT step のコスト内訳 (2026-10-28 着手)
+
+本番 (896 ランク) の coarse step 時間は level 15 の RT subcycle 1 回あたり 0.39 s で決まり、level 15 を
+均等化しても変わらない (docs 4c)。何が 0.39 s なのか (rt godunov の計算か、cooling の hotspot か、
+ghost 交換の待ちか) を切り分けるため `rt_step` に細かい timer (`rt - courant / set unew / star feedback /
+rev ghostzones / godunov / sources / set uold / ghostzones / upload fine`) を入れた (297d3a22)。
+- timer 表は正常終了時 (`clean_end`) にしか出ない。本番で `nstepmax=7578` (restart の nstep_coarse=7575
+  から 3 coarse step) にして単一分割で流し、表の min/avg/max を見る。max≫min なら偏り (cooling hotspot
+  など)、min も大きければ本当の計算/通信コスト。
+- 手元 (8 ランク, levelmax 8, IC の星を光源にして RT 輸送を有効化) では rt godunov が 55%、cooling 11%、
+  rev ghostzones 4.6% (min/max 1.5 倍)。1 セル 1 subcycle あたり godunov ≈ 6 µs (bounds check 付き -O1)。
+- 手元の `dice_rt_amr.nml` は `star_as_nbody=.true.` で 12 step では星ができないため `rt_advect` が
+  立たず RT 輸送が走らない (chemistry だけ)。RT の性能を見るときは `star_as_nbody=.false.` にする。
+
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 
 - 実装済み: 全変数を 1 メッセージに集約 (`make_virtual_fine_dp_nv`)、`unew`/`rtunew`
