@@ -17,7 +17,7 @@ RAMSES (AMR 宇宙流体コード, Fortran 90 + MPI) の岡本研フォーク。
   差分の取り込みは mizuki → takashi の向きで行う (`diff -w -i -B` で比較)。
 - **`patch/takashi/` に `.f90` を置くだけで (git 未追跡でも) ビルドに入る**。使うものは
   `git add`、使わないものは `.f90.mizuki` のように拡張子を変えて外す
-  (例: `flag_utils.f90.mizuki`, バグあり。TODO.md 参照)。
+  (例: `rt_cooling_module.f90.back`)。
 - patch 側のファイルを外した/戻したときは `bin/*.o` の該当オブジェクトを消して
   再コンパイルさせる (make は VPATH 先の古い .o を再利用してしまう)。
 
