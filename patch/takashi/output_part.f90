@@ -200,7 +200,7 @@ subroutine backup_part(filename, filename_desc)
         xdp(ipart) = msp0(i)
       end if
     end do
-    call generic_dump("initial_stellar_mass", ivar, xdp, unit_out, dump_info, unit_info)
+    call generic_dump("stellar_population_mass", ivar, xdp, unit_out, dump_info, unit_info)
 #endif
     deallocate(xdp)
   end if

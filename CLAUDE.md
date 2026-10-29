@@ -66,6 +66,7 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
 - DICE で `metal=.true.` のとき `zp` は `star.or.sink` のときしか確保されない
   (`eps_star=0` にすると `init_flow_fine` で未確保配列を読む)。
 - `initfile`, `uv_file` 等は CHARACTER(80): 長いパスは切れるので相対パスか短い symlink。
+- 並列度を変えて restart したいときは Mera.jl の `repartition` で output を書き直す (TODO.md 4 節)。
 
 ## コードの地図 (今回の作業に関係する所)
 

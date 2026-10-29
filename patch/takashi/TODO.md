@@ -205,6 +205,21 @@ sf_virial=.true. や sf_model<6 の経路は元のまま。冒頭の `uold(1:4)`
 
 ## 4. 運用上のメモ
 
+- **並列度を変えた restart (2026-10-29 確認)**: RAMSES 自身は書いたときと同じ ncpu でしか restart できないが、
+  Mera.jl (v1.10) の `repartition` が output を別の ncpu 用に書き直せる。手元の 8 ランク output_00002 を
+  4 ランクに書き直し、`compareramses` で octree・hydro/grav/rt の値・粒子 (id, x, v) が完全一致、
+  `mp0`/`msp0`/`tp`/`zp`/family/tag も全粒子で一致、4 ランクで restart して完走した。
+  手順 (Julia 1.13 は `/opt/homebrew/bin/julia`、`/usr/local/bin/julia` は古い 1.5 のまま):
+  ```
+  julia --project=<env> -e 'using Pkg; Pkg.add("Mera")'
+  julia --project=<env> -e 'using Mera; r=repartition(51, "/path/run", 512; outpath="/path/run_512"); println(r);
+                            println(compareramses(51, "/path/run", "/path/run_512"))'
+  mpirun -np 512 ramses3d run.nml   # nrestart=51, ngridmax/npartmax は r の ngridmax_needed/npart_max 以上に
+  ```
+  注意: `stars_*.out` (SN ログ) はランク別ファイルなのでコピーされない (警告が出るだけで実害なし)。
+  乱数列はランク数で変わるので星形成・SN は統計的な同等まで。QUADHILBERT ビルドは非対応。
+  `part_file_descriptor.txt` で `mp0` と `msp0` が両方 `initial_stellar_mass` だったのを
+  `stellar_population_mass` に改名した (`output_part.f90`、バイナリは不変)。名前で読むツール向け。
 - `patch/takashi/` には未追跡ファイルが残っている (`rt_cooling_module.f90.back`,
   `to_dice/init_flow_fine_corrected.f90`, `backup_*` ディレクトリ, `format_fortran_script*.sh`)。
   必要なものは `git add`、不要なものは削除して状態をはっきりさせたい。
