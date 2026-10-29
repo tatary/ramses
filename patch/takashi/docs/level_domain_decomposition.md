@@ -209,6 +209,30 @@ level ごとの分割では、load balance 直後は `cmp_new_cpu_map` が全セ
 次の本番ジョブ (同じ設定) でこの出力を見て原因を特定する。`flag2(work)` は `build_comm` の
 作業領域なので authorize の値ではない (authorize の判定は別途計算した T/F を見る)。
 
+**診断の初出力 (flat-330537, 2026-10-28)**: 古い namelist で意図せず per-level (`balance_level_min`,
+`balance_tolerance` は既定) で走ったジョブ。3 coarse step (569 / 424 / 493 s) 正常の後、4 step 目
+(7579) に `build_comm: cpu 660 level 15: 27 virtual grids ... no owner copy` で発火。同時に
+cpu 499 についても holder 506 が 8 grids を報告。診断行の要点:
+
+- holder は cpu 664 (18 grids) と 665 (9 grids)。位置は (1.5137, 1.4676, 1.5005) 付近の 3×3×3 ブロック
+  (level 15 の grid 間隔 2^-14)。全て `cmp_cpumap(centre,15)=660` で、660 はその親セルを level 15 で
+  authorize する (T)。
+- **holder 側の親セルが不正**: 親セル (level 14 grid 18886 / 17201 等のセル) の `cpu_map=0`,
+  `flag1=0`, `son=0`、親 grid の所有者 (`cpu_map(father(fgrid))`) が 5242 (> ncpu=896)。
+  仮想 grid の `father` が指すセルは生きた grid のセルに見えない (son であるはずの grid があるのに
+  `son=0`)。holder の reception list にある level 15 grid が、親 grid が kill された後の stale な
+  grid か、`father(igrid)` が壊れている可能性がある。
+- **owner 660 側**: level 13 までは木があり (level 13 grid 37433 は owner 672 の仮想コピー)、
+  そのセル ind 1/3/5/7 (`cpu_map=664` = level 14 oct の所有者) で `son=0`、level 14 の grid が無い。
+  660 は level 14 を持たないので level 15 を所有できない。authorize 判定は `F T F` と出ているが、
+  ログの診断行の形式が HEAD と違う (L 値が 1 つ多く `cmp_cpumap` が無い) ので、転送時点のコードが
+  古いと思われ、順序の解釈は確定できない。
+
+再開するなら次の一手: (1) holder 側で `reception(icpu,15)%igrid` の grid が本当に生きているか
+(その親 grid が active/reception のどれかに含まれるか) を診断に足す。(2) owner 側の `flag1` は
+`authorize_fine` の作業領域で信頼できないので、`refine_fine(13)` の時点で 660 がそのセルを
+flag/authorize したかを別配列に記録する。per-level は 4c の結論で見送り中なので、ここまでで保留。
+
 ## 4c. 本番ログから見た性能 (2026-10-27) と ghost 抑制の設計
 
 **結論 (2026-10-28): この問題・このランク数では per-level 分割は時間でもメモリでも得をしないので見送り**

@@ -50,6 +50,10 @@
   特定する。詳細は `docs/level_domain_decomposition.md` 4b-2。
 - 疑うべき候補: 所有者側が親セルを持っていない (祖先のどこかで authorize が外れている) か、
   持っているのに refine していない (flag1 の同期漏れ) か。`OWNER` 行の最深 level と T/F で切り分ける。
+- 2026-10-28 (flat-330537, 誤って per-level で走ったジョブ): 診断が初めて出た。cpu 660 / level 15 /
+  27 grids (holder 664, 665)。owner 660 は level 13 まで持ち level 14 の grid が無い (`son=0`)。
+  holder 側の親セルは `cpu_map=0, son=0`、親 grid 所有者 5242 (> ncpu) と不正で、stale な仮想 grid
+  か `father` の破損を疑う。docs 4b-2 末尾に詳細と再開時の次の一手。棚上げのまま。
 
 ### 1e. (修正済 2026-10-28) `feedback.f90` の SN イベントログで添字違い (上流由来)
 - `feedbk` の `sf_log_properties` ブロック末尾 `typep(ind_part(i))%tag` が、ループ変数 `j` の
@@ -103,6 +107,54 @@ rev ghostzones / godunov / sources / set uold / ghostzones / upload fine`) を�
   rev ghostzones 4.6% (min/max 1.5 倍)。1 セル 1 subcycle あたり godunov ≈ 6 µs (bounds check 付き -O1)。
 - 手元の `dice_rt_amr.nml` は `star_as_nbody=.true.` で 12 step では星ができないため `rt_advect` が
   立たず RT 輸送が走らない (chemistry だけ)。RT の性能を見るときは `star_as_nbody=.false.` にする。
+
+**本番の timer 表 (flat-330638, 2026-10-29, 単一分割, 896 ランク, 3 coarse step = 1258 s)**:
+
+| 項目 | 平均 s | % | min – max |
+|---|---|---|---|
+| rt - godunov | 342 | 27 | 260 – 448 |
+| rt - ghostzones (forward) | 148 | 12 | 65 – 275 |
+| rt - rev ghostzones | 113 | 9 | 21 – 281 |
+| cooling | 79 | 6 | 74 – 85 |
+| feedback | 177 | 14 | 111 – 288 |
+| poisson | 139 | 11 | 138 – 140 |
+| hydro - godunov | 131 | 10 | 111 – 150 |
+| hydro - rev ghostzones | 62 | 5 | 40 – 95 |
+
+- RT subcycle 数 (3 step): level 15: 1932, 14: 966, 13: 483, 12: 240。grid 数: level 15 2.06M
+  (1 ランク 784–3143, 平均 2303), 14 1.71M (729–3494), 13 0.80M (91–3875)。
+- 全 level の「セル × subcycle」≈ 4.9e10、godunov 合計 342×896 s → **6.3 µs / セル / subcycle**。
+  手元の bounds check 付き -O1 と同じ値なので -O3 で速くなっていない (gather・メモリ律速)。
+  `rt_godfine1` 自体の改善 (subcycle ごとの stencil gather と粗 level からの補間のやり直し等) が
+  最大の単独項目。
+- 通信 2 本 (21%) は純粋な通信 + 遅いランク待ち。godunov の min–max 差 190 s がそのまま待ちに
+  乗る。min 側 (rev 21 s, fwd 65 s) から純粋な通信は 1 回 5–17 ms、全体の 7% 前後と推定。
+- godunov の偏りは level ごとの grid 数の偏り (`cost_weighting` は全 level の重み付き合計を揃える
+  だけ)。cooling は揃っていて hotspot ではない。RT の次は feedback (14%, 2.6 倍の偏り)。
+- `output_timer` を拡張し、正常終了時に `timer_ranks.dat` (全 timer のランク別秒数 + level ごとの
+  active grid 数) を書くようにした (出力時は `<timing file>.ranks`)。次の本番ジョブで
+  godunov の偏りと grid 数の相関、純粋な通信の見積もりを確定する。同じ 3 step を
+  `balance_per_level=.true.` でも流せば (abort は 4 step 目) per-level の表も直接比較できる。
+- per-level で速くならない理由 (2026-10-29): 本番 3 ジョブの coarse step 時間を
+  `T = A + B × (level 15 の RT subcycle 数)` で当てはめると単一分割 A=168 s, B=0.39 s、per-level
+  A=170 s, B=0.39 s で同一。per-level は level 15 の grid 数を 762–3178 → 2301–2303 に揃え、ghost を
+  0.32 → 1.5 (active 比) に増やした。「揃えた利得が ghost 5 倍の通信増で相殺」か「godunov の偏りは
+  grid 数ではなく 1 grid あたりの仕事 (補間が要る境界 grid の割合、メモリ配置) の差」かは
+  `timer_ranks.dat` の godunov と grid 数の相関で決める。手元 (8 ランク) は元から揃っているので
+  判別できない。手元の単一/per-level 比較は IC の星の SN (per-CPU 乱数 `ranf(localseed)`) で
+  最初の step から履歴が分かれるので、時間の直接比較には使えない (subcycle 数で割ればセルあたりの
+  godunov コストは同じ)。
+
+**rt_godfine1 の削減 (2026-10-29, bit 一致, `patch/takashi/rt_godunov_fine.f90`,
+`rt_flux_module.f90`)**: RT は 1 次精度なので 6×6×6 stencil のうち読まれるのは 4×4×4 の
+角を除く 32 セルだけ (`cmp_flux_tensors` は元から 32 セルに絞ってあった) なのに、
+(1) 3×3×3 の親セル 27 個全部について gather と粗 level からの補間をしていた → 読まれるセルを
+含む 7 個 (中心 + 面で接する 6 個) に限定、(2) 面の flux を 27 面/方向計算して 12 面しか
+使っていなかった → 12 面に限定、(3) GLF の面 flux を配列一時変数 + 関数呼び出しから成分ごとの
+素直なループに (演算順序は同じ)。手元 (8 ランク, dice_rt_amr, star_as_nbody=.false., 12 step) で
+`rt - godunov` 16.6 → 5.65 → 5.18 s、全体 39.1 → 25.9 s。hydro/rt/part/grav の出力は全て bit 一致。
+本番では rt - godunov が 27% なので全体で 15–20% の短縮見込み。残りは `cmp_flux_tensors`
+(32 セル × 7 群の Eddington tensor, 隣接 grid 間で 4 重に計算) と gather。
 
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 
