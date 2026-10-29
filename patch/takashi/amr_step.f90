@@ -557,7 +557,7 @@ recursive subroutine amr_step(ilevel,icount)
   ! Star formation in leaf cells only
   !----------------------------------
 #if NDIM==3
-  call timer('feedback','start')
+  call timer('star formation','start')
   if(hydro.and.star.and.(.not.static_gas))call star_formation(ilevel)
 #endif
   !---------------------------------------

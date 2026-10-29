@@ -57,6 +57,7 @@ subroutine star_formation(ilevel)
   integer ,dimension(1:nvector),save::ind_debris
   integer ,dimension(1:nvector,0:twondim)::ind_nbor
   integer ,dimension(threetondim)::ind_nborcube
+  integer ,dimension(1:nvector,1:threetondim),save::nborcube
   logical ,dimension(1:nvector),save::ok,ok_new=.true.
   integer ,dimension(1:ncpu)::ntot_star_cpu,ntot_star_all
   character(LEN=80)::filename,filedir,fileloc,filedirini
@@ -243,9 +244,12 @@ subroutine star_formation(ilevel)
 
 ! get values of uold for density and velocities in virtual boundaries
 #ifndef WITHOUTMPI
-  do ivar=1,4
-    call make_virtual_fine_dp(uold(1,ivar),ilevel)
-  end do
+  ! density and velocities in one message per neighbour instead of four
+#ifdef SOLVERmhd
+  call make_virtual_fine_dp_nv(uold,nvar+3,1,4,ilevel)
+#else
+  call make_virtual_fine_dp_nv(uold,nvar,1,4,ilevel)
+#endif
 #endif
 
   !------------------------------------------------
@@ -271,6 +275,17 @@ subroutine star_formation(ilevel)
         ok(i)=son(ind_cell(i))==0
       end do
       ! sf_model = 6: KM model with an instantaneous estimate
+      if((sf_model==6 .or. sf_model==7) .and. (.not.sf_virial))then
+        ! These models only need the 3x3x3 velocity dispersion for cells
+        ! that pass the density criterion (no side effects on uold), so
+        ! apply it first, and gather the 27 neighbours of all cells of the
+        ! vector of grids at once (one get3cubefather per grid vector
+        ! instead of two per cell; same neighbour mapping as get_27_neighbors).
+        do i=1,ngrid
+          if(ok(i) .and. uold(ind_cell(i),1)<=d0)ok(i)=.false.
+        end do
+        if(any(ok(1:ngrid)))call get_27_neighbors_grid(ind_grid,ngrid,ind,nborcube,ilevel)
+      endif
       if(sf_virial .or. (sf_model .gt. 5))then
         do i=1,ngrid
           ! if cell is a leaf cell
@@ -308,9 +323,12 @@ subroutine star_formation(ilevel)
             ! Get neighbor cells if they exist, otherwise use straight injection from local cell
             ncell = 1 ! we just want the neighbors of that cell
             ind_cell2(1) = ind_cell(i)
-            call getnbor(ind_cell2,ind_nbor,ncell,ilevel)
-            d1           = uold(ind_nbor(1,1),1) ; d2 = uold(ind_nbor(1,2),1) ; d3 = uold(ind_nbor(1,3),1)
-            d4           = uold(ind_nbor(1,4),1) ; d5 = uold(ind_nbor(1,5),1) ; d6 = uold(ind_nbor(1,6),1)
+            if (.not.(sf_model == 6 .or. sf_model == 7)) then
+              ! The 6 face neighbours are not used by models 6 and 7
+              call getnbor(ind_cell2,ind_nbor,ncell,ilevel)
+              d1           = uold(ind_nbor(1,1),1) ; d2 = uold(ind_nbor(1,2),1) ; d3 = uold(ind_nbor(1,3),1)
+              d4           = uold(ind_nbor(1,4),1) ; d5 = uold(ind_nbor(1,5),1) ; d6 = uold(ind_nbor(1,6),1)
+            endif
             sigma2       = 0d0 ; sigma2_comp = 0d0 ; sigma2_sole = 0d0
             trgv         = 0d0 ; divv = 0d0 ; curlva = 0d0 ; curlvb = 0d0 ; curlvc = 0d0
             flong        = 0d0
@@ -322,7 +340,11 @@ subroutine star_formation(ilevel)
               ! get_27_neighbors returns the coarser cell (one level down) that
               ! covers the region when a same-level neighbor does not exist,
               ! instead of falling back to the central cell itself.
-              call get_27_neighbors(ind_cell2,ind_nborcube,ilevel)
+              if (sf_virial) then
+                call get_27_neighbors(ind_cell2,ind_nborcube,ilevel)
+              else
+                ind_nborcube(1:threetondim) = nborcube(i,1:threetondim)
+              endif
               do j=1,threetondim
                 d1  = uold(ind_nborcube(j),1)
                 vx  = vx  + d1*uold(ind_nborcube(j),2)
@@ -1141,5 +1163,77 @@ subroutine get_27_neighbors(ind_cell, neighbors, ilevel)
     end do
   end do
 end subroutine get_27_neighbors
+
+!##############################################################
+! Vector version of get_27_neighbors for the cells at position
+! ind (1..8) of a vector of grids: same neighbour mapping, but
+! the 3x3x3 father cells are gathered once per grid vector.
+!##############################################################
+subroutine get_27_neighbors_grid(ind_grid, ngrid, ind, neighbors, ilevel)
+  use amr_commons
+  implicit none
+  integer, dimension(1:nvector), intent(IN) :: ind_grid
+  integer, intent(IN) :: ngrid, ind, ilevel
+  integer, dimension(1:nvector,1:threetondim), intent(OUT) :: neighbors
+  integer, dimension(1:nvector) :: ind_father
+  integer, dimension(1:nvector,1:threetondim) :: nbors_father_cells
+  integer, dimension(1:nvector,1:twotondim) :: nbors_father_grids
+  integer :: i, j, k, n, idx, iskip
+  integer :: my_i, my_j, my_k, ni, nj, nk
+  integer :: target_i, target_j, target_k
+  integer :: father_idx, child_pos, child_grid
+
+  do n = 1, ngrid
+    ind_father(n) = father(ind_grid(n))
+  end do
+  call get3cubefather(ind_father, nbors_father_cells, nbors_father_grids, ngrid, ilevel)
+
+  my_k = (ind - 1) / 4
+  my_j = ((ind - 1) - my_k * 4) / 2
+  my_i = (ind - 1) - my_j * 2 - my_k * 4
+
+  idx = 0
+  do k = -1, 1
+    do j = -1, 1
+      do i = -1, 1
+        idx = idx + 1
+        target_i = my_i + i
+        target_j = my_j + j
+        target_k = my_k + k
+        if (target_i >= 0 .and. target_i <= 1 .and. &
+          target_j >= 0 .and. target_j <= 1 .and. &
+          target_k >= 0 .and. target_k <= 1) then
+          child_pos = target_i + target_j * 2 + target_k * 4 + 1
+          iskip = ncoarse + (child_pos - 1) * ngridmax
+          do n = 1, ngrid
+            neighbors(n, idx) = iskip + ind_grid(n)
+          end do
+        else
+          ni = 1; nj = 1; nk = 1
+          if (target_i < 0) ni = 0
+          if (target_i > 1) ni = 2
+          if (target_j < 0) nj = 0
+          if (target_j > 1) nj = 2
+          if (target_k < 0) nk = 0
+          if (target_k > 1) nk = 2
+          father_idx = 1 + ni + 3*nj + 9*nk
+          child_pos = 1 + mod(target_i, 2) + 2*mod(target_j, 2) + 4*mod(target_k, 2)
+          if (target_i < 0) child_pos = child_pos - 1 + 2
+          if (target_j < 0) child_pos = child_pos - 2 + 4
+          if (target_k < 0) child_pos = child_pos - 4 + 8
+          iskip = ncoarse + (child_pos - 1) * ngridmax
+          do n = 1, ngrid
+            child_grid = son(nbors_father_cells(n, father_idx))
+            if (child_grid > 0) then
+              neighbors(n, idx) = iskip + child_grid
+            else
+              neighbors(n, idx) = nbors_father_cells(n, father_idx)
+            endif
+          end do
+        endif
+      end do
+    end do
+  end do
+end subroutine get_27_neighbors_grid
 !##############################################################
 !##############################################################

@@ -181,6 +181,20 @@ rank 1 の累積, 計測用ビルドのみ・コミットしていない): `cmp_
   無くすには群ごとにセル当たり 12 個の tensor を全セル分持つ必要があり (メモリ +40%)、
   gather が増えるので得にならない見込み。次は feedback (本番 14%, 2.6 倍のばらつき)。
 
+**feedback timer の正体と star_formation の削減 (2026-10-29, bit 一致, `patch/takashi/star_formation.f90`,
+`amr_step.f90`)**: `feedback` timer は `thermal_feedback` と `star_formation` の両方を含んでいた。
+`star_formation` を `star formation` timer に分けると手元 (8 ランク, dice_rt_amr, 12 step) では
+feedback 0.10 s / star formation 1.35 s なので、本番の 14% (2.6 倍のばらつき) はほぼ star_formation。
+原因は sf_model=6 の経路で葉セル 1 個ごとに `getnbor` と `get_27_neighbors` (それぞれ 1 セルの
+`get3cubefather`) を密度判定の前に呼んでいたこと。(1) sf_model 6/7 かつ sf_virial=.false. では
+密度判定 `d<=d0` を先に適用、(2) これらのモデルで使わない `getnbor` (面近傍 d1–d6) を省略、
+(3) 27 近傍を grid ベクトル単位で求める `get_27_neighbors_grid` (grid の 8 セルは同じ 3×3×3 親セルを
+共有するので `get3cubefather` は nvector grid に 1 回、近傍の対応は `get_27_neighbors` と同一) を追加。
+手元で star formation 1.35 → 0.22 s、出力は bit 一致 (近傍の添字と和の順序が同じなので FMA の影響なし)。
+sf_virial=.true. や sf_model<6 の経路は元のまま。冒頭の `uold(1:4)` の `make_virtual_fine_dp` 4 回も
+`make_virtual_fine_dp_nv(uold,nvar,1,4,ilevel)` 1 回にまとめた (bit 一致、手元 0.22 → 0.21 s)。
+本番ではこの交換が level ごと・fine step ごとのブロッキングなので、ばらつきの待ちはここに残る。
+
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 
 - 実装済み: 全変数を 1 メッセージに集約 (`make_virtual_fine_dp_nv`)、`unew`/`rtunew`
