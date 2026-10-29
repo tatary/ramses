@@ -45,7 +45,7 @@ subroutine authorize_fine(ilevel)
   ! Array flag1 for virtual cells is used as temporary work space.
   ! -------------------------------------------------------------------
   integer::ismooth,ibound,ngrid,i,ncache,iskip,igrid,ind,icpu
-  integer::ix,iy,iz,idim,nx_loc,isub,jlevel
+  integer::ix,iy,iz,idim,nx_loc,isub
   integer,dimension(1:3)::n_nbor
   integer,dimension(1:nvector),save::ind_grid,ind_cell
   integer,dimension(1:nvector,0:twondim),save::igridn
@@ -147,18 +147,13 @@ subroutine authorize_fine(ilevel)
         if (ordering /= 'bisection') then
           ! Compute minimum and maximum ordering key
           call cmp_minmaxorder(xx,order_min,order_max,dx_loc,ngrid)
-          ! Determine if cell is authorized: a virtual cell at level ilevel
-          ! must be kept if any of its descendants (grids at levels
-          ! ilevel+1..nlevelmax) can belong to myid, i.e. if its key range
-          ! intersects the myid domain of any finer level.
-          do jlevel=ilevel+1,nlevelmax
-            do isub=1,overload
-              do i=1,ngrid
-                if(    order_max(i)>bound_key(myid-1+(isub-1)*ncpu,jlevel).and.&
-                & order_min(i)<bound_key(myid  +(isub-1)*ncpu,jlevel) )then
-                  flag2(ind_cell(i))=1
-                endif
-              end do
+          ! Determine if cell is authorized
+          do isub=1,overload
+            do i=1,ngrid
+              if(    order_max(i)>bound_key(myid-1+(isub-1)*ncpu).and.&
+              & order_min(i)<bound_key(myid  +(isub-1)*ncpu) )then
+                flag2(ind_cell(i))=1
+              endif
             end do
           end do
         else ! recursive bisection method
@@ -180,14 +175,12 @@ subroutine authorize_fine(ilevel)
         ! For load balancing operations
         if(balance)then
           if(ordering/='bisection') then
-            do jlevel=ilevel+1,nlevelmax
-              do isub=1,overload
-                do i=1,ngrid
-                  if(    order_max(i)>bound_key2(myid-1+(isub-1)*ncpu,jlevel).and.&
-                  & order_min(i)<bound_key2(myid  +(isub-1)*ncpu,jlevel) )then
-                    flag2(ind_cell(i))=1
-                  endif
-                end do
+            do isub=1,overload
+              do i=1,ngrid
+                if(    order_max(i)>bound_key2(myid-1+(isub-1)*ncpu).and.&
+                & order_min(i)<bound_key2(myid  +(isub-1)*ncpu) )then
+                  flag2(ind_cell(i))=1
+                endif
               end do
             end do
           else
@@ -1290,192 +1283,6 @@ end subroutine make_virtual_reverse_int
 !################################################################
 !################################################################
 !################################################################
-subroutine debug_missing_owner(ilevel)
-  use amr_commons
-  use mpi_mod
-  implicit none
-  integer::ilevel
-  ! -------------------------------------------------------------------
-  ! Diagnostic, called collectively by build_comm when at least one cpu
-  ! received a zero grid index for a virtual grid of level ilevel.
-  ! Every holder learns which of its virtual grids are missing on their
-  ! claimed owner (echo of the index list), prints the grid, its father
-  ! cell and the authorization test for the owner, and sends the grid
-  ! position to the owner, which prints its local tree along the path
-  ! to that position. Heavy (non LIGHT_MPI_COMM) communicators only.
-  ! -------------------------------------------------------------------
-#if !defined(WITHOUTMPI) && !defined(LIGHT_MPI_COMM)
-  integer::info,tag=102,tag2=103
-  integer,dimension(ncpu)::reqsend,reqrecv,sendcnt,recvcnt,soff,roff
-  integer,dimension(MPI_STATUS_SIZE,ncpu)::statuses
-  integer::countsend,countrecv,icpu,i,igrid,icell,fgrid,ind,nb,l,nxny,nx_loc
-  integer::jgrid,jcell,jind,jlevel,idim,nsend,nrecv
-  real(dp),dimension(1:3)::x,skip_loc
-  real(dp)::scale,dx_loc
-  real(dp),dimension(1:nvector,1:ndim),save::xx
-  real(qdp),dimension(1:nvector),save::omin,omax
-  integer,dimension(1:nvector),save::cc
-  real(dp),allocatable,dimension(:)::sbuf,rbuf
-  logical,dimension(1:MAXLEVEL)::auth
-
-  nxny=nx*ny
-  nx_loc=icoarse_max-icoarse_min+1
-  scale=boxlen/dble(nx_loc)
-  skip_loc=(/0.0d0,0.0d0,0.0d0/)
-  if(ndim>0)skip_loc(1)=dble(icoarse_min)
-  if(ndim>1)skip_loc(2)=dble(jcoarse_min)
-  if(ndim>2)skip_loc(3)=dble(kcoarse_min)
-  dx_loc=0.5d0**(ilevel-1)*scale   ! father cell size
-
-  ! Echo the received index lists back to the holders (into reception%f)
-  countrecv=0
-  do icpu=1,ncpu
-    if(reception(icpu,ilevel)%ngrid>0)then
-      countrecv=countrecv+1
-      call MPI_IRECV(reception(icpu,ilevel)%f,reception(icpu,ilevel)%ngrid, &
-      & MPI_INTEGER,icpu-1,tag,MPI_COMM_WORLD,reqrecv(countrecv),info)
-    end if
-  end do
-  countsend=0
-  do icpu=1,ncpu
-    if(emission(icpu,ilevel)%ngrid>0)then
-      countsend=countsend+1
-      call MPI_ISEND(emission(icpu,ilevel)%igrid,emission(icpu,ilevel)%ngrid, &
-      & MPI_INTEGER,icpu-1,tag,MPI_COMM_WORLD,reqsend(countsend),info)
-    end if
-  end do
-  call MPI_WAITALL(countsend,reqsend,statuses,info)
-  call MPI_WAITALL(countrecv,reqrecv,statuses,info)
-
-  ! Holder side: report missing grids and collect their positions
-  sendcnt=0
-  do icpu=1,ncpu
-    do i=1,reception(icpu,ilevel)%ngrid
-      if(reception(icpu,ilevel)%f(i,1)<=0)sendcnt(icpu)=sendcnt(icpu)+1
-    end do
-  end do
-  soff(1)=0
-  do icpu=2,ncpu
-    soff(icpu)=soff(icpu-1)+3*sendcnt(icpu-1)
-  end do
-  nsend=soff(ncpu)+3*sendcnt(ncpu)
-  allocate(sbuf(1:max(nsend,1)))
-  nb=0
-  do icpu=1,ncpu
-    do i=1,reception(icpu,ilevel)%ngrid
-      if(reception(icpu,ilevel)%f(i,1)>0)cycle
-      igrid=reception(icpu,ilevel)%igrid(i)
-      icell=father(igrid)
-      fgrid=0; ind=0; jgrid=0
-      if(icell>ncoarse)then
-        fgrid=mod(icell-ncoarse-1,ngridmax)+1
-        ind=(icell-ncoarse-1)/ngridmax+1
-        jgrid=cpu_map(father(fgrid))
-      end if
-      do idim=1,ndim
-        xx(1,idim)=(xg(igrid,idim)-skip_loc(idim))*scale
-      end do
-      call cmp_cpumap(xx,cc,1,ilevel)
-      call cmp_minmaxorder(xx,omin,omax,dx_loc,1)
-      auth=.false.
-      do jlevel=ilevel,nlevelmax
-        auth(jlevel)=omax(1)>bound_key(icpu-1,jlevel).and.omin(1)<bound_key(icpu,jlevel)
-      end do
-      write(*,'(" MISSING holder",I6," level",I3," claimed owner",I6," grid",I9," xg",3(1X,ES22.15))') &
-      & myid,ilevel,icpu,igrid,xg(igrid,1:ndim)
-      write(*,'(" MISSING holder",I6,"   father cell: grid",I9," ind",I2," cpu_map",I6," flag1",I9," flag2(work)",I9," son",I9,&
-      & " father grid owner",I6," active",L2," cmp_cpumap(centre,level)",I6)') &
-      & myid,fgrid,ind,cpu_map(icell),flag1(icell),flag2(icell),son(icell),jgrid,jgrid==myid,cc(1)
-      write(*,'(" MISSING holder",I6,"   owner authorizes father cell at levels",I3,"..",I3,":",20L2)') &
-      & myid,ilevel,nlevelmax,auth(ilevel:nlevelmax)
-      do idim=1,3
-        sbuf(soff(icpu)+3*nb+idim)=0d0
-      end do
-      do idim=1,ndim
-        sbuf(soff(icpu)+3*nb+idim)=xg(igrid,idim)
-      end do
-      nb=nb+1
-    end do
-    nb=0
-  end do
-
-  ! Send positions to the claimed owners
-  call MPI_ALLTOALL(sendcnt,1,MPI_INTEGER,recvcnt,1,MPI_INTEGER,MPI_COMM_WORLD,info)
-  roff(1)=0
-  do icpu=2,ncpu
-    roff(icpu)=roff(icpu-1)+3*recvcnt(icpu-1)
-  end do
-  nrecv=roff(ncpu)+3*recvcnt(ncpu)
-  allocate(rbuf(1:max(nrecv,1)))
-  countrecv=0
-  do icpu=1,ncpu
-    if(recvcnt(icpu)>0)then
-      countrecv=countrecv+1
-      call MPI_IRECV(rbuf(roff(icpu)+1),3*recvcnt(icpu),MPI_DOUBLE_PRECISION,icpu-1,tag2, &
-      & MPI_COMM_WORLD,reqrecv(countrecv),info)
-    end if
-  end do
-  countsend=0
-  do icpu=1,ncpu
-    if(sendcnt(icpu)>0)then
-      countsend=countsend+1
-      call MPI_ISEND(sbuf(soff(icpu)+1),3*sendcnt(icpu),MPI_DOUBLE_PRECISION,icpu-1,tag2, &
-      & MPI_COMM_WORLD,reqsend(countsend),info)
-    end if
-  end do
-  call MPI_WAITALL(countsend,reqsend,statuses,info)
-  call MPI_WAITALL(countrecv,reqrecv,statuses,info)
-
-  ! Owner side: walk the local tree down to the missing grid
-  do icpu=1,ncpu
-    do i=1,recvcnt(icpu)
-      x(1:3)=rbuf(roff(icpu)+3*(i-1)+1:roff(icpu)+3*(i-1)+3)
-      write(*,'(" OWNER",I6," level",I3," grid held by",I6," at xg",3(1X,ES22.15))')myid,ilevel,icpu,x(1:ndim)
-      ind=1+int(x(1))
-      if(ndim>1)ind=ind+int(x(2))*nx
-      if(ndim>2)ind=ind+int(x(3))*nxny
-      write(*,'(" OWNER",I6,"   level  0 coarse cell",I9," cpu_map",I6," son",I9)')myid,ind,cpu_map(ind),son(ind)
-      igrid=son(ind)
-      do l=1,ilevel-1
-        if(igrid==0)then
-          write(*,'(" OWNER",I6,"   level",I3," no grid here")')myid,l
-          exit
-        end if
-        jind=1
-        do idim=1,ndim
-          if(x(idim)>xg(igrid,idim))jind=jind+2**(idim-1)
-        end do
-        jcell=ncoarse+(jind-1)*ngridmax+igrid
-        write(*,'(" OWNER",I6,"   level",I3," grid",I9," owner",I6," cell ind",I2," cpu_map",I6," flag1",I9," flag2(work)",I9," son",I9)') &
-        & myid,l,igrid,cpu_map(father(igrid)),jind,cpu_map(jcell),flag1(jcell),flag2(jcell),son(jcell)
-        ! Authorization test of this cell for myid at the finer levels
-        do idim=1,ndim
-          xx(1,idim)=(xg(igrid,idim)-skip_loc(idim))*scale
-          if(x(idim)>xg(igrid,idim))then
-            xx(1,idim)=xx(1,idim)+0.25d0*0.5d0**(l-1)*scale
-          else
-            xx(1,idim)=xx(1,idim)-0.25d0*0.5d0**(l-1)*scale
-          end if
-        end do
-        call cmp_minmaxorder(xx,omin,omax,0.5d0**l*scale,1)
-        call cmp_cpumap(xx,cc,1,l+1)
-        auth=.false.
-        do jlevel=l+1,nlevelmax
-          auth(jlevel)=omax(1)>bound_key(myid-1,jlevel).and.omin(1)<bound_key(myid,jlevel)
-        end do
-        write(*,'(" OWNER",I6,"   level",I3,"   cell authorized for me at levels",I3,"..",I3,":",20L2,"  cmp_cpumap(cell,level+1)",I6)') &
-        & myid,l,l+1,nlevelmax,auth(l+1:nlevelmax),cc(1)
-        igrid=son(jcell)
-      end do
-      if(igrid>0.and.l==ilevel)write(*,'(" OWNER",I6,"   level",I3," grid",I9," exists here, owner",I6)') &
-      & myid,ilevel,igrid,cpu_map(father(igrid))
-    end do
-  end do
-  deallocate(sbuf,rbuf)
-  flush(6)
-  call MPI_BARRIER(MPI_COMM_WORLD,info)
-#endif
-end subroutine debug_missing_owner
 !################################################################
 !################################################################
 !################################################################
@@ -1495,7 +1302,7 @@ subroutine build_comm(ilevel)
   integer::idx,offset, ngrids
 #endif
   integer::ncache,ind,iskip
-  integer::i,j,k,nxny,nbad,nbad_tot
+  integer::i,j,k,nxny
   integer::igrid,jgrid,ngrid
 #ifndef WITHOUTMPI
   integer::info,tag=101
@@ -1932,43 +1739,6 @@ subroutine build_comm(ilevel)
 #endif
 #endif
 
-  ! Sanity check: every grid that another cpu holds as a virtual copy of
-  ! one of my grids must exist here (index > 0). A zero index means that
-  ! the owner given by cpu_map and the authorization map (authorize_fine)
-  ! disagree; the ghost exchange would then read grid 0 silently.
-  nbad=0
-#ifdef TEST_MISSING_OWNER
-  ! Test hook for debug_missing_owner: pretend one grid is missing
-  if(ilevel==levelmin+2.and.myid==3.and.nstep_coarse==2)then
-    do icpu=1,ncpu
-      if(emission(icpu,ilevel)%ngrid>0)then
-        emission(icpu,ilevel)%igrid(1)=0
-        exit
-      end if
-    end do
-  end if
-#endif
-#ifdef LIGHT_MPI_COMM
-  do i=1,emission(ilevel)%ngrids_tot
-    if(emission(ilevel)%igrid(i)<=0)nbad=nbad+1
-  end do
-#else
-  do icpu=1,ncpu
-    do i=1,emission(icpu,ilevel)%ngrid
-      if(emission(icpu,ilevel)%igrid(i)<=0)nbad=nbad+1
-    end do
-  end do
-#endif
-  call MPI_ALLREDUCE(nbad,nbad_tot,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
-  if(nbad_tot>0)then
-    if(nbad>0)write(*,'(" build_comm: cpu ",I6," level ",I3,": ",I9," virtual grids on other cpus have no owner copy here")')myid,ilevel,nbad
-    flush(6)
-#ifndef LIGHT_MPI_COMM
-    call debug_missing_owner(ilevel)
-#endif
-    call MPI_BARRIER(MPI_COMM_WORLD,info)
-    call MPI_ABORT(MPI_COMM_WORLD,1,info)
-  end if
 
   ! Deallocate temporary communication buffers
   do icpu=1,ncpu

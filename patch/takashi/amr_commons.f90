@@ -84,7 +84,7 @@ module amr_commons
 
   ! Hilbert key
   real(qdp),allocatable,dimension(:)::hilbert_key
-  real(qdp),allocatable,dimension(:,:)::bound_key,bound_key2  ! (0:ndomain,1:nlevelmax): domain boundaries per grid level
+  real(qdp),allocatable,dimension(:)::bound_key,bound_key2
   real(qdp)                         ::order_all_min,order_all_max
 
   ! Recursive bisection

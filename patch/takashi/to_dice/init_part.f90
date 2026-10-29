@@ -935,7 +935,7 @@ contains
     do ipart=1,npart
       xx(1,1:3)=xp(ipart,1:3)
       xx_dp(1,1:3)=xx(1,1:3)
-      call cmp_cpumap(xx_dp,cc,1,1)
+      call cmp_cpumap(xx_dp,cc,1)
       if(cc(1).ne.myid)sendbuf(cc(1))=sendbuf(cc(1))+1
     end do
 
@@ -987,7 +987,7 @@ contains
       do ipart=1,npart
         xx(1,1:3)=xp(ipart,1:3)
         xx_dp(1,1:3)=xx(1,1:3)
-        call cmp_cpumap(xx_dp,cc,1,1)
+        call cmp_cpumap(xx_dp,cc,1)
         if(cc(1).ne.myid)then
           icpu=cc(1)
           ibuf=sendbuf(icpu)
@@ -1025,7 +1025,7 @@ contains
     do ipart=1,npart
       xx(1,1:3)=xp(ipart,1:3)
       xx_dp(1,1:3)=xx(1,1:3)
-      call cmp_cpumap(xx_dp,cc,1,1)
+      call cmp_cpumap(xx_dp,cc,1)
       if(cc(1).ne.myid)then
         icpu=cc(1)
         sendbuf(icpu)=sendbuf(icpu)+1
@@ -1360,7 +1360,7 @@ contains
         call MPI_BCAST(pp,nvector  ,MPI_INTEGER         ,0,MPI_COMM_WORLD,info)
         call MPI_BCAST(eof,1       ,MPI_LOGICAL         ,0,MPI_COMM_WORLD,info)
         call MPI_BCAST(jpart,1     ,MPI_INTEGER         ,0,MPI_COMM_WORLD,info)
-        call cmp_cpumap(xx,cc,jpart,1)
+        call cmp_cpumap(xx,cc,jpart)
 #endif
 
         do i=1,jpart
@@ -1769,7 +1769,7 @@ contains
         call MPI_BCAST(uu,nvector    ,MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,info)
         call MPI_BCAST(jpart,1       ,MPI_INTEGER         ,0,MPI_COMM_WORLD,info)
         call MPI_BCAST(header%npart,6,MPI_INTEGER         ,0,MPI_COMM_WORLD,info)
-        call cmp_cpumap(xx,cc,jpart,1)
+        call cmp_cpumap(xx,cc,jpart)
 #endif
         do i=1,jpart
 #ifndef WITHOUTMPI
@@ -1973,7 +1973,7 @@ subroutine load_gadget
         xx_dp(1,2) = pos(2,i)/gadgetheader%boxsize
         xx_dp(1,3) = pos(3,i)/gadgetheader%boxsize
 #ifndef WITHOUTMPI
-        call cmp_cpumap(xx_dp,cc,1,1)
+        call cmp_cpumap(xx_dp,cc,1)
         if(cc(1)==myid)then
 #endif
           ipart=ipart+1

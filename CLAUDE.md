@@ -27,6 +27,9 @@ RAMSES (AMR 宇宙流体コード, Fortran 90 + MPI) の岡本研フォーク。
 cd bin && make -j1            # 並列 make はモジュール依存が書かれておらず失敗する
 ```
 
+- モジュール (`amr_commons`, `rt_parameters` 等) の中身を変えたときは `bin/` の `.o` と `.mod` を
+  全部消してからビルドする (依存が書かれていないので古い `.mod` との不整合で落ちる)。
+
 - 本番設定は `bin/Makefile` (RT=1, NIONS=4, NGROUPS=7, NPSCAL=1, DICE=../patch/takashi/to_dice)。
   クラスタ用は `Makefile.xd*` (`make_gnu.sh`, `make_intel.sh`)。
 - Mac (Homebrew gfortran) ではリンク前に
@@ -53,8 +56,6 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
 - DICE 系は実行ディレクトリの親に `dice/` (dice_dw1.g2), `UVB/`, `cloudy/`, `SED/` (bc03_Chabrier)
   (hm12_ramses.dat) へのシンボリックリンクを置いて使う。データは Google Drive の
   `マイドライブ/codes/ramses_data/` にある (本番 namelist は /mnt/synology1 を指す)。
-- `balance_per_level=.true.` を `&RUN_PARAMS` に足すと level ごとの分割になる。
-  ghost を抑えるオプションは `balance_level_min`, `balance_tolerance` (docs 4c 節)。
 
 ## namelist の落とし穴
 
@@ -71,7 +72,9 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
 - 分割: `load_balance.f90` (`cmp_new_cpu_map`, `cmp_new_bound_key_per_level`,
   `cmp_cpumap(x,c,nn,ilevel)`, `cmp_cpumap_leaf`), `virtual_boundaries.f90`
   (`authorize_fine`, `build_comm`, 通信ルーチン), `refine_utils.f90` (`make_grid_fine`)。
-- level ごとの分割の設計・検証結果: `patch/takashi/docs/level_domain_decomposition.md`。
+- level ごとの分割 (balance_per_level) は 2026-10-29 に断念してコードを削除した。経緯と理由は
+  `patch/takashi/docs/level_domain_decomposition.md` (記録のみ)。通信の集約・非同期化
+  (`make_virtual_fine_dp_nv`, `make_virtual_reverse_dp_start/end`) は残っている。
 - 通信: `make_virtual_fine_dp[_nv]` (owner → ghost), `make_virtual_reverse_dp[_nv]`
   (ghost → owner, 加算), `make_virtual_reverse_dp_start/end` (非同期)。
   reverse の start/end の間で level ilevel の仮想セルを書き換えてはいけない。

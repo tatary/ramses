@@ -1,3 +1,9 @@
+> **2026-10-29: 断念・コード削除。** per-level 分割のコード (level ごとの `bound_key`, `cmp_cpumap` の level 引数,
+> `authorize_fine` の level ループ, `load_balance` の per-level ルーチン, restart/出力の level key,
+> namelist パラメータ `balance_per_level/balance_level_min/balance_tolerance`, 所有者診断) は
+> すべて取り除き、分割は上流と同じ単一分割に戻した。3 節の通信の集約・非同期化だけ残している。
+> 以下は設計と検証の記録。理由は 4c 節末尾。
+
 # Level ごとの domain decomposition と通信の隠蔽
 
 作成: 2026-10-21 (Claude Code との作業メモ)
@@ -237,6 +243,10 @@ flag/authorize したかを別配列に記録する。per-level は 4c の結論
 
 **結論 (2026-10-28): この問題・このランク数では per-level 分割は時間でもメモリでも得をしないので見送り**
 (詳細は節末の表と説明)。
+
+**2026-10-29: 断念。** 項 1 (自分の level-l oct の親と、自分の level-(l-1) grid の子が全部 ghost になる) は
+level ごとに領域を別の場所に置くことの直接の帰結で、均等化と両立しない。`balance_level_min` で消せるのは
+項 2 だけ。コードは既定 off のまま残す (TODO.md 2 節)。
 
 
 flat-328710 (単一分割) と flat-328709 (level ごと, バグあり) の比較。ghost は load balance 直後の値。

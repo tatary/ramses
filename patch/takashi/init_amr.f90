@@ -103,8 +103,8 @@ subroutine init_amr
 
     ! Cpu boundaries in chosen ordering
     ndomain=ncpu*overload
-    allocate(bound_key (0:ndomain,1:nlevelmax))
-    allocate(bound_key2(0:ndomain,1:nlevelmax))
+    allocate(bound_key (0:ndomain))
+    allocate(bound_key2(0:ndomain))
 
     ! Compute minimum and maximum ordering key
     dx_loc=scale
@@ -139,14 +139,14 @@ subroutine init_amr
     ! Set initial cpu boundaries
     do i=0,ndomain-1
 #ifdef QUADHILBERT
-      bound_key(i,1:nlevelmax)=order_all_min+real(i,16)/real(ndomain,16)* &
+      bound_key(i)=order_all_min+real(i,16)/real(ndomain,16)* &
       & (order_all_max-order_all_min)
 #else
-      bound_key(i,1:nlevelmax)=order_all_min+real(i,8)/real(ndomain,8)* &
+      bound_key(i)=order_all_min+real(i,8)/real(ndomain,8)* &
       & (order_all_max-order_all_min)
 #endif
     end do
-    bound_key(ndomain,1:nlevelmax)=order_all_max
+    bound_key(ndomain)=order_all_max
 
   else ! Init bisection balancing
 
@@ -166,7 +166,7 @@ subroutine init_amr
 #if NDIM>2
         x(1,3)=(dble(iz)+0.5d0-dble(kcoarse_min))*scale
 #endif
-        call cmp_cpumap(x,c,1,1)
+        call cmp_cpumap(x,c,1)
         cpu_map(ind)=c(1)
       end do
     end do
@@ -418,17 +418,13 @@ subroutine init_amr
 #ifdef QUADHILBERT
       if(nrestart_quad.eq.nrestart) then
         read(ilun)bound_key_restart(0:ndomain)
-        bound_key(0:ndomain,1)=bound_key_restart(0:ndomain)
+        bound_key(0:ndomain)=bound_key_restart(0:ndomain)
       else
-        read(ilun)bound_key(0:ndomain,1)
+        read(ilun)bound_key(0:ndomain)
       endif
 #else
-      read(ilun)bound_key(0:ndomain,1)
+      read(ilun)bound_key(0:ndomain)
 #endif
-      ! Same decomposition on all levels unless a per-level record follows
-      do ilevel=2,nlevelmax
-        bound_key(0:ndomain,ilevel)=bound_key(0:ndomain,1)
-      end do
     endif
     ! Read coarse level
     read(ilun)son(1:ncoarse)
@@ -529,8 +525,6 @@ subroutine init_amr
         end if
       end do
     end do
-    ! Read per-level cpu boundaries (trailing record, absent in old files)
-    if(ordering/='bisection')call read_level_bound_key(ilun)
     close(ilun)
 #ifdef QUADHILBERT
     if(nrestart_quad.eq.nrestart) deallocate(bound_key_restart)
@@ -757,17 +751,13 @@ subroutine init_amr
 #ifdef QUADHILBERT
       if(nrestart_quad.eq.nrestart) then
         read(ilun)bound_key_restart(0:ndomain)
-        bound_key(0:ndomain,1)=bound_key_restart(0:ndomain)
+        bound_key(0:ndomain)=bound_key_restart(0:ndomain)
       else
-        read(ilun)bound_key(0:ndomain,1)
+        read(ilun)bound_key(0:ndomain)
       endif
 #else
-      read(ilun)bound_key(0:ndomain,1)
+      read(ilun)bound_key(0:ndomain)
 #endif
-      ! Same decomposition on all levels unless a per-level record follows
-      do ilevel=2,nlevelmax
-        bound_key(0:ndomain,ilevel)=bound_key(0:ndomain,1)
-      end do
     endif
     ! Read coarse level
     read(ilun)son(1:ncoarse)
@@ -868,8 +858,6 @@ subroutine init_amr
         end if
       end do
     end do
-    ! Read per-level cpu boundaries (trailing record, absent in old files)
-    if(ordering/='bisection')call read_level_bound_key(ilun)
     close(ilun)
 #ifdef QUADHILBERT
     if(nrestart_quad.eq.nrestart) deallocate(bound_key_restart)
@@ -902,63 +890,3 @@ subroutine init_amr
 end subroutine init_amr
 
 
-!################################################################
-!################################################################
-!################################################################
-!################################################################
-subroutine read_level_bound_key(ilun)
-  use amr_commons
-  implicit none
-  integer::ilun
-  !----------------------------------------------------------------------
-  ! Read the per-level domain boundaries written at the end of amr files
-  ! (two records: nlevel, then bound_key(0:ndomain,1:nlevel)).
-  ! Old files do not have these records: keep the single decomposition
-  ! already copied to all levels by the caller.
-  !----------------------------------------------------------------------
-  integer::nlev,ios,ilevel,nread
-  logical::uniform
-  real(kind=8),allocatable,dimension(:,:)::tmp8
-  real(qdp),allocatable,dimension(:,:)::tmpq
-
-  read(ilun,iostat=ios)nlev
-  if(ios/=0)then
-    if(myid==1)write(*,*)'No per-level bound_key record in amr file: using single decomposition'
-    return
-  end if
-  if(nlev<1)then
-    if(myid==1)write(*,*)'Invalid per-level bound_key record: nlevel=',nlev
-    call clean_stop
-  end if
-  nread=min(nlev,nlevelmax)
-#ifdef QUADHILBERT
-  if(nrestart_quad.eq.nrestart) then
-    allocate(tmp8(0:ndomain,1:nlev))
-    read(ilun)tmp8
-    bound_key(0:ndomain,1:nread)=real(tmp8(0:ndomain,1:nread),kind=qdp)
-    deallocate(tmp8)
-  else
-    allocate(tmpq(0:ndomain,1:nlev))
-    read(ilun)tmpq
-    bound_key(0:ndomain,1:nread)=tmpq(0:ndomain,1:nread)
-    deallocate(tmpq)
-  endif
-#else
-  allocate(tmpq(0:ndomain,1:nlev))
-  read(ilun)tmpq
-  bound_key(0:ndomain,1:nread)=tmpq(0:ndomain,1:nread)
-  deallocate(tmpq)
-#endif
-  do ilevel=nread+1,nlevelmax
-    bound_key(0:ndomain,ilevel)=bound_key(0:ndomain,nread)
-  end do
-  if(myid==1.and.verbose)write(*,*)'Per-level bound_key read for',nread,' levels'
-  ! A decomposition that differs between levels can only be re-balanced
-  ! level by level: force balance_per_level in that case.
-  call check_bound_key_uniform(uniform)
-  if(.not.uniform.and..not.balance_per_level)then
-    if(myid==1)write(*,*)'Restart file has a per-level decomposition: forcing balance_per_level=.true.'
-    balance_per_level=.true.
-  end if
-
-end subroutine read_level_bound_key
