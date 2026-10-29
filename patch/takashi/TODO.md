@@ -71,6 +71,20 @@ patch コピーは削除して上流に戻し、`init_amr/output_amr/read_params
 出力ファイル形式も元に戻った (per-level 対応コードが書いた `amr_*.out` は末尾に余分なレコードがあるだけ
 なので、戻したコードでも restart できる)。設計・検証の記録は `docs/level_domain_decomposition.md`。
 
+## 2a. 単一分割の重みの knob `cost_weight_power` (2026-10-29 追加、本番未検証)
+
+待ち (本番の交換 2 本 21% のうち純粋な通信を除く分) は level 15 の grid 数の偏り (max/avg 1.38、
+rt - godunov の max/avg 1.31 と一致) から来る。`cost_weighting` はセルの重み `(80+numbp)×niter_cost(l)`
+(`niter_cost(l)=Π nsubcycle`、本番では 2^(l-6)) の合計を揃えるだけなので、level の混ざり方が違う
+ランク間で level 15 の数は揃わない。`&RUN_PARAMS` の `cost_weight_power` (既定 1.0 = 従来と bit 一致)
+で `niter_cost(l)**power` にすると細かい level の重みが支配的になり、level 15 がより均等になる代わりに
+grid 総数 (メモリ) の偏りが増える。メモリに余裕があるラン (flat-330638 は最大ランクで 27%) 向け。
+`flag1` は integer*4 なので `(80+numbp)×512^power < 2^31` の制限 (power ≲ 1.5、超えると停止メッセージ)。
+- 本番での試し方: 同じ restart から `nstepmax` を 3 step 先にして power=1 / 1.3 / 1.5 を流し、
+  `Level 15 has N grids (min,max,avg)`、`mem=`、timer 表の `rt - godunov` と交換 2 本の min/max を比べる。
+  level 15 の max/avg が 1.1 程度まで下がり、mem の最大が ngridmax に収まれば採用。
+- 実装: `patch/takashi/load_balance.f90` (上流コピー + 数行)、`amr_parameters.f90`、`read_params.f90` ×2。
+
 ## 2b. RT step のコスト内訳 (2026-10-28 着手)
 
 本番 (896 ランク) の coarse step 時間は level 15 の RT subcycle 1 回あたり 0.39 s で決まり、level 15 を
