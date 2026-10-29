@@ -20,11 +20,11 @@ INIT_STELLAR_MASS = 1
 # define stellar population mass separately from the initial stellar mass
 STELLAR_POPULATION_MASS = 1
 # Patch
-#DICE_MHD =../patch/takashi/to_dice/mhd
+#DICE_MHD =../patch/mizuki/to_dice/mhd
 DICE_MHD =
-DICE =../patch/takashi/to_dice
+DICE =../patch/mizuki/to_dice
 #DICE =
-PATCH =../patch/takashi
+PATCH =../patch/mizuki
 # Use RT? 1=Yes, 0=No
 RT = 1
 # Use turbulence? 1=Yes, 0=No (requires fftw3)
