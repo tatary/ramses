@@ -175,7 +175,7 @@ module amr_commons
   integer,parameter::nasync=2
   type async_exchange
      logical::active=.false.
-     integer::ilevel=0,iv1=0,iv2=0
+     integer::ilevel=0,iv1=0,iv2=0,ivstep=1
      integer::countsend=0,countrecv=0
      integer,allocatable,dimension(:)::reqsend,reqrecv,roff
      real(kind=8),allocatable,dimension(:)::sendbuf,recvbuf

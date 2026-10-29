@@ -2155,22 +2155,22 @@ subroutine make_virtual_reverse_dp_nv(xx,nvtot,iv1,iv2,ilevel)
   ! Blocking version of the aggregated reverse exchange (virtual copies
   ! -> owner, contributions are added): start immediately followed by end.
   ! -------------------------------------------------------------------
-  call make_virtual_reverse_dp_start(xx,nvtot,iv1,iv2,ilevel,nasync)
-  call make_virtual_reverse_dp_end(xx,nvtot,iv1,iv2,ilevel,nasync)
+  call make_virtual_reverse_dp_start(xx,nvtot,iv1,iv2,1,ilevel,nasync)
+  call make_virtual_reverse_dp_end(xx,nvtot,iv1,iv2,1,ilevel,nasync)
 end subroutine make_virtual_reverse_dp_nv
 !################################################################
 !################################################################
 !################################################################
 !################################################################
-subroutine make_virtual_reverse_dp_start(xx,nvtot,iv1,iv2,ilevel,ih)
+subroutine make_virtual_reverse_dp_start(xx,nvtot,iv1,iv2,ivstep,ilevel,ih)
   use amr_commons
   use mpi_mod
   implicit none
-  integer::nvtot,iv1,iv2,ilevel,ih
+  integer::nvtot,iv1,iv2,ivstep,ilevel,ih
   real(dp),dimension(1:ncoarse+ngridmax*twotondim,1:nvtot)::xx
   ! -------------------------------------------------------------------
   ! First half of a non-blocking reverse exchange (virtual copies ->
-  ! owner) for the variables iv1..iv2 of xx, one message per cpu:
+  ! owner) for the variables iv1, iv1+ivstep, ..., iv2 of xx, one message per cpu:
   ! the values of the virtual cells are packed and sent, the receives
   ! are posted. The data are added into the owner cells by
   ! make_virtual_reverse_dp_end. Between start and end, xx must not be
@@ -2198,15 +2198,20 @@ subroutine make_virtual_reverse_dp_start(xx,nvtot,iv1,iv2,ilevel,ih)
   end if
   if(numbtot(1,ilevel)==0)return
   if(iv2<iv1)return
-  if(verbose)write(*,111)ilevel,iv1,iv2
+  if(ivstep<1)then
+     write(*,*)'make_virtual_reverse_dp_start: invalid ivstep',ivstep
+     call clean_stop
+  end if
+  if(verbose)write(*,111)ilevel,iv1,iv2,ivstep
 
 #ifndef WITHOUTMPI
-  nv=iv2-iv1+1
+  nv=(iv2-iv1)/ivstep+1
   tag=200+ih
   async_rev(ih)%active=.true.
   async_rev(ih)%ilevel=ilevel
   async_rev(ih)%iv1=iv1
   async_rev(ih)%iv2=iv2
+  async_rev(ih)%ivstep=ivstep
   if(.not.allocated(async_rev(ih)%reqsend))allocate(async_rev(ih)%reqsend(1:ncpu))
   if(.not.allocated(async_rev(ih)%reqrecv))allocate(async_rev(ih)%reqrecv(1:ncpu))
   if(.not.allocated(async_rev(ih)%roff))allocate(async_rev(ih)%roff(1:ncpu))
@@ -2255,7 +2260,7 @@ subroutine make_virtual_reverse_dp_start(xx,nvtot,iv1,iv2,ilevel,ih)
      ncache=reception(icpu,ilevel)%ngrid
      if(ncache>0)then
         ibuf=soff(icpu)
-        do iv=iv1,iv2
+        do iv=iv1,iv2,ivstep
            do j=1,twotondim
               iskip=ncoarse+(j-1)*ngridmax
               do i=1,ncache
@@ -2276,18 +2281,18 @@ subroutine make_virtual_reverse_dp_start(xx,nvtot,iv1,iv2,ilevel,ih)
   async_rev(ih)%countsend=countsend
 #endif
 
-111 format('   Entering make_virtual_reverse_dp_start for level ',I2,' vars ',I3,'-',I3)
+111 format('   Entering make_virtual_reverse_dp_start for level ',I2,' vars ',I3,'-',I3,' step ',I3)
 
 end subroutine make_virtual_reverse_dp_start
 !################################################################
 !################################################################
 !################################################################
 !################################################################
-subroutine make_virtual_reverse_dp_end(xx,nvtot,iv1,iv2,ilevel,ih)
+subroutine make_virtual_reverse_dp_end(xx,nvtot,iv1,iv2,ivstep,ilevel,ih)
   use amr_commons
   use mpi_mod
   implicit none
-  integer::nvtot,iv1,iv2,ilevel,ih
+  integer::nvtot,iv1,iv2,ivstep,ilevel,ih
   real(dp),dimension(1:ncoarse+ngridmax*twotondim,1:nvtot)::xx
   ! -------------------------------------------------------------------
   ! Second half of the non-blocking reverse exchange: wait for the
@@ -2311,15 +2316,16 @@ subroutine make_virtual_reverse_dp_end(xx,nvtot,iv1,iv2,ilevel,ih)
      write(*,*)'make_virtual_reverse_dp_end: slot',ih,' is not active'
      call clean_stop
   end if
-  if(async_rev(ih)%ilevel/=ilevel.or.async_rev(ih)%iv1/=iv1.or.async_rev(ih)%iv2/=iv2)then
-     write(*,*)'make_virtual_reverse_dp_end: mismatch with start',ih,ilevel,iv1,iv2, &
-          & async_rev(ih)%ilevel,async_rev(ih)%iv1,async_rev(ih)%iv2
+  if(async_rev(ih)%ilevel/=ilevel.or.async_rev(ih)%iv1/=iv1.or.async_rev(ih)%iv2/=iv2 &
+       & .or.async_rev(ih)%ivstep/=ivstep)then
+     write(*,*)'make_virtual_reverse_dp_end: mismatch with start',ih,ilevel,iv1,iv2,ivstep, &
+          & async_rev(ih)%ilevel,async_rev(ih)%iv1,async_rev(ih)%iv2,async_rev(ih)%ivstep
      call clean_stop
   end if
-  if(verbose)write(*,111)ilevel,iv1,iv2
+  if(verbose)write(*,111)ilevel,iv1,iv2,ivstep
 
 #ifndef WITHOUTMPI
-  nv=iv2-iv1+1
+  nv=(iv2-iv1)/ivstep+1
 
   ! Wait for receives and add contributions into the owner cells
   call MPI_WAITALL(async_rev(ih)%countrecv,async_rev(ih)%reqrecv,statuses,info)
@@ -2327,7 +2333,7 @@ subroutine make_virtual_reverse_dp_end(xx,nvtot,iv1,iv2,ilevel,ih)
   offset=0; ibuf=0
   do idx=1,emission(ilevel)%nactive
      ngrids=emission(ilevel)%ngrids(idx)
-     do iv=iv1,iv2
+     do iv=iv1,iv2,ivstep
         do j=1,twotondim
            iskip=ncoarse+(j-1)*ngridmax
            do i=1,ngrids
@@ -2344,7 +2350,7 @@ subroutine make_virtual_reverse_dp_end(xx,nvtot,iv1,iv2,ilevel,ih)
      ncache=emission(icpu,ilevel)%ngrid
      if(ncache>0)then
         ibuf=async_rev(ih)%roff(icpu)
-        do iv=iv1,iv2
+        do iv=iv1,iv2,ivstep
            do j=1,twotondim
               iskip=ncoarse+(j-1)*ngridmax
               do i=1,ncache
@@ -2364,6 +2370,6 @@ subroutine make_virtual_reverse_dp_end(xx,nvtot,iv1,iv2,ilevel,ih)
 #endif
   async_rev(ih)%active=.false.
 
-111 format('   Entering make_virtual_reverse_dp_end for level ',I2,' vars ',I3,'-',I3)
+111 format('   Entering make_virtual_reverse_dp_end for level ',I2,' vars ',I3,'-',I3,' step ',I3)
 
 end subroutine make_virtual_reverse_dp_end

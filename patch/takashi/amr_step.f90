@@ -452,9 +452,9 @@ recursive subroutine amr_step(ilevel,icount)
     ! in the blocking version.
     call timer('hydro - rev ghostzones','start')
 #ifdef SOLVERmhd
-    call make_virtual_reverse_dp_start(unew,nvar+3,1,nvar+3,ilevel,1)
+    call make_virtual_reverse_dp_start(unew,nvar+3,1,nvar+3,1,ilevel,1)
 #else
-    call make_virtual_reverse_dp_start(unew,nvar,1,nvar,ilevel,1)
+    call make_virtual_reverse_dp_start(unew,nvar,1,nvar,1,ilevel,1)
 #endif
 
     ! Hyperbolic solver
@@ -464,9 +464,9 @@ recursive subroutine amr_step(ilevel,icount)
     ! Complete the reverse update of the boundaries
     call timer('hydro - rev ghostzones','start')
 #ifdef SOLVERmhd
-    call make_virtual_reverse_dp_end(unew,nvar+3,1,nvar+3,ilevel,1)
+    call make_virtual_reverse_dp_end(unew,nvar+3,1,nvar+3,1,ilevel,1)
 #else
-    call make_virtual_reverse_dp_end(unew,nvar,1,nvar,ilevel,1)
+    call make_virtual_reverse_dp_end(unew,nvar,1,nvar,1,ilevel,1)
 #endif
     ! MC Tracer
     ! Communicate fluxes accross boundaries
@@ -702,9 +702,11 @@ subroutine rt_step(ilevel)
     ! Start the reverse update of the boundaries before the solver
     ! (rt_godunov_fine and add_rt_sources never modify the virtual cells
     ! of level ilevel), complete it after: the communication overlaps
-    ! with the solver.
+    ! with the solver. Only the photon densities iGroups(1:nGroups) can
+    ! be non-zero in the virtual cells (star_RT_feedback adds to them;
+    ! rt_set_unew zeroes everything), so only those are exchanged.
     call timer('rt - rev ghostzones','start')
-    call make_virtual_reverse_dp_start(rtunew,nrtvar,1,nrtvar,ilevel,2)
+    call make_virtual_reverse_dp_start(rtunew,nrtvar,1,iGroups(nGroups),ndim+1,ilevel,2)
 
     ! Hyperbolic solver
     call timer('rt - godunov','start')
@@ -715,7 +717,7 @@ subroutine rt_step(ilevel)
 
     ! Complete the reverse update of the boundaries
     call timer('rt - rev ghostzones','start')
-    call make_virtual_reverse_dp_end(rtunew,nrtvar,1,nrtvar,ilevel,2)
+    call make_virtual_reverse_dp_end(rtunew,nrtvar,1,iGroups(nGroups),ndim+1,ilevel,2)
 
     ! Set rtuold equal to rtunew
     call timer('rt - set uold','start')
