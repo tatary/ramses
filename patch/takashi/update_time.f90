@@ -92,7 +92,10 @@ subroutine output_timer(write_file, filename)
   integer      :: i
   logical      :: id_is_one, write_file
   integer      :: ilun=11
+  integer      :: ilun2=12, ilevel
+  integer,      dimension(ncpu) :: all_numbl
   character(LEN=80)::filename, fileloc !Optional for writing timing info
+  character(LEN=80)::fileloc2          ! per-rank dump of all timers and grid counts
 !-----------------------------------------------------------------------
   id_is_one = myid == 1
   total = 1e-9
@@ -158,8 +161,20 @@ subroutine output_timer(write_file, filename)
     if (id_is_one) write (ilun,*) '--------------------------------------------------------------------'
     if (id_is_one) write (ilun,'(/a)') '     minimum       average       maximum' // &
       '  standard dev        std/av       %   rmn   rmx  TIMER'
+    ! Per-rank dump: one line per timer (seconds on rank 1..ncpu), then
+    ! one line per level with the number of active grids on each rank.
+    if (id_is_one) then
+      if (write_file) then
+        fileloc2=TRIM(filename)//'.ranks'
+      else
+        fileloc2='timer_ranks.dat'
+      end if
+      open(unit=ilun2,file=fileloc2,form='formatted')
+      write (ilun2,'(a,i6,a)') '# ncpu=',ncpu,'  columns: label, value on rank 1..ncpu'
+    end if
     do i = 1,ntimer
       call MPI_GATHER(real(time(i),kind=8),1,MPI_REAL8,vtime,1,MPI_REAL8,0,MPI_COMM_WORLD,mpi_err)
+      if (id_is_one) write (ilun2,'(a24,100000(1x,ES12.5))') labels(i), vtime
       if (id_is_one) then
         if (maxval(vtime)/gtotal > 0.001) then
           avtime  = sum(vtime) / ncpu ! average time used
@@ -172,6 +187,11 @@ subroutine output_timer(write_file, filename)
       endif
     end do
     if (id_is_one) write (ilun,'(f12.3,4x,f6.1,4x,a)') total, 100., 'TOTAL'
+    do ilevel=levelmin,nlevelmax
+      call MPI_GATHER(numbl(myid,ilevel),1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+      if (id_is_one) write (ilun2,'(a,i2,a,100000(1x,i12))') 'grids level ',ilevel,'          ', all_numbl
+    end do
+    if (id_is_one) close(ilun2)
   endif
 #endif
   if (id_is_one) close(ilun)
