@@ -1,10 +1,10 @@
 # やり残し・既知の問題 (引き継ぎメモ)
 
-最終更新: 2026-10-28 (level ごとの domain decomposition の本番不整合の診断追加)
+最終更新: 2026-10-29 (小野さんの flag_utils 修正の取り込み、RT ソルバの続き)
 
 ## 1. 既知のバグ
 
-### 1a. `patch/takashi/flag_utils.f90.mizuki` (git 未追跡, ビルド対象外に改名済み) の若い星まわり refinement — **要修正**
+### 1a. (修正済 2026-10-29) `patch/takashi/flag_utils.f90` の若い星まわり refinement
 - 2026-10-21 に `flag_utils.f90` → `flag_utils.f90.mizuki` に改名した。現在は上流の
   `amr/flag_utils.f90` がビルドされる。修正後に `.f90` に戻して `git add` する。
 - 小野さんが `userflag_fine` に追加したブロック (`if(star)` … `agemax=0.044` Gyr)。
@@ -28,6 +28,12 @@
   mizuki ブランチそのもの (`patch/mizuki`, SOLVER=mhd, `riemann='hlld'` に変更した同じ namelist) でも
   同じ行・同じ添字で再現する。原因は粒子が親セルの 3×3×3 の外にある場合 (`igg_loc/igd_loc`=3)。
   新版は `patch/takashi/flag_utils.f90.mizuki` として置いてある (ビルド対象外)。
+- **2026-10-29 解決**: origin/mizuki acb88172 (小野さん) が `userflag_fine` を書き直した。ilevel の星と
+  levelmax (ilevel+1) の星の走査を分け、後者を vector ループの外で nvector ずつ処理するようにした
+  (粒子数は `numbp` で回す)。問題 2 の再現手順 (tests/dice_amr.nml, 8 ランク, `-fbounds-check`) で
+  16 fine step 完走し、添字範囲外は出なくなった。そのまま `patch/takashi/flag_utils.f90` にコピーして
+  ビルドに戻した (`.f90.mizuki` は削除)。上流 `amr/flag_utils.f90` との差は小野さんの追加のみ。
+  これにより 44 Myr より若い星粒子のまわりの細分化が本番にも入る (物理結果が変わる)。
 
 ### 1b. `to_dice/init_part.f90`: `zp` の確保条件
 - `zp` (粒子金属量) は `if(star.or.sink)` の中で `if(metal)` のときだけ確保されるが、
@@ -61,6 +67,8 @@
   で SN が起きると `typep(0)` を読み、-O2 では segfault、bounds check では
   "Index '0' of dimension 1 of array 'typep'"。`j` に修正。`patch/mizuki/feedback.f90` にも同じ行がある
   (そちらは触っていない)。本番 namelist は `sf_log_properties=.true.` なので本番でも踏み得た。
+- 2026-10-29: origin/mizuki acb88172 でログ出力ブロックが MHD のループ注入の前に移動した (こちらにも
+  移植済み、hydro ビルドでは bit 一致)。mizuki 側はまだ `typep(ind_part(i))` のまま。小野さんに連絡要。
 
 ## 2. level ごとの domain decomposition (balance_per_level) の改善案
 
@@ -155,6 +163,23 @@ rev ghostzones / godunov / sources / set uold / ghostzones / upload fine`) を�
 `rt - godunov` 16.6 → 5.65 → 5.18 s、全体 39.1 → 25.9 s。hydro/rt/part/grav の出力は全て bit 一致。
 本番では rt - godunov が 27% なので全体で 15–20% の短縮見込み。残りは `cmp_flux_tensors`
 (32 セル × 7 群の Eddington tensor, 隣接 grid 間で 4 重に計算) と gather。
+
+**rt_godfine1 の内訳と第 2 段 (2026-10-29)**: 上の削減後に `MPI_Wtime` で区間計測 (手元 8 ランク,
+rank 1 の累積, 計測用ビルドのみ・コミットしていない): `cmp_flux_tensors` 3.4 s (44%), stencil gather
+2.6 s (34%, うち粗 level からの補間 0.3 s), 保存量の更新 1.1 s (14%), GLF 面 flux 0.55 s (7%)。
+- `cmp_flux_tensors` を成分ごとに書き下ろし (配列一時変数 `pflux`, `u` と p,q の 2 重ループ、
+  セルごとの `if(Np<0) clean_stop` と `cycle` を無くし、`merge` で密度 0・flux 0 を処理)、
+  更新ループは 3 方向を 1 回の read-modify-write にまとめた (加える順序は X, Y, Z のまま)。
+  手元 (同条件, 単独実行) で `rt - godunov` 5.47 → 4.10 s、全体 27.6 → 24.9 s。
+- **bit 一致の確認で注意**: Mac (arm64) の gfortran は既定で a*b+c を FMA に縮約するので、
+  数学的に同じ式でも書き方が変わると丸めが変わり、通常ビルドでは出力が bit 一致しない。
+  両方を `-ffp-contract=off` でビルドすると Stromgren (4 ランク) と dice_rt_amr (8 ランク, 12 step)
+  の出力は bit 一致する (演算順序が同じことの確認はこの方法で行う)。クラスタの ifx も
+  `-fp-model source` では FMA 縮約が有効なので、本番でも丸めレベルの差は出る。
+- 残りの候補: gather は `rtuold(ncell,nvar)` の配置上セルごとに 28 本のキャッシュラインを
+  飛び飛びに読むのが律速で、配列の並びを変えない限り大きくは減らない。tensor の 4 重計算を
+  無くすには群ごとにセル当たり 12 個の tensor を全セル分持つ必要があり (メモリ +40%)、
+  gather が増えるので得にならない見込み。次は feedback (本番 14%, 2.6 倍のばらつき)。
 
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 

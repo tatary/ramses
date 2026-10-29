@@ -204,14 +204,25 @@ subroutine cmp_flux_tensors(uin, iP0, nGrid, F)
   real(dp),dimension(1:nvector, iu1:iu2, ju1:ju2, ku1:ku2, 1:nrtvar)::    uin
   real(dp),dimension(1:nvector, iu1:iu2, ju1:ju2, ku1:ku2, 1:nDim+1, 1:ndim)::F
   integer::iP0, nGrid!---------------------------------------------------
-  real(dp),dimension(1:ndim)::pflux, u
-  real(dp)::Np, Np_c_sq, pflux_sq, chi, iterm, oterm
-  integer::i, j, k, p, q, n, nedge
+  real(dp)::Np, Np_c_sq, pflux_sq, chi, iterm, oterm, den, rn, fx, ux
+#if NDIM>1
+  real(dp)::fy, uy
+#endif
+#if NDIM>2
+  real(dp)::fz, uz
+#endif
+  logical ::nonzero, posflux
+  integer::i, j, k, n, nedge
 !------------------------------------------------------------------------
   ! Loop 4X4X4 cells in grid. All go from 0 to 3, out of 6X6X6 cells.
   ! We only need to calculate tensors for those cells which have faces to
   ! the 2X2X2 center cells, so by skipping the 'corners' we are reduced
   ! to half of the 4X4X4 cells.
+  !
+  ! The arithmetic below is the original (array/loop) formulation written
+  ! out per component, in the same order of operations, so that the
+  ! innermost loop over grids has no branches and vectorizes. The zero
+  ! density and zero flux cases are handled with merge instead of cycle.
 
   do k = kfrt1, kf2
   do j = jfrt1, jf2
@@ -223,38 +234,60 @@ subroutine cmp_flux_tensors(uin, iP0, nGrid, F)
      if(ndim.gt.2 .and. mod(k,3).eq.0) nedge=nedge+1
      if(nedge.ge.2) cycle
 
+     if(any(uin(1:ngrid, i, j, k, iP0) .lt. 0d0)) then
+        write(*,*)'negative photon density in cmp_eddington. -EXITING-'
+        call clean_stop
+     endif
+
      do n=1,ngrid                        !        Also loop over all grids
-
-        Np =   uin(n, i, j, k, iP0)      !          Photon density in cell
-        pflux= uin(n, i, j, k, iP0+1:iP0+ndim)  !       Photon flux vector
-        if(Np .lt. 0d0) then
-          write(*,*)'negative photon density in cmp_eddington. -EXITING-'
-          call clean_stop
-        endif
-        F(n,i,j,k,1,1:nDim)= pflux            !   First col is photon flux
-        ! Rest is Eddington tensor...initalize it to zero
-        F(n,i,j,k,2:ndim+1,1:nDim) = 0d0
+        Np = uin(n, i, j, k, iP0)        !          Photon density in cell
+        fx = uin(n, i, j, k, iP0+1)      !                    Photon flux
+        F(n,i,j,k,1,1) = fx              !   First col is photon flux
+        pflux_sq = fx*fx                 !  Sq. photon flux magnitude
+#if NDIM>1
+        fy = uin(n, i, j, k, iP0+2)
+        F(n,i,j,k,1,2) = fy
+        pflux_sq = pflux_sq + fy*fy
+#endif
+#if NDIM>2
+        fz = uin(n, i, j, k, iP0+3)
+        F(n,i,j,k,1,3) = fz
+        pflux_sq = pflux_sq + fz*fz
+#endif
         Np_c_sq = Np*rt_c2*Np
-        if(Np_c_sq .eq. 0d0) cycle           !Zero density => no pressure
-
-        pflux_sq = sum(pflux**2)              !  Sq. photon flux magnitude
-        u(:) = 0d0                           !           Flux unit vector
-        if(pflux_sq .gt. 0d0) u(:) = pflux/sqrt(pflux_sq)
-        pflux_sq = pflux_sq/Np_c_sq           !      Reduced flux, squared
+        nonzero = Np_c_sq .ne. 0d0           !Zero density => no pressure
+        den = merge(Np_c_sq, 1d0, nonzero)
+        posflux = pflux_sq .gt. 0d0
+        rn = merge(sqrt(pflux_sq), 1d0, posflux)
+        ux = merge(fx/rn, 0d0, posflux)      !           Flux unit vector
+#if NDIM>1
+        uy = merge(fy/rn, 0d0, posflux)
+#endif
+#if NDIM>2
+        uz = merge(fz/rn, 0d0, posflux)
+#endif
+        pflux_sq = pflux_sq/den               !      Reduced flux, squared
         chi = max(4d0-3d0*pflux_sq, 0d0)   !           Eddington factor
         chi = (3d0+ 4d0*pflux_sq)/(5d0 + 2d0*sqrt(chi))
 
         iterm = (1d0-chi)/2d0               !    Identity term in tensor
         oterm = (3d0*chi-1d0)/2d0          !         Outer product term
-        do p = 1, ndim
-           do q = 1, ndim
-              F(n,i,j,k,p+1,q) = oterm * u(p) * u(q)
-           enddo
-           F(n,i,j,k,p+1,p) = F(n,i,j,k,p+1,p) + iterm
-        enddo
-        F(n, i, j, k, 2:ndim+1, 1:ndim) =                                &
-             F(n, i, j, k, 2:ndim+1, 1:ndim) * rt_c2 * Np
-  enddo
+        ! Eddington tensor: (oterm*u(p)*u(q) [+ iterm on the diagonal])
+        ! times c^2*Np, zero where Np_c_sq is zero
+        F(n,i,j,k,2,1) = merge((oterm*ux*ux + iterm)*rt_c2*Np, 0d0, nonzero)
+#if NDIM>1
+        F(n,i,j,k,2,2) = merge((oterm*ux*uy)*rt_c2*Np, 0d0, nonzero)
+        F(n,i,j,k,3,1) = merge((oterm*uy*ux)*rt_c2*Np, 0d0, nonzero)
+        F(n,i,j,k,3,2) = merge((oterm*uy*uy + iterm)*rt_c2*Np, 0d0, nonzero)
+#endif
+#if NDIM>2
+        F(n,i,j,k,2,3) = merge((oterm*ux*uz)*rt_c2*Np, 0d0, nonzero)
+        F(n,i,j,k,3,3) = merge((oterm*uy*uz)*rt_c2*Np, 0d0, nonzero)
+        F(n,i,j,k,4,1) = merge((oterm*uz*ux)*rt_c2*Np, 0d0, nonzero)
+        F(n,i,j,k,4,2) = merge((oterm*uz*uy)*rt_c2*Np, 0d0, nonzero)
+        F(n,i,j,k,4,3) = merge((oterm*uz*uz + iterm)*rt_c2*Np, 0d0, nonzero)
+#endif
+     enddo
   enddo
   enddo
   enddo

@@ -432,34 +432,43 @@ SUBROUTINE rt_godfine1(ind_grid, ncache, ilevel, dt)
   !--------------------------------------
   ! Conservative update at level ilevel
   !--------------------------------------
-  do idim=1,ndim
-     i0=0; j0=0; k0=0
-     if(idim==1)i0=1
-     if(idim==2)j0=1
-     if(idim==3)k0=1
-     do k2=k2min,k2max      ! all from 0 to 1
-     do j2=j2min,j2max      ! => update 2x2x2 cells
-     do i2=i2min,i2max      ! i.e. update one grid at level ilevel
-        ind_son=1+i2+2*j2+4*k2
-        iskip=ncoarse+(ind_son-1)*ngridmax
+  ! The three directions are added one after the other to each cell, in
+  ! the same order as the original loop over idim, but with a single
+  ! read-modify-write of rtunew per cell and variable.
+  do k2=k2min,k2max      ! all from 0 to 1
+  do j2=j2min,j2max      ! => update 2x2x2 cells
+  do i2=i2min,i2max      ! i.e. update one grid at level ilevel
+     ind_son=1+i2+2*j2+4*k2
+     iskip=ncoarse+(ind_son-1)*ngridmax
+     do i=1,ncache
+        ind_cell(i)=iskip+ind_grid(i)
+     end do
+     i3=1+i2
+     j3=1+j2   ! just because the flux indexes are (1:3), not (0:2)
+     k3=1+k2
+     ! Update conservative variables new state vector
+     do ivar=1,nrtvar
         do i=1,ncache
-           ind_cell(i)=iskip+ind_grid(i)
+           rtunew(ind_cell(i),ivar)=                 &
+                &  rtunew(ind_cell(i),ivar)          &
+                & +(flux(i,i3   ,j3   ,k3   ,ivar,1)  &
+                & - flux(i,i3+1 ,j3   ,k3   ,ivar,1))
+#if NDIM>1
+           rtunew(ind_cell(i),ivar)=                 &
+                &  rtunew(ind_cell(i),ivar)          &
+                & +(flux(i,i3   ,j3   ,k3   ,ivar,2)  &
+                & - flux(i,i3   ,j3+1 ,k3   ,ivar,2))
+#endif
+#if NDIM>2
+           rtunew(ind_cell(i),ivar)=                 &
+                &  rtunew(ind_cell(i),ivar)          &
+                & +(flux(i,i3   ,j3   ,k3   ,ivar,3)  &
+                & - flux(i,i3   ,j3   ,k3+1 ,ivar,3))
+#endif
         end do
-        i3=1+i2
-        j3=1+j2   ! just because the flux indexes are (1:3), not (0:2)
-        k3=1+k2
-        ! Update conservative variables new state vector
-        do ivar=1,nrtvar
-           do i=1,ncache
-              rtunew(ind_cell(i),ivar)=                 &
-                   &  rtunew(ind_cell(i),ivar)          &
-                   & +(flux(i,i3   ,j3   ,k3   ,ivar,idim)  &
-                   & - flux(i,i3+i0,j3+j0,k3+k0,ivar,idim))
-           end do
-        end do
      end do
-     end do
-     end do
+  end do
+  end do
   end do
 
   !--------------------------------------
