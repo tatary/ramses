@@ -77,8 +77,11 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
   `patch/takashi/docs/level_domain_decomposition.md` (記録のみ)。通信の集約・非同期化
   (`make_virtual_fine_dp_nv`, `make_virtual_reverse_dp_start/end`) は残っている。
 - 通信: `make_virtual_fine_dp[_nv]` (owner → ghost), `make_virtual_reverse_dp[_nv]`
-  (ghost → owner, 加算), `make_virtual_reverse_dp_start/end` (非同期)。
-  reverse の start/end の間で level ilevel の仮想セルを書き換えてはいけない。
+  (ghost → owner, 加算), `make_virtual_reverse_dp_start/end` (非同期),
+  `make_virtual_fine_dp_start/end` (owner → ghost の非同期, RT subcycle の `rtuold` で使用)。
+  reverse の start/end の間で level ilevel の仮想セルを、forward の start/end の間で
+  emission grid (他ランクが ghost として持つ自分の grid) を書き換えてはいけない。
+  `cooling_fine_part(ilevel,1/2)` は emission grid を先に冷却するための分割版 (`cooling_fine` と同じ結果)。
 - やり残し・既知のバグ: `patch/takashi/TODO.md`。
 
 ## 作業の進め方

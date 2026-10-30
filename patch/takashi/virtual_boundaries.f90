@@ -1916,6 +1916,204 @@ end subroutine make_virtual_fine_dp_nv
 !################################################################
 !################################################################
 !################################################################
+subroutine make_virtual_fine_dp_start(xx,nvtot,iv1,iv2,ilevel,ih)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::nvtot,iv1,iv2,ilevel,ih
+  real(dp),dimension(1:ncoarse+ngridmax*twotondim,1:nvtot)::xx
+  ! -------------------------------------------------------------------
+  ! First half of a non-blocking owner -> virtual exchange (same data
+  ! as make_virtual_fine_dp_nv) for the variables iv1..iv2 of xx: the
+  ! receives are posted and the owner cells of the emission grids are
+  ! packed and sent. make_virtual_fine_dp_end stores the received data
+  ! into the virtual cells. Between start and end, the emission grids
+  ! (the active grids of level ilevel that other cpus hold as virtual)
+  ! must not be modified in xx; the other active grids and the virtual
+  ! cells may be modified freely (the virtual cells are overwritten at
+  ! end). ih selects one of the nasync slots (2 is used for rtuold).
+  ! -------------------------------------------------------------------
+#ifndef WITHOUTMPI
+  integer::icpu,i,j,iv,ncache,iskip,nv,ibuf,info,tag
+  integer::countsend,countrecv,nsend,nrecv
+  integer,dimension(ncpu)::soff
+#ifdef LIGHT_MPI_COMM
+  integer::idx,offset,ngrids
+#endif
+#endif
+
+  if(ih<1.or.ih>nasync)then
+     write(*,*)'make_virtual_fine_dp_start: invalid slot',ih
+     call clean_stop
+  end if
+  if(async_fwd(ih)%active)then
+     write(*,*)'make_virtual_fine_dp_start: slot',ih,' already active (level', &
+          & async_fwd(ih)%ilevel,')'
+     call clean_stop
+  end if
+  if(numbtot(1,ilevel)==0)return
+  if(iv2<iv1)return
+  if(verbose)write(*,111)ilevel,iv1,iv2
+
+#ifndef WITHOUTMPI
+  nv=iv2-iv1+1
+  tag=210+ih
+  async_fwd(ih)%active=.true.
+  async_fwd(ih)%ilevel=ilevel
+  async_fwd(ih)%iv1=iv1
+  async_fwd(ih)%iv2=iv2
+  async_fwd(ih)%ivstep=1
+  if(.not.allocated(async_fwd(ih)%reqsend))allocate(async_fwd(ih)%reqsend(1:ncpu))
+  if(.not.allocated(async_fwd(ih)%reqrecv))allocate(async_fwd(ih)%reqrecv(1:ncpu))
+  if(.not.allocated(async_fwd(ih)%roff))allocate(async_fwd(ih)%roff(1:ncpu))
+
+  ! Post receives (one block per cpu owning my virtual grids)
+  nrecv=0
+  do icpu=1,ncpu
+     async_fwd(ih)%roff(icpu)=nrecv
+     nrecv=nrecv+reception(icpu,ilevel)%ngrid*twotondim*nv
+  end do
+  allocate(async_fwd(ih)%recvbuf(1:max(nrecv,1)))
+  countrecv=0
+  do icpu=1,ncpu
+     ncache=reception(icpu,ilevel)%ngrid
+     if(ncache>0)then
+        countrecv=countrecv+1
+        call MPI_IRECV(async_fwd(ih)%recvbuf(async_fwd(ih)%roff(icpu)+1),ncache*twotondim*nv, &
+             & MPI_DOUBLE_PRECISION,icpu-1,tag,MPI_COMM_WORLD,async_fwd(ih)%reqrecv(countrecv),info)
+     end if
+  end do
+  async_fwd(ih)%countrecv=countrecv
+
+  ! Gather and send (one block per cpu holding my grids as virtual)
+#ifdef LIGHT_MPI_COMM
+  nsend=emission(ilevel)%ngrids_tot*twotondim*nv
+  allocate(async_fwd(ih)%sendbuf(1:max(nsend,1)))
+  offset=0; ibuf=0; countsend=0
+  do idx=1,emission(ilevel)%nactive
+     ngrids=emission(ilevel)%ngrids(idx)
+     do iv=iv1,iv2
+        do j=1,twotondim
+           iskip=ncoarse+(j-1)*ngridmax
+           do i=1,ngrids
+              async_fwd(ih)%sendbuf(ibuf+i)=xx(emission(ilevel)%igrid(offset+i)+iskip,iv)
+           end do
+           ibuf=ibuf+ngrids
+        end do
+     end do
+     countsend=countsend+1
+     call MPI_ISEND(async_fwd(ih)%sendbuf(ibuf-ngrids*twotondim*nv+1),ngrids*twotondim*nv, &
+          & MPI_DOUBLE_PRECISION,emission(ilevel)%cpuid(idx)-1,tag,MPI_COMM_WORLD, &
+          & async_fwd(ih)%reqsend(countsend),info)
+     offset=offset+ngrids
+  end do
+#else
+  nsend=0
+  do icpu=1,ncpu
+     soff(icpu)=nsend
+     nsend=nsend+emission(icpu,ilevel)%ngrid*twotondim*nv
+  end do
+  allocate(async_fwd(ih)%sendbuf(1:max(nsend,1)))
+  countsend=0
+  do icpu=1,ncpu
+     ncache=emission(icpu,ilevel)%ngrid
+     if(ncache>0)then
+        ibuf=soff(icpu)
+        do iv=iv1,iv2
+           do j=1,twotondim
+              iskip=ncoarse+(j-1)*ngridmax
+              do i=1,ncache
+                 async_fwd(ih)%sendbuf(ibuf+i)=xx(emission(icpu,ilevel)%igrid(i)+iskip,iv)
+              end do
+              ibuf=ibuf+ncache
+           end do
+        end do
+        countsend=countsend+1
+        call MPI_ISEND(async_fwd(ih)%sendbuf(soff(icpu)+1),ncache*twotondim*nv, &
+             & MPI_DOUBLE_PRECISION,icpu-1,tag,MPI_COMM_WORLD,async_fwd(ih)%reqsend(countsend),info)
+     end if
+  end do
+#endif
+  async_fwd(ih)%countsend=countsend
+#endif
+
+111 format('   Entering make_virtual_fine_dp_start for level ',I2,' vars ',I3,'-',I3)
+
+end subroutine make_virtual_fine_dp_start
+!################################################################
+!################################################################
+!################################################################
+!################################################################
+subroutine make_virtual_fine_dp_end(xx,nvtot,iv1,iv2,ilevel,ih)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::nvtot,iv1,iv2,ilevel,ih
+  real(dp),dimension(1:ncoarse+ngridmax*twotondim,1:nvtot)::xx
+  ! -------------------------------------------------------------------
+  ! Second half of the non-blocking owner -> virtual exchange: wait for
+  ! the data and store them into the virtual cells.
+  ! -------------------------------------------------------------------
+#ifndef WITHOUTMPI
+  integer::icpu,i,j,iv,ncache,iskip,nv,ibuf,info
+  integer,dimension(MPI_STATUS_SIZE,ncpu)::statuses
+#endif
+
+  if(ih<1.or.ih>nasync)then
+     write(*,*)'make_virtual_fine_dp_end: invalid slot',ih
+     call clean_stop
+  end if
+  if(numbtot(1,ilevel)==0)return
+  if(iv2<iv1)return
+  if(.not.async_fwd(ih)%active)then
+     write(*,*)'make_virtual_fine_dp_end: slot',ih,' is not active'
+     call clean_stop
+  end if
+  if(async_fwd(ih)%ilevel/=ilevel.or.async_fwd(ih)%iv1/=iv1.or.async_fwd(ih)%iv2/=iv2)then
+     write(*,*)'make_virtual_fine_dp_end: mismatch with start',ih,ilevel,iv1,iv2, &
+          & async_fwd(ih)%ilevel,async_fwd(ih)%iv1,async_fwd(ih)%iv2
+     call clean_stop
+  end if
+  if(verbose)write(*,111)ilevel,iv1,iv2
+
+#ifndef WITHOUTMPI
+  nv=iv2-iv1+1
+
+  ! Wait for receives and scatter into the virtual grids
+  call MPI_WAITALL(async_fwd(ih)%countrecv,async_fwd(ih)%reqrecv,statuses,info)
+  do icpu=1,ncpu
+     ncache=reception(icpu,ilevel)%ngrid
+     if(ncache>0)then
+        ibuf=async_fwd(ih)%roff(icpu)
+        do iv=iv1,iv2
+           do j=1,twotondim
+              iskip=ncoarse+(j-1)*ngridmax
+              do i=1,ncache
+#ifdef LIGHT_MPI_COMM
+                 xx(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,iv)=async_fwd(ih)%recvbuf(ibuf+i)
+#else
+                 xx(reception(icpu,ilevel)%igrid(i)+iskip,iv)=async_fwd(ih)%recvbuf(ibuf+i)
+#endif
+              end do
+              ibuf=ibuf+ncache
+           end do
+        end do
+     end if
+  end do
+
+  ! Wait for sends and release buffers
+  call MPI_WAITALL(async_fwd(ih)%countsend,async_fwd(ih)%reqsend,statuses,info)
+  deallocate(async_fwd(ih)%sendbuf,async_fwd(ih)%recvbuf)
+#endif
+  async_fwd(ih)%active=.false.
+
+111 format('   Entering make_virtual_fine_dp_end for level ',I2,' vars ',I3,'-',I3)
+
+end subroutine make_virtual_fine_dp_end
+!################################################################
+!################################################################
+!################################################################
+!################################################################
 subroutine make_virtual_reverse_dp_nv(xx,nvtot,iv1,iv2,ilevel)
   use amr_commons
   implicit none

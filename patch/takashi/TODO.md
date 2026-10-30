@@ -192,6 +192,16 @@ sf_virial=.true. や sf_model<6 の経路は元のまま。冒頭の `uold(1:4)`
 
 - 実装済み: 全変数を 1 メッセージに集約 (`make_virtual_fine_dp_nv`)、`unew`/`rtunew`
   の reverse 通信を godunov と重ねる非同期化 (`make_virtual_reverse_dp_start/end`)。
+  forward 版の非同期化は `make_virtual_fine_dp_start/end(xx,nvtot,iv1,iv2,ilevel,ih)` (スロット `async_fwd`,
+  tag 210+ih)。start と end の間で emission grid (他ランクが仮想コピーを持つ自分の grid) の xx を
+  書き換えてはいけない。
+- 実装済み (2026-10-30, bit 一致): RT subcycle 内の `rtuold` の forward 通信を cooling と重ねる。
+  `cooling_fine_part(ilevel,1)` が他ランクに送る grid (emission grid) だけ先に冷却し、
+  `make_virtual_fine_dp_start(rtuold,...,2)` で送信を出してから `cooling_fine_part(ilevel,2)` で
+  残りを冷却、`make_virtual_fine_dp_end` で受信を仮想セルに書く (`amr_step.f90` の `rt_step`)。
+  `coolfine1` はセル単位で独立なので grid の順序を変えても出力は bit 一致 (手元 8 ランク、96 ファイル)。
+  手元 (1 ノード) では pack/unpack の帯域が支配的で時間は変わらない。本番 (rt - ghostzones 148 s/3 step,
+  min 65 s) で純粋な通信分がどれだけ隠れるかを次の timer 表で見る。スロット: `async_fwd(2)`。
 - 未実装: step 末の `uold` の forward 通信 (ghost 更新) の隠蔽。直後の `flag_fine`
   (勾配判定) が ghost を必要とするため、cooling_fine を「送信対象 grid → それ以外」の
   順に分けて送信を先に出す、または flag_fine を interior/boundary に分ける必要がある。

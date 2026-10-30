@@ -723,11 +723,18 @@ subroutine rt_step(ilevel)
     call timer('rt - set uold','start')
     call rt_set_uold(ilevel)
 
+    ! Cooling, then update the virtual copies of rtuold. The grids that
+    ! other cpus need (emission grids) are cooled first, their values are
+    ! sent, and the remaining grids are cooled while the messages are in
+    ! flight (cooling touches only the cells of its own grids).
     call timer('cooling','start')
-    if(neq_chem.or.cooling.or.T2_star>0.0.or.barotropic_eos)call cooling_fine(ilevel)
+    if(neq_chem.or.cooling.or.T2_star>0.0.or.barotropic_eos)call cooling_fine_part(ilevel,1)
     call timer('rt - ghostzones','start')
-
-    call make_virtual_fine_dp_nv(rtuold,nrtvar,1,nrtvar,ilevel)
+    call make_virtual_fine_dp_start(rtuold,nrtvar,1,nrtvar,ilevel,2)
+    call timer('cooling','start')
+    if(neq_chem.or.cooling.or.T2_star>0.0.or.barotropic_eos)call cooling_fine_part(ilevel,2)
+    call timer('rt - ghostzones','start')
+    call make_virtual_fine_dp_end(rtuold,nrtvar,1,nrtvar,ilevel,2)
     if(simple_boundary)call rt_make_boundary_hydro(ilevel)
 
     t_left = t_left - dtnew(ilevel)

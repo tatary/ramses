@@ -47,6 +47,126 @@ end subroutine cooling_fine
 !###########################################################
 !###########################################################
 !###########################################################
+subroutine cooling_fine_part(ilevel,ipart)
+  use amr_commons
+  use hydro_commons
+  use cooling_module
+#ifdef grackle
+  use grackle_parameters
+#endif
+  use mpi_mod
+  implicit none
+  integer::ilevel,ipart
+  !-------------------------------------------------------------------
+  ! Same as cooling_fine, done in two calls so that the owner -> virtual
+  ! exchange of the result can overlap with the second one:
+  !   ipart=1: the active grids that other cpus hold as virtual copies
+  !            (the emission grids); after this call their values can be
+  !            sent (make_virtual_fine_dp_start).
+  !   ipart=2: the remaining active grids (and the cooling-table update
+  !            that cooling_fine does after the sweep).
+  ! Every cell is treated exactly as in cooling_fine (coolfine1 works
+  ! cell by cell), only the order of the grids differs. The two lists
+  ! are built in ipart=1 and reused in ipart=2.
+  !-------------------------------------------------------------------
+  integer::ncache,i,igrid,ngrid,icpu,nfirst,nlast,nlist
+  integer,dimension(1:nvector),save::ind_grid
+  logical,allocatable,dimension(:),save::is_emitted
+  integer,allocatable,dimension(:),save::list
+  integer,save::nemit=0,nrest=0,list_level=0
+#ifdef LIGHT_MPI_COMM
+  integer::idx,offset
+#endif
+
+  if(numbtot(1,ilevel)==0)return
+  if(verbose)write(*,111)ilevel,ipart
+
+  if(ipart==1)then
+     ! Build the ordered list: emission grids first, then the others
+     ncache=active(ilevel)%ngrid
+     if(.not.allocated(is_emitted))then
+        allocate(is_emitted(1:ngridmax))
+        is_emitted=.false.
+     end if
+     if(allocated(list))then
+        if(size(list)<ncache)deallocate(list)
+     end if
+     if(.not.allocated(list))allocate(list(1:max(ncache,1)))
+#ifndef WITHOUTMPI
+#ifdef LIGHT_MPI_COMM
+     do i=1,emission(ilevel)%ngrids_tot
+        is_emitted(emission(ilevel)%igrid(i))=.true.
+     end do
+#else
+     do icpu=1,ncpu
+        do i=1,emission(icpu,ilevel)%ngrid
+           is_emitted(emission(icpu,ilevel)%igrid(i))=.true.
+        end do
+     end do
+#endif
+#endif
+     nfirst=0
+     do i=1,ncache
+        if(is_emitted(active(ilevel)%igrid(i)))then
+           nfirst=nfirst+1
+           list(nfirst)=active(ilevel)%igrid(i)
+        end if
+     end do
+     nlast=nfirst
+     do i=1,ncache
+        if(.not.is_emitted(active(ilevel)%igrid(i)))then
+           nlast=nlast+1
+           list(nlast)=active(ilevel)%igrid(i)
+        end if
+     end do
+     do i=1,nfirst
+        is_emitted(list(i))=.false.
+     end do
+     nemit=nfirst
+     nrest=nlast-nfirst
+     list_level=ilevel
+     igrid=1
+     nlist=nemit
+  else
+     if(list_level/=ilevel.or.nemit+nrest/=active(ilevel)%ngrid)then
+        write(*,*)'cooling_fine_part: part 2 without part 1',ilevel,list_level
+        call clean_stop
+     end if
+     igrid=nemit+1
+     nlist=nemit+nrest
+  end if
+
+  ! Operator splitting step for cooling source term by vector sweeps
+  do while(igrid<=nlist)
+    ngrid=MIN(nvector,nlist-igrid+1)
+    do i=1,ngrid
+      ind_grid(i)=list(igrid+i-1)
+    end do
+    call coolfine1(ind_grid,ngrid,ilevel)
+    igrid=igrid+ngrid
+  end do
+
+  if(ipart==2)then
+     if((cooling.and..not.neq_chem.and..not.cooling_ism).and.ilevel==levelmin.and.cosmo)then
+#ifdef grackle
+        if(use_grackle==0)then
+           if(myid==1)write(*,*)'Computing new cooling table'
+           call set_table(dble(aexp))
+        endif
+#else
+        if(myid==1)write(*,*)'Computing new cooling table'
+        call set_table(dble(aexp))
+#endif
+     endif
+  end if
+
+111 format('   Entering cooling_fine_part for level',i2,' part',i2)
+
+end subroutine cooling_fine_part
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
 subroutine coolfine1(ind_grid,ngrid,ilevel)
   use amr_commons
   use hydro_commons
