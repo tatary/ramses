@@ -244,12 +244,39 @@ subroutine star_formation(ilevel)
 
 ! get values of uold for density and velocities in virtual boundaries
 #ifndef WITHOUTMPI
-  ! density and velocities in one message per neighbour instead of four
+  if(async_fwd(1)%active)then
+    ! amr_step started the exchange (conservative variables) after the
+    ! cooling of the emission grids: complete it and convert the virtual
+    ! cells to velocities with the same operations as the active cells.
 #ifdef SOLVERmhd
-  call make_virtual_fine_dp_nv(uold,nvar+3,1,4,ilevel)
+    call make_virtual_fine_dp_end(uold,nvar+3,1,4,ilevel,1)
 #else
-  call make_virtual_fine_dp_nv(uold,nvar,1,4,ilevel)
+    call make_virtual_fine_dp_end(uold,nvar,1,4,ilevel,1)
 #endif
+    do icpu=1,ncpu
+      do ind=1,twotondim
+        iskip=ncoarse+(ind-1)*ngridmax
+        do i=1,reception(icpu,ilevel)%ngrid
+#ifdef LIGHT_MPI_COMM
+          ncell=reception(icpu,ilevel)%pcomm%igrid(i)+iskip
+#else
+          ncell=reception(icpu,ilevel)%igrid(i)+iskip
+#endif
+          d=uold(ncell,1)
+          uold(ncell,2)=uold(ncell,2)/d
+          uold(ncell,3)=uold(ncell,3)/d
+          uold(ncell,4)=uold(ncell,4)/d
+        end do
+      end do
+    end do
+  else
+    ! density and velocities in one message per neighbour instead of four
+#ifdef SOLVERmhd
+    call make_virtual_fine_dp_nv(uold,nvar+3,1,4,ilevel)
+#else
+    call make_virtual_fine_dp_nv(uold,nvar,1,4,ilevel)
+#endif
+  end if
 #endif
 
   !------------------------------------------------

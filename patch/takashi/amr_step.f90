@@ -541,6 +541,21 @@ recursive subroutine amr_step(ilevel,icount)
   endif
 #endif
 
+#if NDIM==3
+  ! Density and momentum for star_formation: start the owner -> virtual
+  ! exchange here if rt_step did not (star_formation completes it).
+  if(hydro.and.star.and.(.not.static_gas))then
+     if(.not.async_fwd(1)%active)then
+        call timer('hydro - ghostzones','start')
+#ifdef SOLVERmhd
+        call make_virtual_fine_dp_start(uold,nvar+3,1,4,ilevel,1)
+#else
+        call make_virtual_fine_dp_start(uold,nvar,1,4,ilevel,1)
+#endif
+     end if
+  end if
+#endif
+
   !---------------
   ! Move particles
   !---------------
@@ -654,8 +669,10 @@ end subroutine amr_step
 
 #ifdef RT
 subroutine rt_step(ilevel)
-  use amr_parameters, only: dp
+  use amr_parameters, only: dp, hydro, star, static_gas
   use amr_commons,    only: levelmin, t, dtnew, myid
+  use hydro_parameters, only: nvar
+  use hydro_commons,  only: uold
   use rt_cooling_module, only: update_UVrates
   use rt_hydro_commons
   use UV_module
@@ -673,6 +690,7 @@ subroutine rt_step(ilevel)
 
   real(dp) :: dt_hydro, t_left, dt_rt, t_save
   integer  :: i_substep, ivar
+  logical  :: last_sub
 
   dt_hydro = dtnew(ilevel)                   ! Store hydro timestep length
   t_left = dt_hydro
@@ -688,6 +706,7 @@ subroutine rt_step(ilevel)
     ! Temporarily change timestep length to rt step:
     dtnew(ilevel) = MIN(t_left, dt_rt/2**(ilevel-levelmin))
     t = t + dtnew(ilevel) ! Shift the time forwards one dt_rt
+    last_sub = (dtnew(ilevel) >= t_left)   ! last RT subcycle of this hydro step
 
     ! If (myid==1) write(*,900) dt_hydro, dtnew(ilevel), i_substep, ilevel
     call timer('rt - set unew','start')
@@ -731,6 +750,18 @@ subroutine rt_step(ilevel)
     if(neq_chem.or.cooling.or.T2_star>0.0.or.barotropic_eos)call cooling_fine_part(ilevel,1)
     call timer('rt - ghostzones','start')
     call make_virtual_fine_dp_start(rtuold,nrtvar,1,nrtvar,ilevel,2)
+#if NDIM==3
+    ! After the last subcycle, uold of these grids is final: also start
+    ! sending density and momentum to the virtual copies for
+    ! star_formation, which completes the exchange (slot 1) itself.
+    if(last_sub .and. hydro .and. star .and. (.not.static_gas))then
+#ifdef SOLVERmhd
+       call make_virtual_fine_dp_start(uold,nvar+3,1,4,ilevel,1)
+#else
+       call make_virtual_fine_dp_start(uold,nvar,1,4,ilevel,1)
+#endif
+    end if
+#endif
     call timer('cooling','start')
     if(neq_chem.or.cooling.or.T2_star>0.0.or.barotropic_eos)call cooling_fine_part(ilevel,2)
     call timer('rt - ghostzones','start')

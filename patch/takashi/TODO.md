@@ -193,8 +193,13 @@ sf_virial=.true. や sf_model<6 の経路は元のまま。冒頭の `uold(1:4)`
 - 実装済み: 全変数を 1 メッセージに集約 (`make_virtual_fine_dp_nv`)、`unew`/`rtunew`
   の reverse 通信を godunov と重ねる非同期化 (`make_virtual_reverse_dp_start/end`)。
   forward 版の非同期化は `make_virtual_fine_dp_start/end(xx,nvtot,iv1,iv2,ilevel,ih)` (スロット `async_fwd`,
-  tag 210+ih)。start と end の間で emission grid (他ランクが仮想コピーを持つ自分の grid) の xx を
-  書き換えてはいけない。
+  tag 210+ih)。start 時点の値を送信バッファに詰めるので start 後に xx を書き換えてもよいが、
+  end までは仮想セルが古い値のまま。
+- 実装済み (2026-10-30, bit 一致): `star_formation` 冒頭の `uold(1:4)` のブロッキング交換も同じ仕組みに。
+  `rt_step` の最後の subcycle で cooling part 1 の直後に slot 1 で start (RT を使わない経路では粒子移動の
+  直前に start)、`star_formation` が end してから ghost セルを active セルと同じ式 (`u=uold(2)/d`) で
+  速度に変換する (元は primitive に変換してから送っていた。同じ数に同じ演算なので bit 一致)。
+  通信が cooling part 2 と `move_fine` に隠れる。手元では star formation 0.21 s のまま。
 - 実装済み (2026-10-30, bit 一致): RT subcycle 内の `rtuold` の forward 通信を cooling と重ねる。
   `cooling_fine_part(ilevel,1)` が他ランクに送る grid (emission grid) だけ先に冷却し、
   `make_virtual_fine_dp_start(rtuold,...,2)` で送信を出してから `cooling_fine_part(ilevel,2)` で
