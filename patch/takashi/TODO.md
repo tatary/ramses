@@ -253,6 +253,31 @@ star_formation の gather 削減) で、334557 は `cost_weight_power=1.0`、334
 - `timer_ranks.dat` の名前は `timer_ranks_<PBS_JOBID の数字>.dat` (SLURM なら `SLURM_JOB_ID`、どちらも無ければ
   `timer_ranks_n<nstep_coarse>.dat`) に変えた。手元 (`PBS_JOBID=123456.flat`) で確認済み。
 
+**追加行つきの再計測 (flat-337110 / `timer_ranks_337110.dat`, power 1.0, 2026-11-07, 677 s; 334557 と同じ設定)**:
+- `recv total` は復帰後の全 load balance の累積 (復帰直後の 1 回目で約 360 万 grid が動く)、
+  `recv level l` は最後の 1 回だけ (全 grid の 4.3%)。ローカルの DICE テストでも同じ比率なので仕様どおり。
+- **「受け取った grid のメモリ配置」説は否定**: grid-subcycle あたりの rt - godunov は、最後の load balance で
+  受け取った割合の四分位ごとに 12.23 / 12.05 / 12.06 / 12.09 µs で差がない。累積 `recv total` とも相関 -0.15。
+  ghost 割合とも 0.04、粒子数とも -0.06。星の数とは 0.24 (四分位で 12.0→12.3 µs、3%) で主因ではない。
+- **grid 数ではまったく説明できない**: level 11–15 の grid 数での最小二乗は R² ≤ 0.1 (rt - godunov、cooling、
+  hydro - godunov とも)。cost weighting は仕事量 (4.60–4.64M) をよく揃えているのに、計算時間は
+  rt - godunov 50.8–69.2 s、cooling 53.7–68.8 s、hydro - godunov 91–123 s と最大 +20% ばらつく。
+  3 つのタイマーは純粋な計算部分 (非同期通信の end 待ちは `rt - rev ghostzones` / `rt - ghostzones` /
+  `hydro - rev ghostzones` に入る) なので通信待ちの混入ではない。
+- **遅いランクは別ジョブでも同じ**: 334558 (power 1.3、分割が違う) と 337110 で grid あたりコストの相関は
+  rt - godunov 0.72、cooling 0.82、star formation 0.83。平均より 10% 以上遅いランク (41, 80, 81, 83, 109,
+  407, 645 …) は両方に出る。ランク番号の mod 2/4/8/16 (コア位置) には依存せず、112/128 ブロック (ノード) で
+  説明できる分散は 10–15%。ログにノード名が無いので「同じノードに割り当てられた」可能性は否定できないが、
+  Hilbert 順でランク番号 ≈ 空間領域なので、領域 (中心部の高密度ガス?) 依存の grid あたりコストと見るのが自然。
+  rank 番号での自己相関 (lag 1–2 で 0.3–0.4) も領域説と整合する。
+- 同期で吸収される待ち時間: star formation 66–145 s、rt - ghostzones 21–72 s、hydro - rev ghostzones 45–88 s。
+  合計の最小 132 s 対平均 213 s、速いランクは遅いランクより ~80 s 余計に待つ (677 s の 12%)。
+- **次の手**: grid 数ではなく実測時間で重みを補正する。各ランクの直前 coarse step の計算時間 (rt - godunov +
+  cooling + hydro - godunov) / 仕事量 を係数にして、そのランクが持つ grid の cost weight に掛けてから
+  `cmp_new_cpu_map` に渡す (ランク ≈ 領域なので領域依存コストもハード差も両方拾える)。期待値は最大 ~10%。
+  領域依存の原因そのもの (cooling の反復回数? Riemann solver? 高密度での何か) は `rt_solve_cooling` の反復回数を
+  ランク別に数えれば分かる。
+
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 
 - 実装済み: 全変数を 1 メッセージに集約 (`make_virtual_fine_dp_nv`)、`unew`/`rtunew`
