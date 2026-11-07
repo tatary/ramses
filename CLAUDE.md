@@ -37,6 +37,12 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
 - 別ディレクトリでビルドするときは Makefile をコピーして `../` を絶対パスに置換する。
 - `DEBUG=1` は `-ffpe-trap=...underflow...` を含み RT 初期化が SIGILL で落ちる。
   デバッグ時は `underflow` を外す。
+- `LIGHT_MPI_COMM=1` (通信バッファを軽くするフラグ、既定 0) では `reception(icpu,ilevel)` が別の型になる:
+  `%igrid/%u/%f` は `%pcomm%igrid/%pcomm%u/%pcomm%f`、粒子の属性は `pcomm%u(property, particle)` と
+  添字の順が heavy と逆、送信側は `emission(ilevel)` / `emission_part(ilevel)` に全相手分がまとまる。
+  `reception(...)%igrid` や `%up` を触るコードを足すときは必ず `#ifdef LIGHT_MPI_COMM` の両分岐を書き、
+  `pcomm` は `if(.not.associated(...))allocate(...)` してから中身を確保する。両方のビルドで出力の bit 一致を
+  確認する (DICE: `tests/dice_rt_amr.nml`、grafic: `~/ramses_ks_20230630/ics/ics_L1Mpc_64`、TODO.md 1f)。
 - **DICE を有効にしたビルドでは `&INIT_PARAMS` の region 型初期条件は動かない**
   (`to_dice/init_flow_fine.f90` が DICE 専用)。hydro/RT の単体テストは `DICE =` を空にする。
 
