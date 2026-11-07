@@ -212,6 +212,15 @@ subroutine output_timer(write_file, filename)
       call MPI_GATHER(nghost_loc,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
       if (id_is_one) write (ilun2,'(a,i2,a,100000(1x,i12))') 'ghost level ',ilevel,'          ', all_numbl
     end do
+    ! Grids received (owner changed to this rank) at the last load balance, per level, and over the run
+    do ilevel=levelmin,nlevelmax
+      nghost_loc=0
+      if(allocated(nrecv_lb))nghost_loc=nrecv_lb(ilevel)
+      call MPI_GATHER(nghost_loc,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+      if (id_is_one) write (ilun2,'(a,i2,a,100000(1x,i12))') 'recv  level ',ilevel,'          ', all_numbl
+    end do
+    call MPI_GATHER(nrecv_lb_tot,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+    if (id_is_one) write (ilun2,'(a24,100000(1x,i12))') 'recv total', all_numbl
     call MPI_GATHER(npart,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
     if (id_is_one) write (ilun2,'(a24,100000(1x,i12))') 'particles', all_numbl
     nstar_loc=0

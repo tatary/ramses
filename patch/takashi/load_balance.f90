@@ -41,6 +41,9 @@ subroutine load_balance
 
   balance=.true.
 
+  if(.not.allocated(nrecv_lb))allocate(nrecv_lb(1:nlevelmax))
+  nrecv_lb=0
+
   if(verbose)then
      write(*,*)'Input mesh structure'
      do ilevel=1,nlevelmax
@@ -171,6 +174,10 @@ subroutine load_balance
            end if
            kcpu=cpu_map (father(igrid))
            jcpu=cpu_map2(father(igrid))
+           if(kcpu.ne.jcpu.and.jcpu==myid)then
+              nrecv_lb(ilevel)=nrecv_lb(ilevel)+1
+              nrecv_lb_tot=nrecv_lb_tot+1
+           end if
            if(kcpu.ne.jcpu)then
               if(numbl(jcpu,ilevel)>0)then
                  next(igrid)=0

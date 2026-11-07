@@ -225,8 +225,9 @@ star_formation の gather 削減) で、334557 は `cost_weight_power=1.0`、334
   → 偏りは「grid 数」ではなく「grid あたりの仕事」。cooling (セル局所) まで同じ比率で動くので、
   refinement 境界の補間だけでは説明できず、ランク内の grid のメモリ配置 (load balance で受け取った grid が
   free list に散らばる) によるキャッシュ効率の差が最有力。確かめるなら load balance 直後に grid を
-  Hilbert 順に並べ直す (全配列の付け替え、大仕事) か、`timer_ranks` に「最後の load balance で受け取った
-  grid 数」を足して相関を見る。
+  Hilbert 順に並べ直す (全配列の付け替え、大仕事) か、`timer_ranks` の「最後の load balance で受け取った
+  grid 数」(`recv level l` / `recv total`、2026-11-07 追加、`nrecv_lb` in `amr_commons`) と grid あたりの
+  godunov 時間の相関を見る。
 - star formation (59–127 s) は grid 数と無相関 (0.1)、rho と 0.55、refine と -0.56。粒子数の行が無かったので
   判定できず、`timer_ranks` に `particles` / `stars` / `ghost level l` の行を足した (次のランから出る)。
 - `timer_ranks.dat` の名前は `timer_ranks_<PBS_JOBID の数字>.dat` (SLURM なら `SLURM_JOB_ID`、どちらも無ければ

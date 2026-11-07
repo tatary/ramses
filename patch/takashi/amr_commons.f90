@@ -182,6 +182,10 @@ module amr_commons
   end type async_exchange
   type(async_exchange),dimension(1:nasync)::async_rev
   type(async_exchange),dimension(1:nasync)::async_fwd   ! owner -> virtual (make_virtual_fine_dp_start/end)
+  ! Grids that changed owner to this rank at the last load balance, per level (timer_ranks diagnostics),
+  ! and the running total over the run
+  integer,allocatable,dimension(:)::nrecv_lb
+  integer::nrecv_lb_tot=0
 
   ! Active grid, emission and reception communicators
   type(communicator),allocatable,dimension(:)  ::active               ! 1D (1:nlevelmax) array => leave as is
