@@ -57,6 +57,26 @@
 - 2026-10-29: origin/mizuki acb88172 でログ出力ブロックが MHD のループ注入の前に移動した (こちらにも
   移植済み、hydro ビルドでは bit 一致)。mizuki 側はまだ `typep(ind_part(i))` のまま。小野さんに連絡要。
 
+### 1f. (修正済 2026-11-07) `LIGHT_MPI_COMM=1` で DICE 初期条件が読めない
+
+- to_dice の 4 ファイルに LIGHT 分岐が無い箇所が 7 つあり、`reception(icpu,ilevel)%igrid` / `%up` で
+  コンパイルが止まる (`init_flow_fine` ×2, `rho_fine` ×1, `particle_tree` の DICE 追加分 `up`/`maskp` ×4)。
+  LIGHT 側は `%pcomm%igrid`、粒子は `reception%pcomm%u(current_property,ind_com(i))` /
+  `emission_part(ilevel)%u(current_property, offset_np+ind_com(i)-1)` (添字の順が heavy と逆) で書いた。
+- 上流由来: `init_part.f90` の `load_grafic` にある LIGHT 版の粒子再配分 (`emission_part(1)%u` への詰め込み) は
+  `sendbuf(icpu)` を増やさず全粒子が同じ場所に上書き、`MPI_ALLTOALL` に渡す送信数が 0、添字が受信側の
+  `pcomm%u(1:ncache,1:7)` (列優先) と不一致、`MPI_ISEND` の先頭が `×(twondim+1)` されていない、送るものが無い
+  ランクは自分の粒子の詰め直しまで飛ばす、受信側の `reception(icpu,1)%pcomm` ポインタを確保せずに中身を確保
+  (level 1 に ghost が無い相手で segfault)、送るものが無いランクで未確保の送信バッファを `deallocate`、の 7 点が
+  壊れていた (GitHub `stable` も同じ)。受信側に合わせて書き直した (`to_dice/init_part.f90` と
+  `patch/takashi/init_part.f90` 同文)。DICE は `load_dice` (rank 1 が読んで BCAST、各ランクが `cmp_cpumap` で
+  選ぶ) なのでこの経路を通らない。
+- grafic の検証: `~/ramses_ks_20230630/ics/ics_L1Mpc_64/level_006` (64^3, 1 Mpc, DM+バリオン) を RT=0, DICE 空の
+  ビルドで 4 ランク 4 step (levelmin 6, nremap=1)。LIGHT=1 と 0 で `amr/hydro/part/grav` 48 ファイルが bit 一致、
+  ランクごとの npart も一致。namelist は scratchpad `run/gh/run.nml` (`&HYDRO_PARAMS` が必須)。
+- DICE の検証: `tests/dice_rt_amr.nml` (4 ランク, 6 step, `star_as_nbody=.false.`) で LIGHT=1 と LIGHT=0 の
+  `amr/hydro/part/grav/rt` 40 ファイルが bit 一致。LIGHT ビルドは `bin/*.o *.mod` を消してから。
+
 ## 2. level ごとの domain decomposition (balance_per_level) — 断念・削除済み (2026-10-29)
 
 細かい level `l` の担当領域と level `l-1` の担当領域が別の場所になる限り、level `l` の oct の親 grid

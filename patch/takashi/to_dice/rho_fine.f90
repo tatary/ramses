@@ -403,7 +403,11 @@ subroutine multipole_from_current_level(ilevel)
       iskip=ncoarse+(ind-1)*ngridmax
       do idim=1,ndim+1
         do j=1,reception(icpu,ilevel)%ngrid
+#ifdef LIGHT_MPI_COMM
+          unew(reception(icpu,ilevel)%pcomm%igrid(j)+iskip,idim)=0.0D0
+#else
           unew(reception(icpu,ilevel)%igrid(j)+iskip,idim)=0.0D0
+#endif
         end do
       end do
     end do

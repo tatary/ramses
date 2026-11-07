@@ -19,6 +19,7 @@ subroutine init_part
 #ifdef LIGHT_MPI_COMM
   integer::idx,offset
   integer,dimension(ncpu)::sendbuf_cum
+  integer,dimension(ncpu)::sendbuf_tot
 #endif
   integer::i1,i2,i3
   integer::i1_min=0,i1_max=0,i2_min=0,i2_max=0,i3_min=0,i3_max=0
@@ -950,34 +951,41 @@ contains
         end if
       end do
 
-      ! Fill communicator structures with particle data
-      jpart=0
-      sendbuf=0
-      do ipart=1,npart
-        xx(1,1:3)=xp(ipart,1:3)
-        xx_dp(1,1:3)=xx(1,1:3)
-        call cmp_cpumap(xx_dp,cc,1)
-        if(cc(1).ne.myid)then
-          icpu=cc(1)
-          ibuf=sendbuf(icpu)
-          emission_part(1)%u((sendbuf_cum(icpu)+ibuf)*(twondim+1),1)     = xp(ipart,1)
-          emission_part(1)%u((sendbuf_cum(icpu)+ibuf)*(twondim+1) + 1,1) = xp(ipart,2)
-          emission_part(1)%u((sendbuf_cum(icpu)+ibuf)*(twondim+1) + 2,1) = xp(ipart,3)
-          emission_part(1)%u((sendbuf_cum(icpu)+ibuf)*(twondim+1) + 3,1) = vp(ipart,1)
-          emission_part(1)%u((sendbuf_cum(icpu)+ibuf)*(twondim+1) + 4,1) = vp(ipart,2)
-          emission_part(1)%u((sendbuf_cum(icpu)+ibuf)*(twondim+1) + 5,1) = vp(ipart,3)
-          emission_part(1)%u((sendbuf_cum(icpu)+ibuf)*(twondim+1) + 6,1) = mp(ipart)
-          emission_part(1)%f8((sendbuf_cum(icpu)+ibuf)*2,1)              = part2int(typep(ipart))
-          emission_part(1)%f8((sendbuf_cum(icpu)+ibuf)*2 + 1,1)          = idp(ipart)
-        else
-          jpart=jpart+1
-          xp(jpart,1:3)=xp(ipart,1:3)
-          vp(jpart,1:3)=vp(ipart,1:3)
-          mp(jpart)    =mp(ipart)
-          idp(jpart)   =idp(ipart)
-        endif
-      end do
     end if
+
+    ! Fill communicator structures with particle data.  The block for cpu icpu starts at
+    ! sendbuf_cum(icpu)*(twondim+1) and has the layout of the receiver's pcomm%u(1:ncache,1:twondim+1)
+    ! (all x, then all y, ...: column major), so the ISEND/IRECV of one contiguous block matches.
+    jpart=0
+    sendbuf_tot=sendbuf
+    sendbuf=0
+    do ipart=1,npart
+      xx(1,1:3)=xp(ipart,1:3)
+      xx_dp(1,1:3)=xx(1,1:3)
+      call cmp_cpumap(xx_dp,cc,1)
+      if(cc(1).ne.myid)then
+        icpu=cc(1)
+        sendbuf(icpu)=sendbuf(icpu)+1
+        ibuf=sendbuf(icpu)
+        ncache=sendbuf_tot(icpu)
+        offset=sendbuf_cum(icpu)*(twondim+1)
+        emission_part(1)%u(offset+ibuf,1) = xp(ipart,1)
+        emission_part(1)%u(offset+ibuf+1*ncache,1) = xp(ipart,2)
+        emission_part(1)%u(offset+ibuf+2*ncache,1) = xp(ipart,3)
+        emission_part(1)%u(offset+ibuf+3*ncache,1) = vp(ipart,1)
+        emission_part(1)%u(offset+ibuf+4*ncache,1) = vp(ipart,2)
+        emission_part(1)%u(offset+ibuf+5*ncache,1) = vp(ipart,3)
+        emission_part(1)%u(offset+ibuf+6*ncache,1) = mp(ipart)
+        emission_part(1)%f8(sendbuf_cum(icpu)*2+ibuf,1) = part2int(typep(ipart))
+        emission_part(1)%f8(sendbuf_cum(icpu)*2+ibuf+ncache,1) = idp(ipart)
+      else
+        jpart=jpart+1
+        xp(jpart,1:3)=xp(ipart,1:3)
+        vp(jpart,1:3)=vp(ipart,1:3)
+        mp(jpart)    =mp(ipart)
+        idp(jpart)   =idp(ipart)
+      endif
+    end do
 #else
     ! Allocate communication buffer in emission
     do icpu=1,ncpu
@@ -1040,6 +1048,7 @@ contains
       ncache=recvbuf(icpu)
       if(ncache>0)then
 #ifdef LIGHT_MPI_COMM
+        if(.not.associated(reception(icpu,1)%pcomm))allocate(reception(icpu,1)%pcomm)
         allocate(reception(icpu,1)%pcomm%u(1:ncache,1:twondim+1))
         allocate(reception(icpu,1)%pcomm%f8(1:ncache,1:2))
 #else
@@ -1077,7 +1086,7 @@ contains
         buf_count=ncache*(twondim+1)
         countsend=countsend+1
 #ifdef LIGHT_MPI_COMM
-        call MPI_ISEND(emission_part(1)%u(sendbuf_cum(icpu)+ncache,1),buf_count, &
+        call MPI_ISEND(emission_part(1)%u(sendbuf_cum(icpu)*(twondim+1)+1,1),buf_count, &
         & MPI_DOUBLE_PRECISION,icpu-1,&
         & tagu,MPI_COMM_WORLD,reqsend(countsend),info)
 #else
@@ -1135,11 +1144,11 @@ contains
         countsend=countsend+1
 #ifdef LIGHT_MPI_COMM
 #ifndef LONGINT
-        call MPI_ISEND(emission_part(1)%f8(sendbuf_cum(icpu)+ncache,1),buf_count, &
+        call MPI_ISEND(emission_part(1)%f8(sendbuf_cum(icpu)*2+1,1),buf_count, &
         & MPI_INTEGER,icpu-1,&
         & tagu,MPI_COMM_WORLD,reqsend(countsend),info)
 #else
-        call MPI_ISEND(emission_part(1)%f8(sendbuf_cum(icpu)+ncache,1),buf_count, &
+        call MPI_ISEND(emission_part(1)%f8(sendbuf_cum(icpu)*2+1,1),buf_count, &
         & MPI_INTEGER8,icpu-1,&
         & tagu,MPI_COMM_WORLD,reqsend(countsend),info)
 #endif
@@ -1206,8 +1215,8 @@ contains
 
     ! Deallocate communicators
 #ifdef LIGHT_MPI_COMM
-    deallocate(emission_part(1)%u)
-    deallocate(emission_part(1)%f8)
+    if(allocated(emission_part(1)%u))deallocate(emission_part(1)%u)
+    if(allocated(emission_part(1)%f8))deallocate(emission_part(1)%f8)
 #endif
 
     do icpu=1,ncpu
