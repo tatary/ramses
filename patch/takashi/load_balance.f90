@@ -323,6 +323,9 @@ subroutine cmp_new_cpu_map
   integer,dimension(1:nvector),save::dom
   real(qdp),dimension(1:nvector),save::order_min,order_max
   integer,dimension(1:MAXLEVEL),save::niter_cost
+  real(kind=8)::tcost,wcost,rate_loc
+  real(kind=8),dimension(1:2)::rate_in,rate_out
+  real(kind=8),dimension(1:2)::fac_in,fac_out
 
   real(dp),dimension(1:1,1:ndim),save :: xx_tmp
   integer,dimension(1:1),save :: c_tmp
@@ -487,6 +490,58 @@ subroutine cmp_new_cpu_map
   end do
   ! End loop over levels
 
+  !------------------------------------------------------------------
+  ! Time-based correction (cost_time_weighting): scale the cost of every
+  ! cell this rank owns by (measured compute time / cost) relative to the
+  ! average over ranks. The measured time is the sum of the compute timers
+  ! in cost_timer_total since the previous load balance; it is a clean
+  ! measurement only when the previous load balance was followed by the
+  ! steps of a full coarse step on this partition (cost_time_valid), so
+  ! the first load balance (initial conditions, restart) keeps factor 1.
+  ! Clipped to [0.5,2] and relaxed with cost_time_relax so that one bad
+  ! measurement cannot swing the partition.
+  !------------------------------------------------------------------
+  call cost_timer_total(tcost)
+  if(cost_weighting.and.cost_time_weighting)then
+     wcost=0d0
+     do isub=1,overload
+        wcost=wcost+dble(npart_sub(isub))
+     end do
+     rate_in=0d0
+     if(cost_time_valid.and.wcost>0d0.and.tcost>cost_time_prev)then
+        rate_loc=(tcost-cost_time_prev)/wcost
+        rate_in(1)=rate_loc; rate_in(2)=1d0
+     else
+        rate_loc=0d0
+     end if
+#ifndef WITHOUTMPI
+     call MPI_ALLREDUCE(rate_in,rate_out,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+#else
+     rate_out=rate_in
+#endif
+     if(rate_out(2)>0d0.and.rate_loc>0d0)then
+        ! Normalise by the average rate over the ranks that have a measurement
+        rate_loc=rate_loc/(rate_out(1)/rate_out(2))
+        rate_loc=min(max(rate_loc,0.5d0),2.0d0)
+        cost_rank_fac=(1d0-cost_time_relax)*cost_rank_fac+cost_time_relax*rate_loc
+     else
+        cost_rank_fac=1d0
+     end if
+     fac_in(1)=cost_rank_fac; fac_in(2)=-cost_rank_fac
+#ifndef WITHOUTMPI
+     call MPI_ALLREDUCE(fac_in,fac_out,2,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,info)
+#else
+     fac_out=fac_in
+#endif
+     if(myid==1.and.rate_out(2)>0d0)write(*,'(a,f6.3,a,f6.3,a,i5,a)') &
+          & ' Load balance: time cost factor min=',-fac_out(2),' max=',fac_out(1), &
+          & ' (',nint(rate_out(2)),' ranks measured)'
+  else
+     cost_rank_fac=1d0
+  end if
+  cost_time_prev=tcost
+  cost_time_valid=.true.
+
   !------------------------------------------------
   ! Sort ordering key and store new index in flag2
   !------------------------------------------------
@@ -497,7 +552,7 @@ subroutine cmp_new_cpu_map
   !-----------------------------
   cost_loc = 0 ! Compute local and global cost
   do isub=1,overload
-     cost_loc(myid+(isub-1)*ncpu) = dble(npart_sub(isub))
+     cost_loc(myid+(isub-1)*ncpu) = dble(npart_sub(isub))*cost_rank_fac
   end do
 #ifndef WITHOUTMPI
   call MPI_ALLREDUCE(cost_loc,cost_old,ndomain,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
@@ -531,7 +586,7 @@ subroutine cmp_new_cpu_map
         i=idom
         local_cost=incost_old(myid-1+(isub-1)*ncpu)
         do ind_long=1,ncell_sub(isub)
-           cell_cost=dble(flag1(flag2(ind_long+ncell_loc)))
+           cell_cost=dble(flag1(flag2(ind_long+ncell_loc)))*cost_rank_fac
            local_cost=local_cost+cell_cost
            if (i > ndomain) exit
            if(incost_new(i)<local_cost)then

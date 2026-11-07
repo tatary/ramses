@@ -267,7 +267,10 @@ star_formation の gather 削減) で、334557 は `cost_weight_power=1.0`、334
 - **遅いランクは別ジョブでも同じ**: 334558 (power 1.3、分割が違う) と 337110 で grid あたりコストの相関は
   rt - godunov 0.72、cooling 0.82、star formation 0.83。平均より 10% 以上遅いランク (41, 80, 81, 83, 109,
   407, 645 …) は両方に出る。ランク番号の mod 2/4/8/16 (コア位置) には依存せず、112/128 ブロック (ノード) で
-  説明できる分散は 10–15%。ログにノード名が無いので「同じノードに割り当てられた」可能性は否定できないが、
+  説明できる分散は 10–15%。ログにノード名が無いので「同じノードに割り当てられた」可能性は否定できないが
+  (2026-11-07 から起動時に `Ranks i - j on <node>` を出し、`timer_ranks_*.dat` の 2 行目 `# host` に
+  ランクごとのノード名が入るので、次回以降のラン同士なら判別できる。334558/337110 については
+  `qstat -xf <jobid>` の `exec_host` が残っていればそれで)、
   Hilbert 順でランク番号 ≈ 空間領域なので、領域 (中心部の高密度ガス?) 依存の grid あたりコストと見るのが自然。
   rank 番号での自己相関 (lag 1–2 で 0.3–0.4) も領域説と整合する。
 - 同期で吸収される待ち時間: star formation 66–145 s、rt - ghostzones 21–72 s、hydro - rev ghostzones 45–88 s。
@@ -277,6 +280,31 @@ star_formation の gather 削減) で、334557 は `cost_weight_power=1.0`、334
   `cmp_new_cpu_map` に渡す (ランク ≈ 領域なので領域依存コストもハード差も両方拾える)。期待値は最大 ~10%。
   領域依存の原因そのもの (cooling の反復回数? Riemann solver? 高密度での何か) は `rt_solve_cooling` の反復回数を
   ランク別に数えれば分かる。
+
+## 2c. 実測時間で cost weight を補正する `cost_time_weighting` (2026-11-07 追加、本番未検証)
+
+2b の結論 (grid 数では説明できない、ランクごとに再現する +20% の計算時間差) への対処。
+`&RUN_PARAMS` に `cost_time_weighting=.true.` (既定 `.false.`) と `cost_time_relax` (既定 1.0)。
+
+- `cmp_new_cpu_map` (`load_balance.f90`) で、各ランクが自分の leaf cell の cost (`flag1`、level 重み × (80+粒子数))
+  を集計した直後に、`cost_timer_total` (`update_time.f90`、`hydro - godunov` + `cooling` + `rt - godunov` の
+  timer 合計) の前回 load balance からの増分 / 自分の cost 合計 を「単位 cost あたりの実測時間」とし、
+  測定できたランクの平均で割って係数 `cost_rank_fac` (`amr_commons`) にする。[0.5, 2] に clip、
+  `cost_time_relax` で前回の係数と混ぜる (1.0 なら最新値のみ)。
+- 係数は `cost_loc` (ランクの総 cost) と境界探索の `cell_cost` の両方に掛ける (`flag1` は整数のまま)。
+  同じランクの cell は全部同じ係数なので「そのランクの領域は単位 cost あたり X 倍遅い」という補正。
+  領域依存でもハード依存でも、ランク ≈ 領域 (Hilbert 順) で動く grid は 4% 程度なので両方拾える。
+- 最初の load balance (初期条件、restart 直後) は計測区間が無いので係数 1 (`cost_time_valid`)。
+  `cost_time_weighting=.false.` では `cost_rank_fac=1` を掛けるだけで出力は bit 一致
+  (手元 `tests/dice_rt_amr.nml` 相当、4 ランク 6 step: 変更前バイナリと 40 ファイル cmp 一致。
+  `.true.` では係数 0.98–1.02 で分割がわずかに変わり、`hydro_stats.py` の総和は丸め誤差の範囲で一致、
+  セル数は同じ)。
+- 出力: rank 1 が毎回 `Load balance: time cost factor min= max= (N ranks measured)` を出す。
+  `timer_ranks_*.dat` に `cost factor` 行 (各ランクの係数)。
+- 本番で確認すること: 係数の min/max が 0.8–1.2 程度に収まるか、振動しないか (収まらなければ
+  `cost_time_relax=0.5`)、計算 3 タイマーの max/avg が 1.2 → 1.05 程度に縮むか、
+  待ち (star formation / rt - ghostzones / hydro - rev ghostzones) の合計が減るか。
+  memory (grid 数) は不均等になる方向なので `mem=` の最大値も見る。
 
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 

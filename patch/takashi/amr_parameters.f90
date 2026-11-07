@@ -88,6 +88,8 @@ module amr_parameters
   character(len=128)::ordering='hilbert'
   logical::cost_weighting=.true.           ! Activate load balancing according to cpu time
   real(dp)::cost_weight_power=1.0d0        ! Power applied to the per-level cost weights (cost_weighting only)
+  logical::cost_time_weighting=.false.     ! Scale each rank's cell costs by its measured compute time per unit cost
+  real(dp)::cost_time_relax=1.0d0          ! Relaxation of the time factor between load balances (1: use the latest measurement)
   ! Recursive bisection tree parameters
   integer::nbilevelmax=1                   ! Max steps of bisection partitioning
   integer::nbinodes=3                      ! Max number of internal nodes

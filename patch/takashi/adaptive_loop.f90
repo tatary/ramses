@@ -65,6 +65,7 @@ subroutine adaptive_loop
   tot_pt=-1
   tt2=MPI_WTIME()
   if(myid==1)write(*,*)'Time elapsed since startup:',tt2-tt1
+  call output_hosts                  ! Which node each rank runs on
 #endif
 
   if(myid==1)then

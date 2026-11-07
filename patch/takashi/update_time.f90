@@ -74,6 +74,63 @@ subroutine timer (label, cmd)
   end if
 end subroutine timer
 !=======================================================================
+subroutine gather_hostnames (names)
+  ! Host (processor) name of every rank, gathered on rank 1 (names is only
+  ! meaningful there). Used for the startup log and the timer_ranks header
+  ! so that a slow rank can be traced to the node it ran on.
+  use amr_commons
+  use mpi_mod
+  implicit none
+  character(len=64),dimension(1:ncpu)::names
+  character(len=64)::myname
+#ifndef WITHOUTMPI
+  character(len=MPI_MAX_PROCESSOR_NAME)::pname
+  integer::plen,mpi_err
+  call MPI_GET_PROCESSOR_NAME(pname,plen,mpi_err)
+  myname=pname(1:min(plen,64))
+  call MPI_GATHER(myname,64,MPI_CHARACTER,names,64,MPI_CHARACTER,0,MPI_COMM_WORLD,mpi_err)
+#else
+  myname='localhost'
+  names(1)=myname
+#endif
+end subroutine gather_hostnames
+!=======================================================================
+subroutine output_hosts
+  ! Startup log: which node each range of consecutive ranks runs on
+  use amr_commons
+  implicit none
+  character(len=64),dimension(1:ncpu)::names
+  integer::i,i0
+  call gather_hostnames(names)
+  if(myid/=1)return
+  i0=1
+  do i=2,ncpu+1
+    if(i>ncpu)then
+      write(*,'(a,i6,a,i6,a,a)')' Ranks ',i0,' -',i-1,' on ',trim(names(i0))
+    else if(names(i)/=names(i0))then
+      write(*,'(a,i6,a,i6,a,a)')' Ranks ',i0,' -',i-1,' on ',trim(names(i0))
+      i0=i
+    end if
+  end do
+end subroutine output_hosts
+!=======================================================================
+subroutine cost_timer_total (tsum)
+  ! Sum of the compute timers used by cost_time_weighting (load_balance.f90):
+  ! the parts whose per-rank time was found to vary at fixed cell count
+  ! (patch/takashi/TODO.md 2b). Completed intervals only.
+  use timer_m
+  implicit none
+  real(kind=8)::tsum
+  integer::i,j
+  character(len=24),dimension(3),parameter::cost_labels=(/'hydro - godunov','cooling        ','rt - godunov   '/)
+  tsum=0d0
+  do i=1,ntimer
+    do j=1,size(cost_labels)
+      if(trim(labels(i))==trim(cost_labels(j)))tsum=tsum+time(i)
+    end do
+  end do
+end subroutine cost_timer_total
+!=======================================================================
 subroutine output_timer(write_file, filename)
   use amr_parameters
   use amr_commons
@@ -85,6 +142,7 @@ subroutine output_timer(write_file, filename)
   real(kind=8) :: gtotal, avtime, rmstime
   integer      :: igrid, ipart, jpart, nstar_loc, nghost_loc, idot, lenv
   character(LEN=32) :: jobid
+  character(len=64), dimension(ncpu) :: hostnames
   real(kind=8), dimension(ncpu) :: vtime
   integer,      dimension(ncpu) :: all_ntimer
   logical,      dimension(ncpu) :: gprint_timer
@@ -184,6 +242,8 @@ subroutine output_timer(write_file, filename)
       open(unit=ilun2,file=fileloc2,form='formatted')
       write (ilun2,'(a,i6,a)') '# ncpu=',ncpu,'  columns: label, value on rank 1..ncpu'
     end if
+    call gather_hostnames(hostnames)
+    if (id_is_one) write (ilun2,'(a,100000(1x,a))') '# host', (trim(hostnames(i)),i=1,ncpu)
     do i = 1,ntimer
       call MPI_GATHER(real(time(i),kind=8),1,MPI_REAL8,vtime,1,MPI_REAL8,0,MPI_COMM_WORLD,mpi_err)
       if (id_is_one) write (ilun2,'(a24,100000(1x,ES12.5))') labels(i), vtime
@@ -223,6 +283,8 @@ subroutine output_timer(write_file, filename)
     if (id_is_one) write (ilun2,'(a24,100000(1x,i12))') 'recv total', all_numbl
     call MPI_GATHER(npart,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
     if (id_is_one) write (ilun2,'(a24,100000(1x,i12))') 'particles', all_numbl
+    call MPI_GATHER(cost_rank_fac,1,MPI_DOUBLE_PRECISION,vtime,1,MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,mpi_err)
+    if (id_is_one) write (ilun2,'(a24,100000(1x,es12.5))') 'cost factor', vtime
     nstar_loc=0
     if(star)then
       do ilevel=levelmin,nlevelmax

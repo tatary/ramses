@@ -186,6 +186,12 @@ module amr_commons
   ! and the running total over the run
   integer,allocatable,dimension(:)::nrecv_lb
   integer::nrecv_lb_tot=0
+  ! Time-based correction of the load balance cost (cost_time_weighting): factor applied to the cost of
+  ! every cell owned by this rank, the compute-timer total at the previous load balance and whether the
+  ! interval since then is a clean measurement (a full set of steps on this partition)
+  real(dp)::cost_rank_fac=1.0d0
+  real(kind=8)::cost_time_prev=0d0
+  logical::cost_time_valid=.false.
 
   ! Active grid, emission and reception communicators
   type(communicator),allocatable,dimension(:)  ::active               ! 1D (1:nlevelmax) array => leave as is
