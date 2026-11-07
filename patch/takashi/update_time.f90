@@ -77,11 +77,14 @@ end subroutine timer
 subroutine output_timer(write_file, filename)
   use amr_parameters
   use amr_commons
+  use pm_commons, only: npart, headp, nextp, numbp, typep, is_star
   use timer_m
   use mpi_mod
   implicit none
 #ifndef WITHOUTMPI
   real(kind=8) :: gtotal, avtime, rmstime
+  integer      :: igrid, ipart, jpart, nstar_loc, nghost_loc, idot, lenv
+  character(LEN=32) :: jobid
   real(kind=8), dimension(ncpu) :: vtime
   integer,      dimension(ncpu) :: all_ntimer
   logical,      dimension(ncpu) :: gprint_timer
@@ -167,7 +170,16 @@ subroutine output_timer(write_file, filename)
       if (write_file) then
         fileloc2=TRIM(filename)//'.ranks'
       else
-        fileloc2='timer_ranks.dat'
+        ! Name the file after the batch job (PBS_JOBID / SLURM_JOB_ID), else after nstep_coarse
+        call get_environment_variable('PBS_JOBID',jobid,lenv)
+        if(lenv<=0)call get_environment_variable('SLURM_JOB_ID',jobid,lenv)
+        if(lenv>0)then
+           idot=index(jobid,'.')
+           if(idot>1)jobid=jobid(1:idot-1)
+           fileloc2='timer_ranks_'//TRIM(jobid)//'.dat'
+        else
+           write(fileloc2,'(a,i0,a)')'timer_ranks_n',nstep_coarse,'.dat'
+        end if
       end if
       open(unit=ilun2,file=fileloc2,form='formatted')
       write (ilun2,'(a,i6,a)') '# ncpu=',ncpu,'  columns: label, value on rank 1..ncpu'
@@ -191,6 +203,31 @@ subroutine output_timer(write_file, filename)
       call MPI_GATHER(numbl(myid,ilevel),1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
       if (id_is_one) write (ilun2,'(a,i2,a,100000(1x,i12))') 'grids level ',ilevel,'          ', all_numbl
     end do
+    ! Ghost (virtual) grids per level, then particles and star particles per rank
+    do ilevel=levelmin,nlevelmax
+      nghost_loc=0
+      do icpu=1,ncpu
+        nghost_loc=nghost_loc+reception(icpu,ilevel)%ngrid
+      end do
+      call MPI_GATHER(nghost_loc,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+      if (id_is_one) write (ilun2,'(a,i2,a,100000(1x,i12))') 'ghost level ',ilevel,'          ', all_numbl
+    end do
+    call MPI_GATHER(npart,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+    if (id_is_one) write (ilun2,'(a24,100000(1x,i12))') 'particles', all_numbl
+    nstar_loc=0
+    if(star)then
+      do ilevel=levelmin,nlevelmax
+        do igrid=1,active(ilevel)%ngrid
+          ipart=headp(active(ilevel)%igrid(igrid))
+          do jpart=1,numbp(active(ilevel)%igrid(igrid))
+            if(is_star(typep(ipart)))nstar_loc=nstar_loc+1
+            ipart=nextp(ipart)
+          end do
+        end do
+      end do
+    end if
+    call MPI_GATHER(nstar_loc,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+    if (id_is_one) write (ilun2,'(a24,100000(1x,i12))') 'stars', all_numbl
     if (id_is_one) close(ilun2)
   endif
 #endif

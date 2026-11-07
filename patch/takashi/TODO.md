@@ -71,7 +71,7 @@ patch コピーは削除して上流に戻し、`init_amr/output_amr/read_params
 出力ファイル形式も元に戻った (per-level 対応コードが書いた `amr_*.out` は末尾に余分なレコードがあるだけ
 なので、戻したコードでも restart できる)。設計・検証の記録は `docs/level_domain_decomposition.md`。
 
-## 2a. 単一分割の重みの knob `cost_weight_power` (2026-10-29 追加、本番未検証)
+## 2a. 単一分割の重みの knob `cost_weight_power` (2026-10-29 追加、本番で効果なし 2026-11-07: 2b 末尾)
 
 待ち (本番の交換 2 本 21% のうち純粋な通信を除く分) は level 15 の grid 数の偏り (max/avg 1.38、
 rt - godunov の max/avg 1.31 と一致) から来る。`cost_weighting` はセルの重み `(80+numbp)×niter_cost(l)`
@@ -187,6 +187,50 @@ sf_virial=.true. や sf_model<6 の経路は元のまま。冒頭の `uold(1:4)`
 本番では純粋な通信分 (min 側 21 s/3 step) が減る。待ちの分は変わらない。
 注意: `amr_commons` の型を変えたので、`bin/` の `.o`/`.mod` を全部消してフルビルドが必要
 (Makefile にモジュール依存が無く、古い `.mod` と不整合になる)。
+
+**本番の再計測 (flat-334557 / 334558, 2026-11-07, 896 ランク, 同じ restart, 3 coarse step, ログは
+`patch/takashi/logs/`)**: f98dad81 のバイナリ (RT kernel 削減 + reverse 7 変数 + forward/uold の重ね合わせ +
+star_formation の gather 削減) で、334557 は `cost_weight_power=1.0`、334558 は 1.3。
+
+| 項目 | flat-330638 (10/29) | 334557 (power 1.0) | 334558 (power 1.3) |
+|---|---|---|---|
+| 3 step 合計 | 1258 s | 692 s | 702 s |
+| level 15 RT subcycle 数 | 1932 | 1199 | 1257 |
+| rt - godunov 平均 (min–max) | 342 (260–448) | 52 (46–64) | 55 (49–67) |
+| rt - ghostzones | 148 (65–275) | 45 (25–68) | 48 (26–76) |
+| rt - rev ghostzones | 113 (21–281) | 22 (6–42) | 24 (6–41) |
+| cooling | 79 (74–85) | 54 (51–65) | 57 (52–68) |
+| star formation (+feedback) | 177 (111–288) | 90+3 (58–133) | 89+3 (59–127) |
+| poisson | 139 | 148 | 148 |
+| hydro - godunov | 131 (111–150) | 135 (117–155) | 135 (120–155) |
+| level 15 grids min/max (最終) | 784 / 3143 | 766 / 3259 | 1244 / 3129 |
+
+- 物理が分岐するので subcycle 数が違う。`T = A + B × subcycle` の当てはめ: 旧 A≈155 s, B≈0.41 s/回 →
+  新 A≈140–170 s, B≈0.19–0.21 s/回。**RT subcycle 1 回のコストが半分**、切片はほぼ同じ。同じ subcycle 数
+  なら旧 957 s 相当が 692 s (28% 短縮)。
+- rt - godunov は subcycle あたり 0.177 → 0.044 s (4 倍)。rt - ghostzones の min は 65 → 25 s、rev の min は
+  21 → 6 s (subcycle あたりでもそれぞれ 2 倍, 1.6 倍)。star formation は min 111 → 58 s (fine step 数は同じ)。
+- 残りの順位 (power 1.0): poisson 21%、hydro - godunov 19.5%、star formation 13%、hydro - rev ghostzones 10%、
+  cooling 8%、rt - godunov 7.6%、rt - ghostzones 6.5%。RT は合計 18% まで下がり、次は poisson と hydro。
+- `cost_weight_power=1.3` の効果: level 15 の min が 766 → 1244 に上がるが max は 3259 → 3129 (4%) しか
+  下がらず、step 2 (両者とも 512 subcycle) の時間は 241.2 s と 242.1 s で同じ。rt - godunov の max も
+  64 → 67 で変わらない。**採用しない** (既定 1.0 のまま)。step 1 は restart ファイルの分割なので両者同一。
+
+**ランク別 timer の解析 (`patch/takashi/logs/timer_ranks_334558.dat`, power 1.3 のラン, 2026-11-07)**:
+- rt - godunov (49–67 s)、cooling (52–68 s)、hydro - godunov (120–155 s) は**同じランクで同じ比率で遅い**
+  (相関 0.82 / 0.73 / 0.54)。grid 数との相関は弱く (level 15 とは **負**の相関 -0.45、subcycle 数で重み付けた
+  仕事量とも 0.1–0.5)、level 15 を最も多く持つ rank 817 (3040 grids) が最速、level 13/14 を多く持つ
+  rank 770/829 (L15 1700–1850, L14 2900–3400) が最遅。grid-subcycle あたりの rt - godunov は 10.5–14.2 µs
+  (35% の幅)。ノード単位 (112/128 ランクのブロック) の分散は 3% なのでハードの差ではない。
+  → 偏りは「grid 数」ではなく「grid あたりの仕事」。cooling (セル局所) まで同じ比率で動くので、
+  refinement 境界の補間だけでは説明できず、ランク内の grid のメモリ配置 (load balance で受け取った grid が
+  free list に散らばる) によるキャッシュ効率の差が最有力。確かめるなら load balance 直後に grid を
+  Hilbert 順に並べ直す (全配列の付け替え、大仕事) か、`timer_ranks` に「最後の load balance で受け取った
+  grid 数」を足して相関を見る。
+- star formation (59–127 s) は grid 数と無相関 (0.1)、rho と 0.55、refine と -0.56。粒子数の行が無かったので
+  判定できず、`timer_ranks` に `particles` / `stars` / `ghost level l` の行を足した (次のランから出る)。
+- `timer_ranks.dat` の名前は `timer_ranks_<PBS_JOBID の数字>.dat` (SLURM なら `SLURM_JOB_ID`、どちらも無ければ
+  `timer_ranks_n<nstep_coarse>.dat`) に変えた。手元 (`PBS_JOBID=123456.flat`) で確認済み。
 
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 
