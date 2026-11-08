@@ -21,6 +21,7 @@ subroutine adaptive_loop
   real(kind=8),save::tstart=0,trestart_wall=0
 #endif
   integer::ilevel,idim,ivar
+  character(LEN=80)::timer_ranks_file
 
 #ifndef WITHOUTMPI
   tt1=MPI_WTIME()
@@ -216,6 +217,12 @@ subroutine adaptive_loop
         call writemem(real_mem_tot)
         write(*,*)'Total running time:', NINT((tt2-tstart)*100.0)*0.01,'s'
       endif
+      if(timer_ranks_every>0)then
+        if(mod(nstep_coarse,timer_ranks_every)==0)then
+          call timer_ranks_filename(nstep_coarse,timer_ranks_file)
+          call output_timer_ranks(timer_ranks_file)
+        end if
+      end if
       if(restart_hrs.gt.0.d0) then
         restart_sec = restart_hrs*3600  ! Convert from hours to seconds
         if(restart_sec.lt.tt2-trestart_wall) then

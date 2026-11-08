@@ -90,6 +90,7 @@ module amr_parameters
   real(dp)::cost_weight_power=1.0d0        ! Power applied to the per-level cost weights (cost_weighting only)
   logical::cost_time_weighting=.false.     ! Scale each rank's cell costs by its measured compute time per unit cost
   real(dp)::cost_time_relax=1.0d0          ! Relaxation of the time factor between load balances (1: use the latest measurement)
+  integer::timer_ranks_every=0             ! Write timer_ranks_<job>_n<step>.dat every N coarse steps (0: only at outputs and the end)
   ! Recursive bisection tree parameters
   integer::nbilevelmax=1                   ! Max steps of bisection partitioning
   integer::nbinodes=3                      ! Max number of internal nodes

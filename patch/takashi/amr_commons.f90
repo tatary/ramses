@@ -190,6 +190,8 @@ module amr_commons
   ! every cell owned by this rank, the compute-timer total at the previous load balance and whether the
   ! interval since then is a clean measurement (a full set of steps on this partition)
   real(dp)::cost_rank_fac=1.0d0
+  ! Supernovae injected by this rank since the start of the run (timer_ranks diagnostics)
+  integer::nsn_rank=0
   real(kind=8)::cost_time_prev=0d0
   logical::cost_time_valid=.false.
 

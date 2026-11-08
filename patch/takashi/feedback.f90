@@ -439,10 +439,12 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 
          if (nSN_tot .ge. 1.0) then
             ethermal(j) = ESN * nSN_tot
+            nsn_rank = nsn_rank + nint(nSN_tot)
          else
             call ranf(localseed, RandNum)
             if (RandNum < nSN_tot) then
                ethermal(j) = ESN
+               nsn_rank = nsn_rank + 1
             endif
          endif
          ethermal(j) = (f_esn * ethermal(j) + dE_winds)/vol_loc(j)

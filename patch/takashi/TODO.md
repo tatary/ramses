@@ -306,6 +306,29 @@ star_formation の gather 削減) で、334557 は `cost_weight_power=1.0`、334
   待ち (star formation / rt - ghostzones / hydro - rev ghostzones) の合計が減るか。
   memory (grid 数) は不均等になる方向なので `mem=` の最大値も見る。
 
+**本番での結果 (flat-337199 / `timer_ranks_337199.dat`, `cost_time_weighting=.true.`, 2026-11-08, 725 s)**:
+- 係数は 0.93–1.08 (step 2)、0.93–1.07 (step 3)。分割の cost は 13.7% の幅になったが、計算 3 タイマーの
+  max/avg は 1.21 → 1.18 とほとんど縮まず、遅いランクは前と同じ (41, 80, 81, 83, 109, 352, 407, 645, 829, 871)。
+  rank 109 (累積で最遅、1.16–1.21 倍) の係数は 0.950。**係数は遅いランクを捉えていない**。
+- 手元 (4 ランク) では係数と累積の sum3/work が 0.996 vs 0.994 のように一致するので測定機構は正しい。
+  → 本番の遅さは coarse step ごとに**間欠的** (rank 109 は step 2 では遅くなく、1 と 3 で ~1.3 倍) で、
+  しかもジョブをまたいで同じランク・同じ step で再現する (同じ snapshot からの restart なので当然)。
+- 遅いランクは**単独** (隣の 108/110 は正常) で、cooling・rt - godunov・hydro - godunov が**揃って** ~15% 遅い。
+  ノードは今回 cna037–cna201 で、遅いランクのノード内位置はばらばら、ノード平均の差は ±4% → ハードではない。
+  手元の出力には非正規化数は無い (RT は 0 か正規数) ので denormal 説も根拠薄。
+- 残る候補: そのランクの領域で何かが step によって起きる (SN 直後の高温セルで cooling の反復が増える、
+  refinement 境界の補間が増える等) が、3 カーネル一律というのが説明しにくい。まず **step ごと・ランクごと**の
+  時間を取る: `&RUN_PARAMS timer_ranks_every=1` で coarse step ごとに `timer_ranks_<jobid>_n<step>.dat`
+  (累積値) を書くようにした (2026-11-08)。差分で step ごとの時間が出る。level ごとの内訳が要るなら
+  godunov/cooling の timer を level 別に分ける。SN 説 (岡本さん: SN が起きた所で遅くなるのは十分ありえる) を
+  直接見るため、ランクが注入した SN 数の累積 `nsn_rank` (`amr_commons`、`feedback.f90` で加算) を
+  `SN events` 行として同じファイルに出す。step ごとの差分と cooling / godunov の差分を突き合わせる。
+  `sf_log_properties` の `stars_*.out` は時刻が無いので step に分けられない。
+  なお `stars` 行は粒子スロット (全スロット − free list) から数えるように直した: coarse step 終了時点では
+  `merge_tree_fine` 後で子 grid の粒子リストが古いままなので、grid リスト経由だと 3 倍に数えていた
+  (終了時・出力時のファイルは正しかった)。手元で step ごとの `stars` が終了時と一致することを確認。
+- 本番のノード: 28 ランク/ノード × 32 ノード。
+
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 
 - 実装済み: 全変数を 1 メッセージに集約 (`make_virtual_fine_dp_nv`)、`unew`/`rtunew`
