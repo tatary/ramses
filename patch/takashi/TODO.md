@@ -391,6 +391,58 @@ OpenMP 化し、1 ノードで 1・2・3 スレッドの伸びとメモリ帯域
   `OMP_NUM_THREADS=4`, `OMP_STACKSIZE=64m`, `OMP_PLACES=cores OMP_PROC_BIND=close`, `srun --cpu-bind=cores`,
   初回確認用に `I_MPI_DEBUG=4` と `--cpu-bind=verbose` (`PinDebug`))。
 
+### 2d-2. rt_godunov_fine と cooling_fine_part の OpenMP 化 (2026-11-09)
+
+- `rt_godunov_fine`: sweep ループを `parallel do`、粗セルへの `rtunew(ind_buffer)` 補正 2 箇所を atomic。
+  `rt_godfine1` と `rt_interpol_hydro.f90` (rt/ から patch にコピー)、`rt_flux_module.f90` の
+  `cmp_rt_faces` の `save` 作業配列を除去。`rt_per_bnd` (save + .false. 初期化) は毎回 .false. に。
+- `cooling_fine` / `cooling_fine_part`: sweep ループを `parallel do` (part の `do while` は `do igrid=igrid0,nlist,nvector` に)。
+  `coolfine1` の `save` 配列を除去。`cooling_on`、`Np_boost`、`dNpdt`、`Fp_boost`、`dFpdt`、`polytropic_constant`、
+  `err`、`emag` は「条件付きでしか代入されないのに無条件に読まれる」ので毎回明示的に初期化
+  (元のコードは save の静的領域がゼロ初期化されることに暗黙に頼っていた)。`is_emitted`/`list` の
+  save は意図的な永続データなのでそのまま (並列ループの外でしか書かない)。
+- `rt_cooling_module`: `cool_step` の `save` スカラー約 50 個を除去し、物理が off のとき代入されないもの
+  (`metal_prime` は一度も代入されずに読まれていた、`dustAbs` 等) を毎回 0 に。`getMu` の save も除去。
+  統計カウンタ `n_cool_cells`/`tot_cool_loopcnt`/`loopCodes`/`max_cool_loopcnt` は `!$omp atomic update`
+  (`max` も atomic で可)。初回表示の `ifirst` ブロックは `critical`。
+- **bit 一致の確認で FMA に嵌った**: OPENMP=0 ビルドが変更前と 20 ファイル違った (相対 1e-15〜1e-10)。
+  `save` を外すと配列が静的領域からスタックに移ってコード生成が変わり、gfortran 既定の
+  `-ffp-contract=fast` で FMA にまとめる式が変わるため。旧・新コードを `-ffp-contract=off` で
+  ビルドすると 40 ファイル bit 一致 → 論理は同じ。Makefile に `BITREPRO = 0/1` (GNU `-ffp-contract=off`、
+  Intel `-fp-model strict`) を足した。**以後の bit 比較は BITREPRO=1 のビルド同士で行う**
+  (本番ビルドでは不要)。Apple Silicon も Xeon も FMA 命令を持つので両方で起きる。
+
+- **競合の発見**: cooling だけ 3 スレッドにすると結果が 1e-1 ずれた (RT だけなら bit 一致、hydro だけなら 7e-14)。
+  原因は `coolrates_module.f90` の `inp_coolrates_table` が `save` ローカルで「前回の T と補間の添字・重み」を
+  キャッシュしていたこと (`Tlast`, `iT`, `yy`…)。スレッド間で共有されると別スレッドの T の係数を使う。
+  `!$omp threadprivate(...)` でスレッドごとのキャッシュにして解決 (キャッシュの効果はそのまま)。
+  ほかに `compCoolrate` の save スカラー、`cmp_chem_eq`/`rt_cmp_metals` の初期化付きローカル (暗黙の save) も除去。
+  **教訓: `save` だけでなく宣言時初期化 (`real(dp)::x=0`) も暗黙の save でスレッド共有になる。**
+  チェック方法: `grep -n "::.*=" | grep -v parameter` と `grep -in save`。
+  修正後: cooling のみ 3 スレッドでシリアルと 40 ファイル bit 一致、全成分 3 スレッドで総和の相対差 7e-14
+  (hydro の粗セル補正の atomic 順序)、1 スレッドは bit 一致。
+- `&RUN_PARAMS omp_hydro / omp_rt / omp_cooling` (既定 .true.) で成分ごとに `parallel do` を `if(...)` で
+  切れる。この切り分けテスト (1 成分ずつ 3 スレッド、シリアルと cmp) が競合の発見に効いた。
+- **スレッドの伸び** (1 ランク、P コア、`-ffp-contract=off`、DICE levelmax 8、6 step):
+
+  | スレッド | hydro - godunov | rt - godunov | cooling | TOTAL |
+  |---|---|---|---|---|
+  | 1 | 9.51 s | 15.20 s | 25.34 s | 64.7 s |
+  | 2 | 5.28 (1.80×) | 7.99 (1.90×) | 13.99 (1.81×) | 41.8 s |
+  | 4 | 3.05 (3.12×) | 4.36 (3.48×) | 8.11 (3.12×) | 30.1 s (2.15×) |
+
+  3 カーネルとも 4 スレッドで 3.1–3.5 倍。TOTAL の残りはスレッド化していない部分 (poisson, 粒子, refine…)。
+
+- **threadprivate と macOS**: 上の cooling の数字は競合があった版のもの。`inp_coolrates_table` のキャッシュを
+  `threadprivate` にして直すと 4 スレッドで cooling 12.85 s (1.97 倍) に落ちた。macOS の gfortran は TLS を
+  エミュレーション (`__emutls_get_address`、変数アクセスごとに関数呼び出し) で実装しているため。
+  キャッシュを外して毎回 log10 を計算する版は 1 スレッド 29.6 s (キャッシュ有り 25.3 s、+17%)、
+  4 スレッド 8.27 s (3.57 倍)。Linux/Intel の TLS は数命令なので本番は threadprivate キャッシュが既定、
+  Makefile `COOLRATES_NOCACHE = 1` (`-DCOOLRATES_NOCACHE`) でキャッシュ無しを選べる (Mac でのスレッド計測用)。
+  **Mac で cooling のスレッド伸びを測るときは `COOLRATES_NOCACHE=1` で。**
+- cooling の `schedule(dynamic,1)` (32 grid 単位) は `dynamic,2` より 4 スレッドで 3.5% 速い (8.27 → 7.98 s、
+  NOCACHE 版)。セルごとの反復回数の差が大きいので細かい単位にした。hydro/RT は `dynamic,2` のまま。
+
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 
 - 実装済み: 全変数を 1 メッセージに集約 (`make_virtual_fine_dp_nv`)、`unew`/`rtunew`

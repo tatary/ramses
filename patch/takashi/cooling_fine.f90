@@ -12,7 +12,7 @@ subroutine cooling_fine(ilevel)
   ! Compute cooling for fine levels
   !-------------------------------------------------------------------
   integer::ncache,i,igrid,ngrid
-  integer,dimension(1:nvector),save::ind_grid
+  integer,dimension(1:nvector)::ind_grid
 
   if(numbtot(1,ilevel)==0)return
   if(verbose)write(*,111)ilevel
@@ -20,6 +20,7 @@ subroutine cooling_fine(ilevel)
   ! Operator splitting step for cooling source term
   ! by vector sweeps
   ncache=active(ilevel)%ngrid
+!$omp parallel do private(igrid,ngrid,i,ind_grid) schedule(dynamic,1) if(omp_cooling)
   do igrid=1,ncache,nvector
     ngrid=MIN(nvector,ncache-igrid+1)
     do i=1,ngrid
@@ -27,6 +28,7 @@ subroutine cooling_fine(ilevel)
     end do
     call coolfine1(ind_grid,ngrid,ilevel)
   end do
+!$omp end parallel do
 
   if((cooling.and..not.neq_chem.and..not.cooling_ism).and.ilevel==levelmin.and.cosmo)then
 #ifdef grackle
@@ -70,7 +72,8 @@ subroutine cooling_fine_part(ilevel,ipart)
   ! are built in ipart=1 and reused in ipart=2.
   !-------------------------------------------------------------------
   integer::ncache,i,igrid,ngrid,icpu,nfirst,nlast,nlist
-  integer,dimension(1:nvector),save::ind_grid
+  integer,dimension(1:nvector)::ind_grid
+  integer::igrid0
   logical,allocatable,dimension(:),save::is_emitted
   integer,allocatable,dimension(:),save::list
   integer,save::nemit=0,nrest=0,list_level=0
@@ -137,14 +140,17 @@ subroutine cooling_fine_part(ilevel,ipart)
   end if
 
   ! Operator splitting step for cooling source term by vector sweeps
-  do while(igrid<=nlist)
+  ! (OpenMP: coolfine1 is cell-local, so the sweeps are independent)
+  igrid0=igrid
+!$omp parallel do private(igrid,ngrid,i,ind_grid) schedule(dynamic,1) if(omp_cooling)
+  do igrid=igrid0,nlist,nvector
     ngrid=MIN(nvector,nlist-igrid+1)
     do i=1,ngrid
       ind_grid(i)=list(igrid+i-1)
     end do
     call coolfine1(ind_grid,ngrid,ilevel)
-    igrid=igrid+ngrid
   end do
+!$omp end parallel do
 
   if(ipart==2)then
      if((cooling.and..not.neq_chem.and..not.cooling_ism).and.ilevel==levelmin.and.cosmo)then
@@ -196,29 +202,29 @@ subroutine coolfine1(ind_grid,ngrid,ilevel)
   integer::i,ind,iskip,idim,nleaf,nx_loc
   real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v
   real(kind=8)::dtcool,nISM,nCOM,damp_factor,cooling_switch,t_blast
-  real(dp)::polytropic_constant=1
-  integer,dimension(1:nvector),save::ind_cell,ind_leaf
-  real(kind=8),dimension(1:nvector),save::nH,T2,delta_T2,ekk,err,emag
-  real(kind=8),dimension(1:nvector),save::T2min,Zsolar,boost
+  real(dp)::polytropic_constant
+  integer,dimension(1:nvector)::ind_cell,ind_leaf
+  real(kind=8),dimension(1:nvector)::nH,T2,delta_T2,ekk,err,emag
+  real(kind=8),dimension(1:nvector)::T2min,Zsolar,boost
   real(dp),dimension(1:3)::skip_loc
   real(kind=8)::dx,dx_loc,scale,vol_loc
 #ifdef RT
   integer::ii,ig,iNp,il
-  real(kind=8),dimension(1:nvector),save:: ekk_new,T2_new
-  logical,dimension(1:nvector),save::cooling_on=.true.
+  real(kind=8),dimension(1:nvector):: ekk_new,T2_new
+  logical,dimension(1:nvector)::cooling_on
   real(dp)::scale_Np,scale_Fp,work,Npc,Npnew, kIR, E_rad, TR
   real(dp),dimension(1:ndim)::Fpnew
-  real(dp),dimension(nIons, 1:nvector),save:: xion
-  real(dp),dimension(nGroups, 1:nvector),save:: Np, Np_boost=0d0, dNpdt=0d0
-  real(dp),dimension(ndim, nGroups, 1:nvector),save:: Fp, Fp_boost=0, dFpdt=0
-  real(dp),dimension(ndim, 1:nvector),save:: p_gas, u_gas
+  real(dp),dimension(nIons, 1:nvector):: xion
+  real(dp),dimension(nGroups, 1:nvector):: Np, Np_boost, dNpdt
+  real(dp),dimension(ndim, nGroups, 1:nvector):: Fp, Fp_boost, dFpdt
+  real(dp),dimension(ndim, 1:nvector):: p_gas, u_gas
   real(kind=8)::f_trap, NIRtot, EIR_trapped, unit_tau, tau, Np2Ep
   real(kind=8)::aexp_loc, f_dust, xHII
   real(dp),dimension(nDim, nDim):: tEdd ! Eddington tensor
   real(dp),dimension(nDim):: flux
 #endif
 #ifdef grackle
-  real(kind=8),dimension(1:nvector),save:: T2_new
+  real(kind=8),dimension(1:nvector):: T2_new
 #endif
 #ifdef SOLVERmhd
   integer::neul=5
@@ -239,6 +245,17 @@ subroutine coolfine1(ind_grid,ngrid,ilevel)
   scale=boxlen/dble(nx_loc)
   dx_loc=dx*scale
   vol_loc=dx_loc**ndim
+
+  ! These were save arrays with initialisers; without save they must be set
+  ! on every call (only partly assigned when rt_smooth / rt_vc /
+  ! delayed_cooling are off)
+  polytropic_constant=1
+  cooling_on=.true.
+  ! err/emag are only assigned with NENER>0 / MHD, delta_T2 only when cooling is on
+  err=0d0; emag=0d0
+#ifdef RT
+  Np_boost=0d0; dNpdt=0d0; Fp_boost=0d0; dFpdt=0d0
+#endif
 
   ! Conversion factor from user units to cgs units
   call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)

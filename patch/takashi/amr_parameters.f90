@@ -91,6 +91,9 @@ module amr_parameters
   logical::cost_time_weighting=.false.     ! Scale each rank's cell costs by its measured compute time per unit cost
   real(dp)::cost_time_relax=1.0d0          ! Relaxation of the time factor between load balances (1: use the latest measurement)
   integer::timer_ranks_every=0             ! Write timer_ranks_<job>_n<step>.dat every N coarse steps (0: only at outputs and the end)
+  logical::omp_hydro=.true.                ! OpenMP: thread the hydro Godunov sweeps (OPENMP=1 builds)
+  logical::omp_rt=.true.                   ! OpenMP: thread the RT Godunov sweeps
+  logical::omp_cooling=.true.              ! OpenMP: thread the cooling / chemistry sweeps
   ! Recursive bisection tree parameters
   integer::nbilevelmax=1                   ! Max steps of bisection partitioning
   integer::nbinodes=3                      ! Max number of internal nodes

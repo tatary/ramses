@@ -28,7 +28,7 @@ subroutine godunov_fine(ilevel)
   ! therefore ordinary (non-save) locals: they need a large thread stack
   ! (OMP_STACKSIZE=64m or more, see TODO.md 2d).
   ncache=active(ilevel)%ngrid
-!$omp parallel do private(igrid,ngrid,i,ind_grid) schedule(dynamic,2)
+!$omp parallel do private(igrid,ngrid,i,ind_grid) schedule(dynamic,2) if(omp_hydro)
   do igrid=1,ncache,nvector
     ngrid=MIN(nvector,ncache-igrid+1)
     do i=1,ngrid

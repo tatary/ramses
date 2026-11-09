@@ -11,14 +11,17 @@ SUBROUTINE rt_godunov_fine(ilevel, dt)
   implicit none
   integer::ilevel
   integer::i,igrid,ncache,ngrid
-  integer,dimension(1:nvector),save::ind_grid
+  integer,dimension(1:nvector)::ind_grid
   real(dp)::dt
 !------------------------------------------------------------------------
   if(numbtot(1,ilevel)==0)return  ! # of grids at ilevel
   if(verbose)write(*,111)ilevel
 
   ! Loop over active grids by vector sweeps
+  ! OpenMP: sweeps shared between threads; rt_godfine1 writes only its own
+  ! cells except the flux correction of coarser neighbour cells (atomic).
   ncache=active(ilevel)%ngrid  ! total # of grids at level ilevel
+!$omp parallel do private(igrid,ngrid,i,ind_grid) schedule(dynamic,2) if(omp_rt)
   do igrid=1,ncache,nvector    ! take steps of 500 grids up to ncache
      ngrid=MIN(nvector,ncache-igrid+1) ! # of grids in each sweep
      do i=1,ngrid              ! collect grid indices for one sweep
@@ -26,6 +29,7 @@ SUBROUTINE rt_godunov_fine(ilevel, dt)
      end do
      call rt_godfine1(ind_grid,ngrid,ilevel, dt) ! solve for max 500 grids
   end do
+!$omp end parallel do
 
   if(verbose)write(*,112)ilevel
 
@@ -157,18 +161,18 @@ SUBROUTINE rt_godfine1(ind_grid, ncache, ilevel, dt)
   integer::ilevel,ncache
   real(dp)::dt
   integer ,dimension(1:nvector)::ind_grid
-  integer ,dimension(1:nvector,1:threetondim),save::nbors_father_cells
-  integer ,dimension(1:nvector,1:twotondim  ),save::nbors_father_grids
-  integer ,dimension(1:nvector,0:twondim    ),save::ibuffer_father
-  real(dp),dimension(1:nvector,0:twondim  ,1:nrtvar),save::u1
-  real(dp),dimension(1:nvector,1:twotondim,1:nrtvar),save::u2
+  integer ,dimension(1:nvector,1:threetondim)::nbors_father_cells
+  integer ,dimension(1:nvector,1:twotondim  )::nbors_father_grids
+  integer ,dimension(1:nvector,0:twondim    )::ibuffer_father
+  real(dp),dimension(1:nvector,0:twondim  ,1:nrtvar)::u1
+  real(dp),dimension(1:nvector,1:twotondim,1:nrtvar)::u2
 
   ! 500*6*6*6*4:
-  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2,1:nrtvar),save::uloc
-  real(dp),dimension(1:nvector,if1:if2,jf1:jf2,kf1:kf2,1:nrtvar,1:ndim),save::flux
-  logical,dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2),save::ok
-  integer,dimension(1:nvector),save::igrid_nbor,ind_cell,ind_buffer
-  integer,dimension(1:nvector),save::ind_exist,ind_nexist
+  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2,1:nrtvar)::uloc
+  real(dp),dimension(1:nvector,if1:if2,jf1:jf2,kf1:kf2,1:nrtvar,1:ndim)::flux
+  logical,dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2)::ok
+  integer,dimension(1:nvector)::igrid_nbor,ind_cell,ind_buffer
+  integer,dimension(1:nvector)::ind_exist,ind_nexist
 
   integer::i,j,ivar,idim,ind_son,ind_father,iskip,nbuffer,nedge
   integer::i0,j0,k0,i1,j1,k1,i2,j2,k2,i3,j3,k3,nx_loc,nb_noneigh,nexist
@@ -177,7 +181,7 @@ SUBROUTINE rt_godfine1(ind_grid, ncache, ilevel, dt)
   integer::i3min,i3max,j3min,j3max,k3min,k3max
   real(dp)::dx,scale,oneontwotondim
 
-  logical,dimension(1:nvector),save:: rt_per_bnd=.false.
+  logical,dimension(1:nvector):: rt_per_bnd
   integer::ind_nbor
   real(dp)::dx8,maxDist
 !------------------------------------------------------------------------
@@ -188,6 +192,7 @@ SUBROUTINE rt_godfine1(ind_grid, ncache, ilevel, dt)
   scale=boxlen/dble(nx_loc)           ! length per coarse oct (=boxlen)
   dx=0.5D0**ilevel*scale              ! length per oct/grid at ilevel
   dx8=8.*dx                           ! Outflow boundary
+  rt_per_bnd=.false.   ! was a save array initialised to .false.
 
   ! Integer constants
   i1min=0; i1max=0; i2min=0; i2max=0; i3min=1; i3max=1
@@ -502,6 +507,7 @@ SUBROUTINE rt_godfine1(ind_grid, ncache, ilevel, dt)
               do j3=j3min,j3max-j0 ! 1 to 1 if dim=2, 1 to 2 otherwise
                  do i3=i3min,i3max-i0 ! 1 to 1 if dim=1, 1 to 2 otherwise
                     do i=1,nb_noneigh
+!$omp atomic update
                        rtunew(ind_buffer(i),ivar)=rtunew(ind_buffer(i),ivar) &
                             & -flux(ind_cell(i),i3,j3,k3,ivar,idim)*oneontwotondim
                     end do
@@ -530,6 +536,7 @@ SUBROUTINE rt_godfine1(ind_grid, ncache, ilevel, dt)
               do j3=j3min+j0,j3max
                  do i3=i3min+i0,i3max
                     do i=1,nb_noneigh
+!$omp atomic update
                        rtunew(ind_buffer(i),ivar)=rtunew(ind_buffer(i),ivar) &
                             & +flux(ind_cell(i),i3+i0,j3+j0,k3+k0,ivar,idim)*oneontwotondim
                     end do

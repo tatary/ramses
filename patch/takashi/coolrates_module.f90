@@ -499,12 +499,30 @@ CONTAINS
     logical,intent(in)::allow_negative
     real(dp),optional::retPrime
     real(dp)::inp_coolrates_table
+#ifdef COOLRATES_NOCACHE
+    ! No cache of the last T lookup (recompute: one log10 per call). Use this
+    ! where thread-local storage is emulated (gfortran on macOS), because the
+    ! threadprivate cache below is then slower than recomputing.
+    integer:: iT
+    real(dp):: facT, yy, yy2, yy3, fa, fb, fprimea, fprimeb
+    real(dp):: alpha, beta, gamma
+    logical::extrap
+#else
+    ! Cache of the last T lookup (index and spline weights). The upstream
+    ! save variables are not thread safe (a thread could reuse the index of
+    ! another thread's T), so the cache is threadprivate under OpenMP.
     integer,save:: iT = 1
     real(dp),save:: facT, yy, yy2, yy3, fa, fb, fprimea, fprimeb, Tlast=-1
     real(dp),save:: alpha, beta, gamma
     logical,save::extrap
+!$omp threadprivate(iT, facT, yy, yy2, yy3, fa, fb, fprimea, fprimeb, Tlast, alpha, beta, gamma, extrap)
+#endif
 !-------------------------------------------------------------------------
+#ifdef COOLRATES_NOCACHE
+    if (.true.) then
+#else
     if (.not. (T .eq. Tlast)) then    ! Reuse index if same T from last call
+#endif
       ! Log of T, snapped to table at the lower boundary, but allowed
       ! to go above upper boundary, in which case we use extrapolation:
       facT = MAX( log10(T), T_lookup(1) )
@@ -515,7 +533,9 @@ CONTAINS
       yy=facT-T_lookup(iT)  ! Dist., in log(T), from T to lower table index
       yy2=yy*yy             ! That distance squared
       yy3=yy2*yy            ! ...and cubed
+#ifndef COOLRATES_NOCACHE
       Tlast = T
+#endif
     endif
 
     if(extrap) then ! TK above upper table limit, so extrapolate in log-log:
@@ -564,14 +584,14 @@ CONTAINS
     real(dp)::T, ne
     real(dp),dimension(nIons)::nN,nI
     real(dp)::compCoolrate, dcooldT !---------------------------------------
-    real(dp),save::ci_HI,ci_HeI,ci_HeII
-    real(dp),save::ci_HI_prime,ci_HeI_prime,ci_HeII_prime
-    real(dp),save::cr_H2HI,cr_H2H2,cr_H2HI_prime,cr_H2H2_prime
-    real(dp),save::ce_HI,ce_HeI,ce_HeII
-    real(dp),save::ce_HI_prime,ce_HeI_prime,ce_HeII_prime
-    real(dp),save::r_HII,r_HeII,r_HeIII
-    real(dp),save::r_HII_prime,r_HeII_prime,r_HeIII_prime
-    real(dp),save::bre, brefac, bre_prime, com, com_prime, die, die_prime
+    real(dp)::ci_HI,ci_HeI,ci_HeII
+    real(dp)::ci_HI_prime,ci_HeI_prime,ci_HeII_prime
+    real(dp)::cr_H2HI,cr_H2H2,cr_H2HI_prime,cr_H2H2_prime
+    real(dp)::ce_HI,ce_HeI,ce_HeII
+    real(dp)::ce_HI_prime,ce_HeI_prime,ce_HeII_prime
+    real(dp)::r_HII,r_HeII,r_HeIII
+    real(dp)::r_HII_prime,r_HeII_prime,r_HeIII_prime
+    real(dp)::bre, brefac, bre_prime, com, com_prime, die, die_prime
 !-------------------------------------------------------------------------
     ! Coll. Ionization Cooling
     ci_HI   = inp_coolrates_table(tbl_cr_ci_HI, T, .false., ci_HI_prime)   &

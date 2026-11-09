@@ -7,6 +7,11 @@
 DEBUG = 0
 # Compile with OpenMP (godunov_fine prototype, TODO.md 2d); run with OMP_STACKSIZE=64m
 OPENMP = 0
+# Disable floating-point contraction (FMA) so that two builds of logically identical code
+# give bit-identical results (regression checks only; a few % slower)
+BITREPRO = 0
+# 1: no thread-local cache in the cooling-rate table lookup (for emulated TLS, e.g. gfortran on macOS)
+COOLRATES_NOCACHE = 0
 # Compiler flavor: GNU or INTEL
 COMPILER = GNU
 # Size of vector cache
@@ -90,6 +95,9 @@ endif
 ifeq ($(LIGHT_MPI_COMM), 1)
    DEFINES += -DLIGHT_MPI_COMM
 endif
+ifeq ($(COOLRATES_NOCACHE),1)
+   DEFINES += -DCOOLRATES_NOCACHE
+endif
 ifeq ($(INIT_STELLAR_MASS), 1)
    DEFINES += -DINIT_STELLAR_MASS
 endif
@@ -112,6 +120,9 @@ ifeq ($(COMPILER),GNU)
    ifeq ($(OPENMP),1)
       F90 += -fopenmp
    endif
+   ifeq ($(BITREPRO),1)
+      F90 += -ffp-contract=off
+   endif
    ifeq ($(DEBUG),1)
       F90 += -O0 -fbounds-check -Wuninitialized -Wall
       FFLAGS += -ffpe-trap=zero,underflow,overflow,invalid -finit-real=nan
@@ -133,6 +144,9 @@ ifeq ($(COMPILER),INTEL)
    F90 += -fp-model source
    ifeq ($(OPENMP),1)
       F90 += -qopenmp
+   endif
+   ifeq ($(BITREPRO),1)
+      F90 += -fp-model strict
    endif
    ifeq ($(DEBUG),1)
       F90 += -warn all -O0 -g -traceback -check bounds

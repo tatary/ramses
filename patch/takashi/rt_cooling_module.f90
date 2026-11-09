@@ -232,6 +232,7 @@ CONTAINS
     !------------------------------------------------
     ! print info at first call (KS ADDED)
     !------------------------------------------------
+!$omp critical(rt_cool_first)
     if (ifirst == 0) then
       if(myid==1)then
         write(*,'(A)') '##################################################################'
@@ -252,6 +253,7 @@ CONTAINS
       end if
       ifirst = 1
     end if
+!$omp end critical(rt_cool_first)
 
     ! Store some temporary variables reduce computations
     one_over_rt_c_cgs = 1d0 / rt_c_cgs
@@ -308,9 +310,13 @@ CONTAINS
     ! Loop until all cells have tleft=0
     ! **********************************************
     nAct=nCell                                      ! Currently active cells
-    loopcnt=0 ; n_cool_cells=n_cool_cells+nCell     !             Statistics
+    loopcnt=0
+!$omp atomic update
+    n_cool_cells=n_cool_cells+nCell                 !             Statistics
     do while (nAct .gt. 0)      ! Iterate while there are still active cells
-      loopcnt=loopcnt+1   ;   tot_cool_loopcnt=tot_cool_loopcnt+nAct
+      loopcnt=loopcnt+1
+!$omp atomic update
+      tot_cool_loopcnt=tot_cool_loopcnt+nAct
       nAct_next=0                     ! Active cells for the next iteration
       do ia=1,nAct                             ! Loop over the active cells
         i = indAct(ia)                        !                 Cell index
@@ -324,6 +330,7 @@ CONTAINS
         if(.not. dt_ok) then
           ddt(i)=ddt(i)/2.                    ! Try again with smaller dt
           nAct_next=nAct_next+1 ; indAct(nAct_next) = i
+!$omp atomic update
           loopCodes(code) = loopCodes(code)+1
           cycle
         endif
@@ -348,6 +355,7 @@ CONTAINS
       nAct=nAct_next
     end do ! end iterative loop
     ! loop statistics
+!$omp atomic update
     max_cool_loopcnt=max(max_cool_loopcnt,loopcnt)
   contains
 
@@ -384,23 +392,31 @@ CONTAINS
       use const
       implicit none
       integer, intent(in)::icell
-      real(dp),dimension(nDim),save:: dmom
-      real(dp),dimension(nIons),save:: alpha, beta, nN, nI
-      real(dp),save:: dUU, fracMax, x_tot
-      real(dp),save:: mu, TK, nHe, ne, neInit, Hrate
-      real(dp),save:: f_ne_H, f_ne_He   ! |dx| -> |dne|/ne conversion (TO ADDED)
-      real(dp):: xHI,dxHI, xH2=0d0,dXH2=0d0, xHeI,dxHeI
-      real(dp),save:: Crate, dCdT2, X_nHkb, rate, dRate, cr, de=0d0
-      real(dp),save:: photoRate, metal_tot, metal_prime, ss_factor, f_dust
-      real(dp), save:: metal_cool_tot, metal_cool_prime, metal_heat_tot &
+      real(dp),dimension(nDim):: dmom
+      real(dp),dimension(nIons):: alpha, beta, nN, nI
+      real(dp):: dUU, fracMax, x_tot
+      real(dp):: mu, TK, nHe, ne, neInit, Hrate
+      real(dp):: f_ne_H, f_ne_He   ! |dx| -> |dne|/ne conversion (TO ADDED)
+      real(dp):: xHI,dxHI, xH2,dXH2, xHeI,dxHeI
+      real(dp):: Crate, dCdT2, X_nHkb, rate, dRate, cr, de
+      real(dp):: photoRate, metal_tot, metal_prime, ss_factor, f_dust
+      real(dp):: metal_cool_tot, metal_cool_prime, metal_heat_tot &
         , metal_heat_prime
-      integer,save:: iion,igroup,idim
-      real(dp),dimension(nGroups),save:: recRad, phAbs, phSc, dustAbs
-      real(dp),dimension(nGroups),save:: dustSc, kAbs_loc,kSc_loc
-      real(dp),save:: rho, TR, one_over_C_v, E_rad, dE_T, fluxMag, mom_fact
-      real(dp),save:: G0, eff_peh, cdex, ncr
+      integer:: iion,igroup,idim
+      real(dp),dimension(nGroups):: recRad, phAbs, phSc, dustAbs
+      real(dp),dimension(nGroups):: dustSc, kAbs_loc,kSc_loc
+      real(dp):: rho, TR, one_over_C_v, E_rad, dE_T, fluxMag, mom_fact
+      real(dp):: G0, eff_peh, cdex, ncr
       logical::newAtomicCons=.true.
       !---------------------------------------------------------------------
+      ! were save locals (static storage, i.e. zero when never assigned):
+      ! zero the ones that are only assigned when their physics is on
+      xH2=0d0; dXH2=0d0; de=0d0; dmom=0d0
+      metal_tot=0d0; metal_prime=0d0; metal_cool_tot=0d0; metal_cool_prime=0d0
+      metal_heat_tot=0d0; metal_heat_prime=0d0; ss_factor=0d0; f_dust=0d0
+      recRad=0d0; phAbs=0d0; phSc=0d0; dustAbs=0d0; dustSc=0d0; kAbs_loc=0d0; kSc_loc=0d0
+      rho=0d0; TR=0d0; one_over_C_v=0d0; E_rad=0d0; dE_T=0d0; fluxMag=0d0; mom_fact=0d0
+      G0=0d0; eff_peh=0d0; cdex=0d0; ncr=0d0; photoRate=0d0; Hrate=0d0; cr=0d0
       dt_ok=.false.
       nHe=0.25*nH(icell)*Y/X  !         Helium number density
       ! U contains the original values, dU the updated ones:
@@ -1172,13 +1188,17 @@ CONTAINS
     real(dp),dimension(1:7),intent(out)::nSpec!------------------------
     real(dp)::nHe
     real(dp)::n_H2, n_HI, n_HII, n_HEI, n_HEII, n_HEIII, n_E, n_E_min
-    real(dp)::g_H2=0,   g_HI=0,    g_HEI=0, g_HEII=0   ! Photoion/dissoc
-    real(dp)::aZ_H2=0,  aGP_H2,    a_HI=0,  a_HEI=0,   a_HEII=0  ! Formation
-    real(dp)::b_H2HI=0, b_H2H2=0,  b_H3B,   b_HI=0,    b_HEI=0, b_HEII=0!Col
-    real(dp)::C_HII=0,  C_H2=0,    D_H2=0,  f_HII=0,   f_H2=0  ! Cre & destr
-    real(dp)::D_HEI=0,  C_HEIII=0, f_HeI=0, f_HeIII=0, f_dust=0! Cre & destr
+    real(dp)::g_H2,   g_HI,    g_HEI, g_HEII   ! Photoion/dissoc
+    real(dp)::aZ_H2,  aGP_H2,    a_HI,  a_HEI,   a_HEII  ! Formation
+    real(dp)::b_H2HI, b_H2H2,  b_H3B,   b_HI,    b_HEI, b_HEII!Col
+    real(dp)::C_HII,  C_H2,    D_H2,  f_HII,   f_H2  ! Cre & destr
+    real(dp)::D_HEI,  C_HEIII, f_HeI, f_HeIII, f_dust! Cre & destr
     real(dp)::err_nE, err_nH2, n_H2_old
 !-------------------------------------------------------------------------
+    ! (were initialised locals = implicitly saved = shared between OpenMP threads)
+    g_H2=0; g_HI=0; g_HEI=0; g_HEII=0; aZ_H2=0; a_HI=0; a_HEI=0; a_HEII=0
+    b_H2HI=0; b_H2H2=0; b_HI=0; b_HEI=0; b_HEII=0; C_HII=0; C_H2=0; D_H2=0; f_HII=0; f_H2=0
+    D_HEI=0; C_HEIII=0; f_HeI=0; f_HeIII=0; f_dust=0
 
     g_HI   = t_rad_spec(ixHII)                  !      Photoionization [s-1]
     if(isH2) then
@@ -1426,9 +1446,10 @@ CONTAINS
     real(dp)::TT,lTT,deltaT,lcool1,lcool2,lcool1_prime,lcool2_prime
     real(dp)::ZZ,deltaZ
     real(dp)::c1=0.4,c2=10.0,TT0=1d5,TTC=1d6,alpha1=0.15
-    real(dp)::ux,g_courty,f_courty=1d0,g_courty_prime,f_courty_prime
+    real(dp)::ux,g_courty,f_courty,g_courty_prime,f_courty_prime
     integer::iT,iZ
 !-------------------------------------------------------------------------
+    f_courty=1d0   ! was an initialised (implicitly saved) local
     ZZ=1d0/aexp-1d0
     TT=T2*mu
     lTT=log10(TT)
@@ -1493,7 +1514,7 @@ CONTAINS
     implicit none
     real(kind=8),intent(in) :: Tmu
     real(kind=8),intent(in),dimension(nIons) :: xion
-    real(kind=8),save :: xHI, xHII, xHeII, xHeIII
+    real(kind=8) :: xHI, xHII, xHeII, xHeIII
     real(kind=8)::getMu
 !-------------------------------------------------------------------------
     xHII=0d0 ; xHeII=0d0 ; xHeIII=0d0
