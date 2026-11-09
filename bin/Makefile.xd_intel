@@ -5,6 +5,8 @@
 
 # Do we want a debug build? 1=Yes, 0=No
 DEBUG = 0
+# Compile with OpenMP (godunov_fine prototype, TODO.md 2d); run with OMP_STACKSIZE=64m
+OPENMP = 0
 # Compiler flavor: GNU or INTEL
 #COMPILER = GNU
 COMPILER = XD-INTEL
@@ -105,6 +107,9 @@ ifeq ($(COMPILER),GNU)
       FFLAGS += -DWITHOUTMPI
    endif
    F90 += -ffree-line-length-none -fimplicit-none
+   ifeq ($(OPENMP),1)
+      F90 += -fopenmp
+   endif
    FC += -ffree-line-length-none -fimplicit-none
    ifeq ($(DEBUG),1)
       F90 += -g -O0 -fbacktrace -fbounds-check -Wuninitialized -Wall
@@ -127,6 +132,9 @@ ifeq ($(COMPILER),INTEL)
       FFLAGS += -DWITHOUTMPI
    endif
    F90 += -fp-model source
+   ifeq ($(OPENMP),1)
+      F90 += -qopenmp
+   endif
    FC += -fp-model source
    ifeq ($(DEBUG),1)
       F90 += -warn all -O0 -g -traceback -check bounds

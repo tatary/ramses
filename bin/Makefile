@@ -5,6 +5,8 @@
 
 # Do we want a debug build? 1=Yes, 0=No
 DEBUG = 0
+# Compile with OpenMP (godunov_fine prototype, TODO.md 2d); run with OMP_STACKSIZE=64m
+OPENMP = 0
 # Compiler flavor: GNU or INTEL
 COMPILER = GNU
 # Size of vector cache
@@ -107,6 +109,9 @@ ifeq ($(COMPILER),GNU)
       FFLAGS += -DWITHOUTMPI
    endif
    F90 += -frecord-marker=4 -fbacktrace -ffree-line-length-none -fimplicit-none
+   ifeq ($(OPENMP),1)
+      F90 += -fopenmp
+   endif
    ifeq ($(DEBUG),1)
       F90 += -O0 -fbounds-check -Wuninitialized -Wall
       FFLAGS += -ffpe-trap=zero,underflow,overflow,invalid -finit-real=nan
@@ -126,6 +131,9 @@ ifeq ($(COMPILER),INTEL)
       FFLAGS += -DWITHOUTMPI
    endif
    F90 += -fp-model source
+   ifeq ($(OPENMP),1)
+      F90 += -qopenmp
+   endif
    ifeq ($(DEBUG),1)
       F90 += -warn all -O0 -g -traceback -check bounds
       FFLAGS += -fpe0 -ftrapuv -init=zero -init=snan -init=arrays

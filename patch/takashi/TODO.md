@@ -346,6 +346,51 @@ star_formation の gather 削減) で、334557 は `cost_weight_power=1.0`、334
   load balance させる (step 1 の 249 s のうち ~60 s は分割の偏り)。または step 1 を比較から外す。
   `cost_time_weighting` を試すなら、係数が restart 分割で測られないように `restart_remap=.true.` と組で。
 
+## 2d. OpenMP 試作: `godunov_fine` だけスレッド化 (2026-11-09)
+
+背景: 本番は 112 コア × 32 ノードで 896 ランク (28 ランク/ノード) しか使っていない (3584 ランクでは
+10 倍以上遅い)。空いている 3/4 のコアをスレッドで使うための第一歩として、まず `godunov_fine` だけを
+OpenMP 化し、1 ノードで 1・2・3 スレッドの伸びとメモリ帯域の余裕を測る。RAMSES-yOMP
+(Han+2025, github.com/sanhancluster/RAMSES-yOMP) を参考にしたが、あちらは rt/ が手つかずで
+上流とも大きく離れているので、指示文の入れ方だけ真似て patch 側に自前で入れる。
+
+- Makefile に `OPENMP = 0/1` (GNU `-fopenmp`, Intel `-qopenmp`; `bin/Makefile` と `Makefile.xd_intel`)。
+- `godunov_fine` の vector sweep ループを `!$omp parallel do` (dynamic,2)。`godfine1` は自分の grid の
+  セルにしか書かないが、粗い隣接セルへの flux 補正 (`unew/divu/enew(ind_buffer)`) は複数の fine grid が
+  同じ粗セルに足すので `!$omp atomic update` (6 箇所)。足す順が変わるのでスレッド数 >1 では丸め誤差
+  レベルで結果が変わる (1 スレッドは MPI 版と bit 一致)。
+- `save` 作業配列は thread-unsafe なので除去: `godunov_fine.f90` (23)、呼ばれる `umuscl.f90` (9)、
+  `godunov_utils.f90` (24)、`interpol_hydro.f90` (11)、`nbors_utils.f90` (10) を patch/takashi にコピーして
+  `,save` を外した。`godfine1` の `gloc/ploc/req_loc/peq_loc/req2/peq2` は save+初期化で 0 を保証していた
+  ので毎回明示的に 0 にする。`nbors_utils` の `iii/jjj/kkk` は定数表 (読むだけ) なので初期化付きのまま。
+- スタック: `save` を外すと `-fopenmp` (gfortran は `-frecursive` 相当) で作業配列がスタックに乗る。
+  godfine1 + unsplit で 1 スレッドあたり ~8 MB 必要。**`OMP_STACKSIZE=128m` と `ulimit -s`
+  (main スレッド) を必ず設定**。Intel なら `-heap-arrays` も選択肢。
+- OPENMP=0 のビルドは `save` 除去前と bit 一致であること (gfortran は大きい局所配列を自動的に静的領域に
+  置くので挙動は同じ)。
+
+**結果 (手元 Mac, M 系 6P+6E コア, gfortran -O3, DICE テスト levelmax 8, 6 coarse step, 2026-11-09)**:
+- OPENMP=0 ビルド: 参照 (save 除去前) と 40 ファイル bit 一致。OPENMP=1 の 1 スレッドも bit 一致。
+  2・3 スレッドは hydro/rt の出力が丸め誤差で変わる (`hydro_stats.py` の総和・min/max の相対差 ≤ 1.3e-10)。
+- 1 ランク × スレッド数 (P コア内) の `hydro - godunov`: 1: 10.04 s、2: 5.53 s (1.81 倍)、4: 2.98 s (**3.37 倍**)。
+  godunov は 4 スレッドまでほぼ素直に伸び、メモリ帯域は律速していない。
+- 4 ランク × 3 スレッド (12 スレッド、E コア込み) では 3.14 → 1.98 s (1.59 倍) にとどまる: E コアのせいで、
+  スレッド化の問題ではない。
+- 次: 同じやり方で `rt_godunov_fine` (`rt_godunov_utils`/`rt_interpol_hydro` の save 除去込み) と
+  `cooling_fine_part` (セル局所、`rt_solve_cooling` は save を使う? 要確認)、multigrid の smoothing、
+  `virtual_boundaries` の pack/unpack、`rho_fine` (スレッド別バッファ)。クラスタでは Intel `-qopenmp` で
+  28 ランク × 4 スレッド、`OMP_STACKSIZE=128m`、`ulimit -s unlimited`、`I_MPI_PIN_DOMAIN=omp` を job script に。
+  cooling の `rt_solve_cooling` は乱数を使わないので決定的にできるはず。
+- 未追跡ファイル: `patch/takashi/{umuscl,godunov_utils,interpol_hydro,nbors_utils}.f90` (コミット時に git add)。
+- `OMP_STACKSIZE` を指定しないとどうなるか (手元、1 ランク × 2 スレッド): 最初の godunov でワーカースレッドの
+  スタックが溢れる。macOS では stack overflow が SIGBUS (= signal 10) になり、RAMSES が SIGUSR1 (Linux の 10)
+  用に `SIGNAL(10,output_signal)` で掛けているハンドラがそれを捕まえて "SIGNAL 10: Output will be written..."
+  を出して戻る → 同じ命令で再び溢れる → **無限ループでログが 14 GB** になった (kill して削除)。Linux では
+  SIGSEGV (11) なので普通に落ちる。いずれにせよ `OMP_STACKSIZE` は必須。
+- `jobfiles/run_hybrid_intel.rb`: `run_partial_intel.rb` の hybrid 版 (`--cpus-per-task=4`, `SRUN_CPUS_PER_TASK`,
+  `OMP_NUM_THREADS=4`, `OMP_STACKSIZE=64m`, `OMP_PLACES=cores OMP_PROC_BIND=close`, `srun --cpu-bind=cores`,
+  初回確認用に `I_MPI_DEBUG=4` と `--cpu-bind=verbose` (`PinDebug`))。
+
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 
 - 実装済み: 全変数を 1 メッセージに集約 (`make_virtual_fine_dp_nv`)、`unew`/`rtunew`

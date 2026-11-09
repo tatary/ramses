@@ -14,14 +14,21 @@ subroutine godunov_fine(ilevel)
   ! On exit, unew has been updated.
   !--------------------------------------------------------------------------
   integer::i,igrid,ncache,ngrid
-  integer,dimension(1:nvector),save::ind_grid
+  integer,dimension(1:nvector)::ind_grid
 
   if(numbtot(1,ilevel)==0)return
   if(static)return
   if(verbose)write(*,111)ilevel
 
-  ! Loop over active grids by vector sweeps
+  ! Loop over active grids by vector sweeps. With OpenMP the sweeps are
+  ! shared between threads: godfine1 only writes the cells of its own grids
+  ! except for the flux correction of the coarser neighbour cells, which is
+  ! done with atomic updates (several fine grids can touch one coarse cell).
+  ! The work arrays of godfine1/unsplit/interpol_hydro/nbors_utils are
+  ! therefore ordinary (non-save) locals: they need a large thread stack
+  ! (OMP_STACKSIZE=64m or more, see TODO.md 2d).
   ncache=active(ilevel)%ngrid
+!$omp parallel do private(igrid,ngrid,i,ind_grid) schedule(dynamic,2)
   do igrid=1,ncache,nvector
     ngrid=MIN(nvector,ncache-igrid+1)
     do i=1,ngrid
@@ -29,6 +36,7 @@ subroutine godunov_fine(ilevel)
     end do
     call godfine1(ind_grid,ngrid,ilevel)
   end do
+!$omp end parallel do
 
 111 format('   Entering godunov_fine for level ',i2)
 
@@ -323,12 +331,12 @@ subroutine add_pdv_source_terms(ilevel)
   integer,dimension(1:3,1:2,1:8)::iii,jjj
   real(dp)::scale,dx,dx_loc,d,u,v,w,eold
 
-  integer ,dimension(1:nvector),save::ind_grid,ind_cell
-  integer ,dimension(1:nvector,0:twondim),save::igridn
-  integer ,dimension(1:nvector,1:ndim),save::ind_left,ind_right
-  real(dp),dimension(1:nvector,1:ndim,1:ndim),save::velg,veld
-  real(dp),dimension(1:nvector,1:ndim),save::dx_g,dx_d
-  real(dp),dimension(1:nvector),save::divu_loc
+  integer ,dimension(1:nvector)::ind_grid,ind_cell
+  integer ,dimension(1:nvector,0:twondim)::igridn
+  integer ,dimension(1:nvector,1:ndim)::ind_left,ind_right
+  real(dp),dimension(1:nvector,1:ndim,1:ndim)::velg,veld
+  real(dp),dimension(1:nvector,1:ndim)::dx_g,dx_d
+  real(dp),dimension(1:nvector)::divu_loc
 #if NENER>0
   integer::irad
 #endif
@@ -518,24 +526,24 @@ subroutine godfine1(ind_grid,ncache,ilevel)
   ! and stored in array unew(:), both at the current level and at the
   ! coarser level if necessary.
   !-------------------------------------------------------------------
-  integer ,dimension(1:nvector,1:threetondim     ),save::nbors_father_cells
-  integer ,dimension(1:nvector,1:twotondim       ),save::nbors_father_grids
-  integer ,dimension(1:nvector,0:twondim         ),save::ibuffer_father
-  real(dp),dimension(1:nvector,0:twondim  ,1:nvar),save::u1
-  real(dp),dimension(1:nvector,1:twotondim,1:nvar),save::u2
-  real(dp),dimension(1:nvector,1:twotondim       ),save::req2=0.0d0
-  real(dp),dimension(1:nvector,1:twotondim       ),save::peq2=0.0d0
+  integer ,dimension(1:nvector,1:threetondim     )::nbors_father_cells
+  integer ,dimension(1:nvector,1:twotondim       )::nbors_father_grids
+  integer ,dimension(1:nvector,0:twondim         )::ibuffer_father
+  real(dp),dimension(1:nvector,0:twondim  ,1:nvar)::u1
+  real(dp),dimension(1:nvector,1:twotondim,1:nvar)::u2
+  real(dp),dimension(1:nvector,1:twotondim       )::req2
+  real(dp),dimension(1:nvector,1:twotondim       )::peq2
 
-  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2,1:nvar),save::uloc
-  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2,1:ndim),save::gloc=0.0d0
-  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2),save::ploc=0.0d0
-  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2),save::req_loc=0.0d0
-  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2),save::peq_loc=0.0d0
-  real(dp),dimension(1:nvector,if1:if2,jf1:jf2,kf1:kf2,1:nvar,1:ndim),save::flux
-  real(dp),dimension(1:nvector,if1:if2,jf1:jf2,kf1:kf2,1:2,1:ndim),save::tmp
-  logical ,dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2),save::ok
+  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2,1:nvar)::uloc
+  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2,1:ndim)::gloc
+  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2)::ploc
+  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2)::req_loc
+  real(dp),dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2)::peq_loc
+  real(dp),dimension(1:nvector,if1:if2,jf1:jf2,kf1:kf2,1:nvar,1:ndim)::flux
+  real(dp),dimension(1:nvector,if1:if2,jf1:jf2,kf1:kf2,1:2,1:ndim)::tmp
+  logical ,dimension(1:nvector,iu1:iu2,ju1:ju2,ku1:ku2)::ok
 
-  integer,dimension(1:nvector),save::igrid_nbor,ind_cell,ind_buffer,ind_exist,ind_nexist
+  integer,dimension(1:nvector)::igrid_nbor,ind_cell,ind_buffer,ind_exist,ind_nexist
 
   integer::i,j,ivar,idim,ind_son,ind_father,iskip,nbuffer
   integer::i0,j0,k0,i1,j1,k1,i2,j2,k2,i3,j3,k3,nx_loc,nb_noneigh,nexist
@@ -545,6 +553,12 @@ subroutine godfine1(ind_grid,ncache,ilevel)
   real(dp)::dx,scale,oneontwotondim,d
 
   oneontwotondim = 1d0/dble(twotondim)
+
+  ! These used to be save arrays initialised to zero; without save they must be
+  ! zeroed on every call (only partly filled when gravity / pressure_fix /
+  ! strict_equilibrium are off)
+  req2=0.0d0; peq2=0.0d0
+  gloc=0.0d0; ploc=0.0d0; req_loc=0.0d0; peq_loc=0.0d0
 
   ! Mesh spacing in that level
   nx_loc=icoarse_max-icoarse_min+1
@@ -839,6 +853,7 @@ subroutine godfine1(ind_grid,ncache,ilevel)
         do j3=j3min,j3max-j0
           do i3=i3min,i3max-i0
             do i=1,nb_noneigh
+!$omp atomic update
               unew(ind_buffer(i),ivar)=unew(ind_buffer(i),ivar) &
               & -flux(ind_cell(i),i3,j3,k3,ivar,idim)*oneontwotondim
             end do
@@ -852,6 +867,7 @@ subroutine godfine1(ind_grid,ncache,ilevel)
         do j3=j3min,j3max-j0
           do i3=i3min,i3max-i0
             do i=1,nb_noneigh
+!$omp atomic update
               divu(ind_buffer(i))=divu(ind_buffer(i)) &
               & -tmp(ind_cell(i),i3,j3,k3,1,idim)*oneontwotondim
             end do
@@ -863,6 +879,7 @@ subroutine godfine1(ind_grid,ncache,ilevel)
         do j3=j3min,j3max-j0
           do i3=i3min,i3max-i0
             do i=1,nb_noneigh
+!$omp atomic update
               enew(ind_buffer(i))=enew(ind_buffer(i)) &
               & -tmp(ind_cell(i),i3,j3,k3,2,idim)*oneontwotondim
             end do
@@ -891,6 +908,7 @@ subroutine godfine1(ind_grid,ncache,ilevel)
         do j3=j3min+j0,j3max
           do i3=i3min+i0,i3max
             do i=1,nb_noneigh
+!$omp atomic update
               unew(ind_buffer(i),ivar)=unew(ind_buffer(i),ivar) &
               & +flux(ind_cell(i),i3+i0,j3+j0,k3+k0,ivar,idim)*oneontwotondim
             end do
@@ -904,6 +922,7 @@ subroutine godfine1(ind_grid,ncache,ilevel)
         do j3=j3min+j0,j3max
           do i3=i3min+i0,i3max
             do i=1,nb_noneigh
+!$omp atomic update
               divu(ind_buffer(i))=divu(ind_buffer(i)) &
               & +tmp(ind_cell(i),i3+i0,j3+j0,k3+k0,1,idim)*oneontwotondim
             end do
@@ -915,6 +934,7 @@ subroutine godfine1(ind_grid,ncache,ilevel)
         do j3=j3min+j0,j3max
           do i3=i3min+i0,i3max
             do i=1,nb_noneigh
+!$omp atomic update
               enew(ind_buffer(i))=enew(ind_buffer(i)) &
               & +tmp(ind_cell(i),i3+i0,j3+j0,k3+k0,2,idim)*oneontwotondim
             end do
