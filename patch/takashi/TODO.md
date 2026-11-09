@@ -329,6 +329,23 @@ star_formation の gather 削減) で、334557 は `cost_weight_power=1.0`、334
   (終了時・出力時のファイルは正しかった)。手元で step ごとの `stars` が終了時と一致することを確認。
 - 本番のノード: 28 ランク/ノード × 32 ノード。
 
+**解決 (flat-337718 / `timer_ranks_337718_n7576..7578.dat`, `timer_ranks_every=1`, 2026-11-09, 672 s)**:
+- 遅いランク (41, 80, 81, 83, 109, 352, 407, 645, 829, 871 …) が遅いのは **step 1 だけ** (hydro - godunov で
+  1.3–1.6 倍)。step 2・3 では 0.96–1.07 で平均並み。SN は 3 step 合計 3 個で無関係。
+- 原因は **restart 直後の分割**: 最初の coarse step では load balance がスキップされ (amr_step の
+  "Skip first load balance because it has been performed before file dump")、snapshot の cpu map のまま走る。
+  その分割の仕事量 (grid × 2^(level−7)) は max/avg **1.68**、L15 grid 数 789–4058。rank 109 は仕事量 1.68 倍で
+  時間 1.54 倍、仕事量あたりでは 0.92 と普通。step 2 の最初の load balance で 324 万 grid が動いて
+  max/avg 1.09、step 3 で 1.03 になる。snapshot を作ったランは今と cost 模型が違ったのだろう。
+  2b の「grid あたりコストがランクで違う」「間欠的」は全部これの見間違い (累積値しか無かったため)。
+- 定常状態 (step 2・3) の計算 3 タイマーの仕事量あたりの偏りは max/avg 1.13–1.14、遅いのは連続した
+  683–689 (1.03–1.14) で領域依存。ここは `cost_time_weighting` が効きうる範囲 (最大 ~10%)。
+- 337199 (`cost_time_weighting=.true.`) の step 3 が 52 s 遅かったのは分割のせいではなく、物理が僅かに
+  ずれて dt が変わり L15 の RT subcycle が 280 → 512 になったため (337110 と 337718 は dt まで同一)。
+- **3 step の restart テストの正しいやり方**: `&RUN_PARAMS restart_remap=.true.` で最初の step から
+  load balance させる (step 1 の 249 s のうち ~60 s は分割の偏り)。または step 1 を比較から外す。
+  `cost_time_weighting` を試すなら、係数が restart 分割で測られないように `restart_remap=.true.` と組で。
+
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 
 - 実装済み: 全変数を 1 メッセージに集約 (`make_virtual_fine_dp_nv`)、`unew`/`rtunew`
