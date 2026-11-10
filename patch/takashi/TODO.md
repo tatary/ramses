@@ -443,6 +443,21 @@ OpenMP 化し、1 ノードで 1・2・3 スレッドの伸びとメモリ帯域
 - cooling の `schedule(dynamic,1)` (32 grid 単位) は `dynamic,2` より 4 スレッドで 3.5% 速い (8.27 → 7.98 s、
   NOCACHE 版)。セルごとの反復回数の差が大きいので細かい単位にした。hydro/RT は `dynamic,2` のまま。
 
+### 2e. poisson まわりの上流変更の扱い (2026-11-09 時点、保留)
+
+`poisson/` は 2023-09 の上流のまま。上流 (ramses-organisation) のその後の poisson 変更は 3 つで、PCG の類は無い。
+- #313 (2026-09) multigrid の `safe_mode` を 10 回の解で自動解除し restart に保存。我々のコードでは一度入ると
+  そのランの間固着し (coarse MG の smoothing が 2 倍 → 交換も 2 倍)、入ったことはログに出ない。ただし
+  restart で必ずリセットされるので固着は最長 1 セグメント (24 h)。3 step テストでは全 level `Step= 4` で
+  収束していて trigger の気配は無い。**24 時間ランを再開するときに**、`multigrid_fine_commons.f90` を patch に
+  コピーして safe mode の on/off を rank 1 が 1 行出す診断を入れ、1 セグメント見てから countdown を移植するか決める。
+- #345 (2026-10) multigrid 通信で `flag2` を作業領域に使い回す稀なバグ (別 level の grid index を有効化、
+  または `-mod(flag2,ngridmax)` が 0 になって `lookup_mg(0)` で落ちる; issue #344、孤立銀河で 23958 step 目に発生)
+  の修正。**2026-11-09 に取り込み済み**: `poisson_commons.f90`, `multigrid_fine_commons.f90`,
+  `multigrid_fine_fine.f90` を patch にコピーして `lookup_mg_backup(1:ngridmax)` に退避 (`init_amr.f90` で確保)、
+  scan flag は `flag2` にそのまま 0/1 を入れる。通常ランでは結果は変わらない (BITREPRO=1 で変更前と bit 一致を確認)。
+- #137 (2025-06) CG のバグ修正は 2025-04 の最適化で入ったバグなので我々には無関係。`cg_levelmin` テストはそのまま可。
+
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 
 - 実装済み: 全変数を 1 メッセージに集約 (`make_virtual_fine_dp_nv`)、`unew`/`rtunew`
