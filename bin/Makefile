@@ -10,8 +10,6 @@ OPENMP = 0
 # Disable floating-point contraction (FMA) so that two builds of logically identical code
 # give bit-identical results (regression checks only; a few % slower)
 BITREPRO = 0
-# 1: no thread-local cache in the cooling-rate table lookup (for emulated TLS, e.g. gfortran on macOS)
-COOLRATES_NOCACHE = 0
 # Compiler flavor: GNU or INTEL
 COMPILER = GNU
 # Size of vector cache
@@ -94,9 +92,6 @@ endif
 
 ifeq ($(LIGHT_MPI_COMM), 1)
    DEFINES += -DLIGHT_MPI_COMM
-endif
-ifeq ($(COOLRATES_NOCACHE),1)
-   DEFINES += -DCOOLRATES_NOCACHE
 endif
 ifeq ($(INIT_STELLAR_MASS), 1)
    DEFINES += -DINIT_STELLAR_MASS

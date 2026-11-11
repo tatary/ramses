@@ -513,6 +513,41 @@ OpenMP 化し、1 ノードで 1・2・3 スレッドの伸びとメモリ帯域
   hydro-godunov 9.3、hydro-rev ghostzones 7.1、cooling 5.8、refine 5.0。poisson の multigrid smoothing / CG の
   matvec と、star formation の中身のスレッド化が次の候補。
 
+- **OpenMP binary の 1 スレッド (flat-339657、339648 と同じ履歴)**: hydro-godunov 23.9 s (339648 の 23.4 と同じ)、
+  rt-godunov、poisson も同じ → `-qopenmp` 自体の損は無い。**ただし cooling だけ 2 倍遅い**
+  (20.7/16.1/8.1 → 42.6/33.1/16.7 s)。その待ちで rt-ghostzones と star formation も増えている。
+  4 スレッドの cooling 5.8 s は「1 スレッド OpenMP 版 16.7 s の 2.9 倍」だが「非 OpenMP 版 8.1 s の 1.4 倍」でしかない。
+  cooling の経路にだけある OpenMP 構文は `coolrates_module` の `inp_coolrates_table` の `threadprivate` キャッシュ
+  (セルごと・反復ごとに何十回も呼ぶ最内側)、統計カウンタの `atomic`、初回の `critical`。量的に合うのは
+  threadprivate (Mac の emulated TLS で見たのと同じ症状)。ifx の既定は `-qopenmp-threadprivate=compat` (native TLS)
+  のはずだが、実際に遅い。**切り分け**: `Makefile.xd_intel` で `COOLRATES_NOCACHE = 1` にして
+  `bin/coolrates_module.o` だけ消して再ビルド (他は変わらない)、1 スレッドで流して cooling が 339648 の 1.2 倍程度に
+  戻れば threadprivate が原因 → 本番は NOCACHE=1 で行く (Mac では +17% の計算、2 倍よりずっと安い)。
+  戻らなければ `atomic` か `-qopenmp` が暗黙に付ける `-auto` (全ローカルをスタックへ) を疑う。
+
+- **`KMP_BLOCKTIME=0` (flat-339670、4 スレッド、NOCACHE=0)**: 狙いどおり逐次部分が戻った。poisson 23.6 → 18.2 s/step
+  (339648 の 17.6 とほぼ同じ)、rho 2.8 → 2.3、refine 5.0 → 4.4、flag 2.3 → 1.7。代償はスレッドの起床:
+  hydro-godunov 9.3 → 9.7 (+4%)、rt-godunov は subcycle 数の揃う step 1 (656) で 339648 比 2.66 倍 (BT=200 の
+  step 3 では 2.9 倍)。差し引き 1 step あたり約 4 s の得なので **既定は 0 のまま**。中間の `KMP_BLOCKTIME=1` (ms;
+  RT subcycle 内の連続する parallel region はカバーし、poisson の数十 ms の逐次部分では眠る) を試す価値はある。
+  3 ラン (339656/339670) は dt 崩壊の履歴が違う (dt<1e-5: 157/215/0 対 0/0/37) ので合計時間 (296 対 310 s) では
+  比べられない。履歴の揃う step 1 同士 (subcycle 656、崩壊なし) で: 339614 283.9 s → 339648 198.7 s (束縛) →
+  339670 115.5 s (4 スレッド、BT=0): **元の flat 比 2.46 倍**。
+  cooling は step 1/2 で 339648 比 1.35 倍しか伸びていない (threadprivate の件、NOCACHE=1 の切り分け待ち)。
+
+- **`COOLRATES_NOCACHE=1` の 1 スレッド (flat-339672、339648 と同じ履歴)**: cooling 25.0 / 19.5 / 9.8 s で、
+  非 OpenMP 版 (20.7 / 16.1 / 8.1) の 1.21 倍 (Mac で見た +17% と同じ)、threadprivate 版 (42.6 / 33.1 / 16.7) の半分。
+  **cooling の 2 倍は ifx の `threadprivate` が原因と確定**。他の行は 339648 と同じ。
+  **修正 (同日)**: キャッシュを `threadprivate` ではなく呼び出し側が持つ `type(coolrates_lookup)` にして
+  `inp_coolrates_table(..., lookup=lk)` の optional 引数で渡す形にした。キャッシュが効くのは同じ T での連続した
+  表引き (1 回の `compCoolrate` の中の 14 回) なので、`compCoolrate` のローカル `lk` で十分。`rt_cooling_module` の
+  alpha の表引き (2〜6 回) は引数無し = 再計算のまま。TLS も save も無くなったので `COOLRATES_NOCACHE` は不要になり
+  Makefile から削除。結果は旧キャッシュ版・NOCACHE 版と算術が同じなので bit 一致する (Mac、BITREPRO=1 の直列
+  ビルドで参照と 40 ファイル bit 一致を確認)。Mac (gfortran、1 ランク、P コア) の cooling: 1 スレッド 25.4 s
+  (旧 threadprivate 版 25.3、NOCACHE 版 29.6)、4 スレッド 7.34 s (3.46 倍; NOCACHE 版 7.98、threadprivate 版 12.85)。
+  TOTAL は 1 スレッド 61.9 s → 4 スレッド 27.8 s。クラスタでは `coolrates_module` のモジュール I/F が変わるので
+  `bin/*.o *.mod` を消してビルドし、1 スレッドで cooling が 339648 (20.7/16.1/8.1 s) に戻ることを確認する。
+
 ### 2e. poisson まわりの上流変更の扱い (2026-11-09 時点、保留)
 
 `poisson/` は 2023-09 の上流のまま。上流 (ramses-organisation) のその後の poisson 変更は 3 つで、PCG の類は無い。

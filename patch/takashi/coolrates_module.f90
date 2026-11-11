@@ -12,7 +12,7 @@ MODULE coolrates_module
 
   private   ! default
   public init_coolrates_tables, update_coolrates_tables                  &
-    , inp_coolrates_table, compCoolrate                               &
+    , inp_coolrates_table, compCoolrate, coolrates_lookup             &
     , tbl_alphaZ_H2, tbl_alphaGP_H2, tbl_alphaA_HII, tbl_alphaA_HeII  &
     , tbl_alphaA_HeIII, tbl_alphaB_HII, tbl_alphaB_HeII               &
     , tbl_alphaB_HeIII, tbl_beta_HI, tbl_beta_HeI, tbl_beta_HeII      &
@@ -39,6 +39,19 @@ MODULE coolrates_module
     ! Temperature derivatives of those rates (drate/dlog(T)):
     real(dp),dimension(nbinT)::primes = 0d0
   end type coolrates_table
+
+  ! Cache of the last T lookup for inp_coolrates_table (index and spline
+  ! weights, one log10 per new T). Declared by the caller and passed as the
+  ! optional argument "lookup", so that repeated lookups of different tables
+  ! at the same T (e.g. inside compCoolrate) share the work without any
+  ! save/threadprivate state (ifx threadprivate access doubled the cooling
+  ! time, TODO.md 2d-3).
+  type coolrates_lookup
+     real(dp)::Tlast=-1d0
+     integer ::iT=1
+     real(dp)::facT=0d0, yy=0d0, yy2=0d0, yy3=0d0
+     logical ::extrap=.false.
+  end type coolrates_lookup
 
   type(coolrates_table),save::tbl_alphaZ_H2  ! H2 dust grain formation
   type(coolrates_table),save::tbl_alphaGP_H2 ! H2 gas-phase formation
@@ -486,11 +499,14 @@ CONTAINS
   end subroutine update_table_rates
 
 !XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-  FUNCTION inp_coolrates_table(rates_table, T, allow_negative, retPrime)
+  FUNCTION inp_coolrates_table(rates_table, T, allow_negative, retPrime, lookup)
 ! Returns TABULATED rate value from given table
 ! rates        => Rates (and primes) table to interpolate
 ! T            => Temperature [K]
 ! retPrime     <= Temperature derivative of rate at T (optional).
+! lookup       <> Caller-owned cache of the last T (optional): the index and
+!                 spline weights are reused when T equals lookup%Tlast.
+!                 Without it they are recomputed (one log10 per call).
 !-------------------------------------------------------------------------
     implicit none
     type(coolrates_table)::rates_table
@@ -498,31 +514,25 @@ CONTAINS
     real(dp),intent(in)::T
     logical,intent(in)::allow_negative
     real(dp),optional::retPrime
+    type(coolrates_lookup),optional,intent(inout)::lookup
     real(dp)::inp_coolrates_table
-#ifdef COOLRATES_NOCACHE
-    ! No cache of the last T lookup (recompute: one log10 per call). Use this
-    ! where thread-local storage is emulated (gfortran on macOS), because the
-    ! threadprivate cache below is then slower than recomputing.
+    ! No save variables here: the upstream save cache is not thread safe
+    ! (a thread could reuse the index of another thread's T), and a
+    ! threadprivate cache is slow with ifx (TODO.md 2d-3).
     integer:: iT
     real(dp):: facT, yy, yy2, yy3, fa, fb, fprimea, fprimeb
     real(dp):: alpha, beta, gamma
-    logical::extrap
-#else
-    ! Cache of the last T lookup (index and spline weights). The upstream
-    ! save variables are not thread safe (a thread could reuse the index of
-    ! another thread's T), so the cache is threadprivate under OpenMP.
-    integer,save:: iT = 1
-    real(dp),save:: facT, yy, yy2, yy3, fa, fb, fprimea, fprimeb, Tlast=-1
-    real(dp),save:: alpha, beta, gamma
-    logical,save::extrap
-!$omp threadprivate(iT, facT, yy, yy2, yy3, fa, fb, fprimea, fprimeb, Tlast, alpha, beta, gamma, extrap)
-#endif
+    logical::extrap, hit
 !-------------------------------------------------------------------------
-#ifdef COOLRATES_NOCACHE
-    if (.true.) then
-#else
-    if (.not. (T .eq. Tlast)) then    ! Reuse index if same T from last call
-#endif
+    hit=.false.
+    if(present(lookup))then
+      if(T .eq. lookup%Tlast)then   ! Reuse index if same T as last call
+        hit=.true.
+        iT=lookup%iT; facT=lookup%facT; extrap=lookup%extrap
+        yy=lookup%yy; yy2=lookup%yy2; yy3=lookup%yy3
+      endif
+    endif
+    if(.not. hit)then
       ! Log of T, snapped to table at the lower boundary, but allowed
       ! to go above upper boundary, in which case we use extrapolation:
       facT = MAX( log10(T), T_lookup(1) )
@@ -533,9 +543,10 @@ CONTAINS
       yy=facT-T_lookup(iT)  ! Dist., in log(T), from T to lower table index
       yy2=yy*yy             ! That distance squared
       yy3=yy2*yy            ! ...and cubed
-#ifndef COOLRATES_NOCACHE
-      Tlast = T
-#endif
+      if(present(lookup))then
+        lookup%Tlast=T; lookup%iT=iT; lookup%facT=facT; lookup%extrap=extrap
+        lookup%yy=yy; lookup%yy2=yy2; lookup%yy3=yy3
+      endif
     endif
 
     if(extrap) then ! TK above upper table limit, so extrapolate in log-log:
@@ -592,52 +603,54 @@ CONTAINS
     real(dp)::r_HII,r_HeII,r_HeIII
     real(dp)::r_HII_prime,r_HeII_prime,r_HeIII_prime
     real(dp)::bre, brefac, bre_prime, com, com_prime, die, die_prime
+    type(coolrates_lookup)::lk   ! per-call cache: all lookups below use the same T
 !-------------------------------------------------------------------------
+    lk%Tlast=-1d0
     ! Coll. Ionization Cooling
-    ci_HI   = inp_coolrates_table(tbl_cr_ci_HI, T, .false., ci_HI_prime)   &
+    ci_HI   = inp_coolrates_table(tbl_cr_ci_HI, T, .false., ci_HI_prime, lookup=lk)   &
       * ne * nN(ixHII) ! ne * nHI
     ci_HI_prime = ci_HI_prime * ne * nN(ixHII)
     ! Collisional excitation cooling
-    ce_HI   = inp_coolrates_table(tbl_cr_ce_HI, T, .false., ce_HI_prime)   &
+    ce_HI   = inp_coolrates_table(tbl_cr_ce_HI, T, .false., ce_HI_prime, lookup=lk)   &
       * ne * nN(ixHII) ! ne * nHI
     ce_HI_prime    = ce_HI_prime * ne * nN(ixHII)
     ! Recombination Cooling
-    r_HII = inp_coolrates_table(tbl_cr_r_HII, T, .false., r_HII_prime)     &
+    r_HII = inp_coolrates_table(tbl_cr_r_HII, T, .false., r_HII_prime, lookup=lk)     &
       * ne * nI(ixHII) ! ne * nHII
     r_HII_prime   = r_HII_prime * ne * nI(ixHII)
 
     if(isHe) then
       ! Coll. Ionization Cooling
       ci_HeI      = inp_coolrates_table(tbl_cr_ci_HeI, T, .false.         &
-        , ci_HeI_prime)   &
+        , ci_HeI_prime, lookup=lk)   &
         * ne * nN(ixHeII)  ! ne * nHeI
       ci_HeI_prime= ci_HeI_prime  * ne * nN(ixHeII)
       ci_HeII     = inp_coolrates_table(tbl_cr_ci_HeII, T, .false.        &
-        , ci_HeII_prime) &
+        , ci_HeII_prime, lookup=lk) &
         * ne * nN(ixHeIII) ! ne * nHeII
       ci_HeII_prime= ci_HeII_prime * ne * nN(ixHeIII)
       ! Collisional excitation cooling
       ce_HeI      = inp_coolrates_table(tbl_cr_ce_HeI, T, .false.         &
-        , ce_HeI_prime)   &
+        , ce_HeI_prime, lookup=lk)   &
         * ne * nN(ixHeII) ! ne * nHeI
       ce_HeI_prime= ce_HeI_prime *ne*nN(ixHeII)
       ce_HeII     = inp_coolrates_table(tbl_cr_ce_HeII, T, .false.        &
-        , ce_HeII_prime) &
+        , ce_HeII_prime, lookup=lk) &
         * ne * nN(ixHeIII) ! ne * nHeII
       ce_HeII_prime= ce_HeII_prime * ne * nN(ixHeIII)
       ! Recombination Cooling
       r_HeII      = inp_coolrates_table(tbl_cr_r_HeII, T, .false.         &
-        , r_HeII_prime)   &
+        , r_HeII_prime, lookup=lk)   &
         * ne * nI(ixHeII) ! ne * nHeII
       r_HeII_prime= r_HeII_prime * ne * nI(ixHeII)
       r_HeIII     = inp_coolrates_table(tbl_cr_r_HeIII, T, .false.        &
-        , r_HeIII_prime) &
+        , r_HeIII_prime, lookup=lk) &
         * ne * nI(ixHeIII) ! ne * nHeIII
       r_HeIII_prime= r_HeIII_prime * ne * nI(ixHeIII)
     endif
 
     ! Bremsstrahlung
-    bre    = inp_coolrates_table(tbl_cr_bre, T, .false., bre_prime)
+    bre    = inp_coolrates_table(tbl_cr_bre, T, .false., bre_prime, lookup=lk)
     brefac = ne * nI(ixHII)
     if(isHe) then
       brefac = brefac + ne * ( nI(ixHeII) + 4. * nI(ixHeIII) )
@@ -646,12 +659,12 @@ CONTAINS
     bre_prime  = bre_prime * brefac
 
     ! Compton Cooling
-    com       = inp_coolrates_table(tbl_cr_com, T, .true., com_prime) * ne
+    com       = inp_coolrates_table(tbl_cr_com, T, .true., com_prime, lookup=lk) * ne
     com_prime = com_prime * ne
 
     ! Dielectronic recombination cooling
     if(isHe) then
-      die       = inp_coolrates_table(tbl_cr_die, T, .false., die_prime) &
+      die       = inp_coolrates_table(tbl_cr_die, T, .false., die_prime, lookup=lk) &
         * ne * nN(ixHeIII) ! ne * nHeII
       die_prime = die_prime * ne * nN(ixHeIII)
     endif
@@ -659,12 +672,12 @@ CONTAINS
     if(isH2) then
       ! Collisional dissociation (H2) cooling
       cr_H2HI       = inp_coolrates_table(tbl_cr_H2HI, T, .false.         &
-        , cr_H2HI_prime)  &
+        , cr_H2HI_prime, lookup=lk)  &
         * nN(ixHI) * nN(ixHII) ! nH2 * nHI
       cr_H2HI_prime = cr_H2HI_prime * nN(ixHI)*nN(ixHII)
 
       cr_H2H2       = inp_coolrates_table(tbl_cr_H2H2, T, .false.         &
-        , cr_H2H2_prime)  &
+        , cr_H2H2_prime, lookup=lk)  &
         * nN(ixHI)**2 ! nH2 * nH2
       cr_H2H2_prime = cr_H2H2_prime * nN(ixHI)**2
     endif
