@@ -6,7 +6,7 @@
 # Do we want a debug build? 1=Yes, 0=No
 DEBUG = 0
 # Compile with OpenMP (godunov_fine prototype, TODO.md 2d); run with OMP_STACKSIZE=64m
-OPENMP = 0
+OPENMP = 1
 # Disable floating-point contraction (FMA) so that two builds of logically identical code
 # give bit-identical results (regression checks only; a few % slower)
 BITREPRO = 0
