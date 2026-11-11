@@ -443,6 +443,36 @@ OpenMP 化し、1 ノードで 1・2・3 スレッドの伸びとメモリ帯域
 - cooling の `schedule(dynamic,1)` (32 grid 単位) は `dynamic,2` より 4 スレッドで 3.5% 速い (8.27 → 7.98 s、
   NOCACHE 版)。セルごとの反復回数の差が大きいので細かい単位にした。hydro/RT は `dynamic,2` のまま。
 
+### 2d-3. hybrid の本番テスト 1 回目 (hybrd-339635、2026-11-11)
+
+896 ランク × `OMP_NUM_THREADS=4`、32 ノード、`run_hybrid_intel.rb` (`--cpus-per-task=4`)、`cg_auto=.true.`、
+同じ snapshot からの 3 step。比較対象はスレッド無しの 339614 (同じ namelist)。
+
+- 全体: 674 → 473 s (1.42 倍)。coarse step ごとに 283/216/166 → 198/154/120 s。RT subcycle 数と dt の履歴は
+  2 ランで同じ (L15 subcycle 656/510/256、dt<1e-5 の fine step 0/2/246 対 0/2/256) なので直接比べられる。
+- **ただし速くなったのはスレッド化した部分だけではない**: 1 step あたりの平均で
+  poisson 30.5 → 18.2 s (1.68 倍、スレッド化していない)、hydro-rev ghostzones 1.25 倍、star formation 1.2–1.4 倍、
+  refine 1.3 倍。スレッド化した hydro-godunov は 35 → 25 s (1.38 倍)、rt-godunov 1.51 倍、cooling 1.53 倍で、
+  スレッド無しの poisson より伸びが小さい。
+- 原因は CPU の割り当て。`--cpu-bind=verbose` のマスクは task 0 が論理 CPU {0,1,112,113}、task 1 が {56,57,168,169}
+  で、**ノードは 224 論理 CPU (112 コア × HT 2)、Slurm の `--cpus-per-task=4` は論理 CPU 4 個 = 物理コア 2 個**
+  だった。4 スレッドは 2 コアを HT で共有していた (`OMP_PLACES=cores` なので 1 place に 2 スレッド)。
+  `sacct` では両ジョブともノード専有 (32 × 224 = 7168 CPU) で、flat 339614 の srun step は 896 task に 7168 CPU
+  (1 task 8 論理 CPU = 4 コア)、hybrid 339635 の step は 3584 CPU (1 task 4 論理 CPU = 2 コア)。つまり **flat の方が
+  1 ランクあたりのコアは多かった** のに、スレッド化していない poisson まで hybrid の方が 1.68 倍速い。
+  flat script (`run_partial_intel.rb`) には `--cpu-bind` が無いので、どう束縛されたか (Slurm 既定か Intel MPI の
+  pinning か、HT の兄弟に 2 ランクが乗っていなかったか) はログから分からない。hydro-godunov のような局所計算まで
+  1.38 倍速いので、flat ではコアの共有か周波数の問題があった疑いが強い。
+  いずれにせよ 339614 と 339635 の差は OpenMP の効果ではなく、hybrid 内の 4 スレッドは 2 コアの HT 共有なので
+  スレッドの正味の効果はこのランからは出せない。
+- **flat の束縛を見る方法**: `run_partial_intel.rb` の srun に `--cpu-bind=verbose` を足す (型を指定しなければ
+  既定の方針のままマスクだけ出る)。
+- **次のテスト**: `run_hybrid_intel.rb` を `ThreadsPerCore=2`, `CoresPerTask=4` (→ `--cpus-per-task=8`) に直した
+  (2026-11-11)。これで 1 task に物理コア 4 個、`OMP_PLACES=cores` で 1 コア 1 スレッド。
+  (a) `NumThreadsPerProc=4` の hybrid、(b) 同じ script で `NumThreadsPerProc=1` の flat (同じ配置での基準) の 2 本を流し、
+  (b) に対する (a) の hydro-godunov/rt-godunov/cooling の比が OpenMP の正味の効果 (手元では 3.1–3.7 倍)。
+  (b) と 339614 の差が「配置だけの効果」。
+
 ### 2e. poisson まわりの上流変更の扱い (2026-11-09 時点、保留)
 
 `poisson/` は 2023-09 の上流のまま。上流 (ramses-organisation) のその後の poisson 変更は 3 つで、PCG の類は無い。

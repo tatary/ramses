@@ -28,7 +28,7 @@ NumTasksPerNode=112/NumThredsPerProc
 NumTasksPerSocket = 56 / NumThredsPerProc
 
 RunName = "rt_new2"
-StartUp = "srun"
+StartUp = "srun --hint=nomultithread"     # repeated on srun: not reliably inherited from the header
 QName="M-large-a"
 #QName="M-test-a"
 #QName="P-test-b"
@@ -45,6 +45,7 @@ def write_script(str, snapnum, new)
     outputfile.print '#SBATCH --ntasks=', NumProc.to_s, "\n"
     outputfile.print '#SBATCH --ntasks-per-node=', NumTasksPerNode.to_s, "\n"
     outputfile.print '#SBATCH --ntasks-per-socket=', NumTasksPerSocket.to_s, "\n"
+    outputfile.print "#SBATCH --hint=nomultithread\n"     # one task per core, HT siblings left unused
     outputfile.print "#SBATCH -o flat-%J.out\n" 
     #outputfile.print "#SBATCH --mem=461G\n"    # ノード当たりのメモリ容量
     outputfile.print "#SBATCH --mem=115G\n"    # ノード当たりのメモリ容量

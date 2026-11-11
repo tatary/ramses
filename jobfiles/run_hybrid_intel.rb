@@ -27,10 +27,17 @@ BinaryName2 = "./ramses/bin/ramses3d"
 NumNodes=32
 CoresPerNode=112
 CoresPerSocket=56
-NumThreadsPerProc=4                              # OpenMP threads per MPI task
-NumProc = NumNodes * CoresPerNode / NumThreadsPerProc
-NumTasksPerNode = CoresPerNode / NumThreadsPerProc
-NumTasksPerSocket = CoresPerSocket / NumThreadsPerProc
+ThreadsPerCore=2                                 # hardware threads per core: Slurm counts --cpus-per-task in these
+                                                 # (339635: --cpus-per-task=4 gave 2 cores + their HT siblings per task)
+CoresPerTask=4                                   # physical cores reserved per MPI task
+NumThreadsPerProc=4                              # OpenMP threads per MPI task (<= CoresPerTask; 1 = flat run with the same placement)
+UseNoMultithread = true                          # true: --hint=nomultithread, Slurm then counts cores and leaves
+                                                 #       the HT siblings unused (cpus-per-task = CoresPerTask)
+                                                 # false: cpus-per-task = CoresPerTask*ThreadsPerCore (whole cores incl. HT)
+CpusPerTask = UseNoMultithread ? CoresPerTask : CoresPerTask * ThreadsPerCore
+NumProc = NumNodes * CoresPerNode / CoresPerTask
+NumTasksPerNode = CoresPerNode / CoresPerTask
+NumTasksPerSocket = CoresPerSocket / CoresPerTask
 OmpStackSize = "64m"                             # godfine1+unsplit need ~8 MB per thread
 
 RunName = "rt_hybrid"
@@ -51,7 +58,10 @@ def write_script(str, snapnum, new)
     outputfile.print '#SBATCH --ntasks=', NumProc.to_s, "\n"
     outputfile.print '#SBATCH --ntasks-per-node=', NumTasksPerNode.to_s, "\n"
     outputfile.print '#SBATCH --ntasks-per-socket=', NumTasksPerSocket.to_s, "\n"
-    outputfile.print '#SBATCH --cpus-per-task=', NumThreadsPerProc.to_s, "\n"
+    outputfile.print '#SBATCH --cpus-per-task=', CpusPerTask.to_s, "\n"
+    if UseNoMultithread
+        outputfile.print "#SBATCH --hint=nomultithread\n"
+    end
     outputfile.print "#SBATCH -o flat-%J.out\n"
     #outputfile.print "#SBATCH --mem=461G\n"    # memory per node
     outputfile.print "#SBATCH --mem=115G\n"    # memory per node
@@ -68,16 +78,17 @@ def write_script(str, snapnum, new)
     outputfile.print "\n"
     outputfile.print "# --- hybrid MPI + OpenMP ---\n"
     # --cpus-per-task in the header is not inherited by srun on Slurm >= 22.05
-    outputfile.print "export SRUN_CPUS_PER_TASK=", NumThreadsPerProc.to_s, "\n"
+    outputfile.print "export SRUN_CPUS_PER_TASK=", CpusPerTask.to_s, "\n"
     outputfile.print "export OMP_NUM_THREADS=", NumThreadsPerProc.to_s, "\n"
     outputfile.print "export MKL_NUM_THREADS=1\n"
     # worker-thread stacks: the OpenMP work arrays live on the stack (ulimit -s only
     # covers the main thread; with 'unlimited' glibc even falls back to 2 MB threads)
     outputfile.print "export OMP_STACKSIZE=", OmpStackSize, "\n"
-    # keep each thread on its own core inside the task's cpu set
+    # keep each thread on its own core inside the task's cpu set (a place is a core
+    # with both hardware threads, so NumThreadsPerProc <= CoresPerTask means no HT sharing)
     outputfile.print "export OMP_PLACES=cores\n"
     outputfile.print "export OMP_PROC_BIND=close\n"
-    # let Slurm pin each task to its NumThreadsPerProc cores (--cpu-bind=cores below);
+    # let Slurm pin each task to its CoresPerTask cores (--cpu-bind=cores below);
     # Intel MPI then stays inside that cpu set, so I_MPI_PIN_DOMAIN is not needed
     if PinDebug
         outputfile.print "export I_MPI_DEBUG=4\n"
@@ -88,7 +99,9 @@ def write_script(str, snapnum, new)
     outputfile.print "\n"
     outputfile.print "cd ${SLURM_SUBMIT_DIR}\n"
     cpubind = PinDebug ? "verbose,cores" : "cores"
-    srun = StartUp + " --cpus-per-task=" + NumThreadsPerProc.to_s + " --cpu-bind=" + cpubind
+    # --hint is repeated on srun: like --cpus-per-task it is not reliably inherited from the header
+    hint = UseNoMultithread ? " --hint=nomultithread" : ""
+    srun = StartUp + " --cpus-per-task=" + CpusPerTask.to_s + hint + " --cpu-bind=" + cpubind
     if new == 1
         outputfile.print srun, " ", BinaryName1, " xd_rt.nml \n"
     else
