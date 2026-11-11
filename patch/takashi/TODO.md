@@ -509,6 +509,16 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   初期化し直されるので最初の coarse step で再判定する。モジュール変更なので `bin/*.o *.mod` を消してビルド。
 - ファイル: 新規 `poisson_auto.f90`、patch に新規コピー `poisson_parameters.f90`, `phi_fine_cg.f90`、変更
   `poisson_commons.f90`, `init_poisson.f90`, `amr_step.f90`, `read_params.f90` (to_dice も), `bin/Makefile*` (POISSONOBJ)。
+- **本番テスト flat-339614** (896 ランク、`cg_auto=.true.`, `cg_auto_every=1`, cg_levelmin 既定、2026-11-11):
+  最初の coarse step で level 11–15 が CG、8–10 が MG に決まり、3 step とも同じ判定 (解法 1 回の時間は
+  L15 MG 0.080–0.087 s / CG 0.039–0.041 s、L12 0.061–0.063 / 0.040–0.046、L10 0.057–0.059 / 0.058–0.064 で拮抗、
+  L8 0.107 / 0.138)。poisson は 1 step あたり 34.2 / 30.5 / 29.8 s で cg_levelmin=13/11 の手動設定 (338146/338148) と同じ。
+  判定の行は coarse step の先頭ではなく各 level の 2 回目の解法の直後 (level l なら 2^(15−l)+1 番目の fine step) に出る。
+- **バグ修正 (同日)**: `nsubcycle(levelmin)=1` だと level levelmin+1 は 1 coarse step に 1 回しか解かれず、
+  `cg_auto_every=1` では試行 (CG) → 次の step でまた試行 → … と選んでいる方 (MG) を一度も計らず、level 7 が
+  毎 step CG (131 反復) のままになっていた (339614 で level 7 の判定行が無い)。判定待ち (`cg_pending`) の level には
+  試行フラグを立て直さないようにした: 試行の次の解法で必ず選んでいる方を計って判定する。
+  `cg_auto_every>=2` では起きない。
 
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 

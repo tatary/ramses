@@ -7,9 +7,10 @@
 ! cg_auto=.true. : cg_levelmin only gives the initial choice. Each
 !   level > levelmin carries a flag cg_trial_due. It is set for all
 !   levels at the start of the run and every cg_auto_every coarse
-!   steps; a level that does not exist yet (no grids: amr_step never
-!   calls us) simply keeps the flag until its first solve, so a level
-!   that appears later is evaluated at once. When a level is solved
+!   steps (not for a level whose previous trial is still waiting for
+!   the selected method's time); a level that does not exist yet (no
+!   grids: amr_step never calls us) simply keeps the flag until its
+!   first solve, so a level that appears later is evaluated at once. When a level is solved
 !   with the flag set, this solve uses the method that is NOT selected
 !   ("trial") and the stored time of the selected method is discarded,
 !   so the comparison uses the trial solve and the next solve with the
@@ -27,6 +28,7 @@ subroutine poisson_solve_level(ilevel,icount)
   use mpi_mod
   implicit none
   integer,intent(in)::ilevel,icount
+  integer::i
   logical::docg
   real(dp)::t0,t1
   real(dp)::wall_time
@@ -41,9 +43,16 @@ subroutine poisson_solve_level(ilevel,icount)
      return
   end if
 
-  ! Every cg_auto_every coarse steps: all levels are due for a trial
+  ! Every cg_auto_every coarse steps: all levels are due for a trial,
+  ! except those still waiting for the selected method's time after the
+  ! last trial (a level solved once per coarse step, e.g. levelmin+1 with
+  ! nsubcycle(levelmin)=1, gets that time only in the next coarse step).
   if(nstep_coarse/=cg_auto_step)then
-     if(cg_auto_step>=0.and.mod(nstep_coarse,max(cg_auto_every,1))==0)cg_trial_due=.true.
+     if(cg_auto_step>=0.and.mod(nstep_coarse,max(cg_auto_every,1))==0)then
+        do i=levelmin+1,nlevelmax
+           if(.not.cg_pending(i))cg_trial_due(i)=.true.
+        end do
+     end if
      cg_auto_step=nstep_coarse
   end if
 
