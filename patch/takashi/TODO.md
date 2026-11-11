@@ -486,6 +486,33 @@ OpenMP 化し、1 ノードで 1・2・3 スレッドの伸びとメモリ帯域
   (1.45 倍)。`run_partial_intel.rb`/`run.rb` にも `--hint=nomultithread` を入れた (b83418e9, fd825fa3)。
   339614 で何が起きていたか (HT の兄弟に 2 ランク?) は `--cpu-bind=verbose` を付けて流せば分かる。
 
+- **3 回目 (flat-339656、`-qopenmp` 入り binary、`OMP_NUM_THREADS=4`、4 コア/ランク、2026-11-11)**: 今度は効いた。
+  3 step 合計 465 → 296 s (束縛済み flat 339648 比 1.57 倍、元の 339614 比 2.28 倍、10/29 の 1258 s 比 4.25 倍)。
+  coarse step は 115 / 90 / 88 s。1 step あたり (339648 → 339656):
+
+  | 部分 | 339648 (1 thr) | 339656 (4 thr) | 比 |
+  |---|---|---|---|
+  | hydro - godunov | 23.4 s | 9.3 s | 2.52 (3 step とも) |
+  | rt - godunov (step 3, subcycle 256 同士) | 8.0 | 2.8 | 2.8 |
+  | cooling (step 2) | 16.1 | 5.8 | 2.8 |
+  | hydro - rev ghostzones | 16.3 | 7.1 | 2.3 (待ちが減った) |
+  | poisson | 17.6 | 23.6 | **0.75 (遅くなった)** |
+  | rho / refine | 2.2 / 4.5 | 2.8 / 5.0 | 0.8 / 0.9 |
+  | star formation | 17.6 | 17.5 | 1.0 |
+
+  RT subcycle と dt 崩壊の履歴は 2 ランで違う (dt<1e-5 の fine step: 339648 は 0/2/246、339656 は 157/215/0) ので
+  rt/cooling は履歴の揃った step で比べた。hydro-godunov は履歴に依らず 2.52 倍 (手元 Mac の 3.2 倍より低い:
+  28 ランク × 4 スレッドでメモリ帯域を共有)。
+- **スレッド化していない部分が 10–35% 遅くなった** (poisson 17.6 → 23.6 s、rho、refine)。解法 1 回の時間でも
+  MG が L15 0.053 → 0.084 s (CG は 0.023 で同じ)。原因の候補は Intel OpenMP の既定 `KMP_BLOCKTIME=200` (ms):
+  parallel region が終わった後もワーカーが 200 ms スピンするので、master が逐次部分を走る間も 112 コア全部が
+  busy のままになり、all-core turbo で周波数が下がる (1 コアだけ busy なら高い)。試す: `KMP_BLOCKTIME=0`
+  (`run_hybrid_intel.rb` に `KmpBlockTime` を追加、既定 "0"; "200" で元に戻る)。parallel region ごとの起床コストは
+  数十 µs × 1 fine step あたり数回なので無視できる。
+- **次の律速** (step 3、88 s): poisson 23.6、star formation 17.5 (min 11.8 / max 22.2: `uold` 交換の待ちを含む)、
+  hydro-godunov 9.3、hydro-rev ghostzones 7.1、cooling 5.8、refine 5.0。poisson の multigrid smoothing / CG の
+  matvec と、star formation の中身のスレッド化が次の候補。
+
 ### 2e. poisson まわりの上流変更の扱い (2026-11-09 時点、保留)
 
 `poisson/` は 2023-09 の上流のまま。上流 (ramses-organisation) のその後の poisson 変更は 3 つで、PCG の類は無い。

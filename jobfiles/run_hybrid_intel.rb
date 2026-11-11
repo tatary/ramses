@@ -39,6 +39,9 @@ NumProc = NumNodes * CoresPerNode / CoresPerTask
 NumTasksPerNode = CoresPerNode / CoresPerTask
 NumTasksPerSocket = CoresPerSocket / CoresPerTask
 OmpStackSize = "64m"                             # godfine1+unsplit need ~8 MB per thread
+KmpBlockTime = "0"                               # ms a worker spins after a parallel region (Intel default 200):
+                                                 # 0 lets idle workers sleep so the serial parts (poisson...) run at
+                                                 # single-core turbo; "200" restores the default (TODO.md 2d-3)
 
 RunName = "rt_hybrid"
 StartUp = "srun"
@@ -88,6 +91,7 @@ def write_script(str, snapnum, new)
     # with both hardware threads, so NumThreadsPerProc <= CoresPerTask means no HT sharing)
     outputfile.print "export OMP_PLACES=cores\n"
     outputfile.print "export OMP_PROC_BIND=close\n"
+    outputfile.print "export KMP_BLOCKTIME=", KmpBlockTime, "\n"
     # let Slurm pin each task to its CoresPerTask cores (--cpu-bind=cores below);
     # Intel MPI then stays inside that cpu set, so I_MPI_PIN_DOMAIN is not needed
     if PinDebug
