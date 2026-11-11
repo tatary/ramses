@@ -255,15 +255,8 @@ recursive subroutine amr_step(ilevel,icount)
     endif
 
     ! Compute gravitational potential
-    if(ilevel>levelmin)then
-      if(ilevel .ge. cg_levelmin) then
-        call phi_fine_cg(ilevel,icount)
-      else
-        call multigrid_fine(ilevel,icount)
-      end if
-    else
-      call multigrid_fine(levelmin,icount)
-    end if
+    ! Multigrid or CG, by cg_levelmin or automatically (cg_auto): poisson_auto.f90
+    call poisson_solve_level(ilevel,icount)
     !when there is no old potential...
     if (nstep==0)call save_phi_old(ilevel)
 

@@ -458,6 +458,58 @@ OpenMP 化し、1 ノードで 1・2・3 スレッドの伸びとメモリ帯域
   scan flag は `flag2` にそのまま 0/1 を入れる。通常ランでは結果は変わらない (BITREPRO=1 で変更前と bit 一致を確認)。
 - #137 (2025-06) CG のバグ修正は 2025-04 の最適化で入ったバグなので我々には無関係。`cg_levelmin` テストはそのまま可。
 
+### 2f. `cg_levelmin` テスト (flat-338146: cg_levelmin=13、flat-338148: cg_levelmin=11、2026-11-11)
+
+同じバイナリ (9321a939)、896 ランク、337718 と同じ snapshot から 3 coarse step。`restart_remap` は無しなので
+step 1 は snapshot の分割 (work max/avg 1.69) のまま (2b と同じ)。
+
+- **poisson の時間 (1 step あたり、全ランクほぼ同じ)**: MG のみ (337718) 55.9 / 48.4 / 47.3 s →
+  cg_levelmin=13 で 34.6 / 30.6 / 30.6 s → cg_levelmin=11 で 34.7 / 29.9 / 29.6 s。
+  **CG を level 13–15 に使うと poisson が 36% (約 17 s/step、全体の 9%) 減る**。11 まで下げると
+  さらに 0.7–1.0 s/step (2–3%) 短いが、ラン内のランク間・step 間のばらつき (約 1 s) と同程度で 1 ランずつでは
+  判別できない (level 11/12 は grid 数が少なく、CG 105/83 反復と MG の V-cycle 4 回で手間がほぼ同じ)。
+  **`cg_levelmin=13` を採用** (11 でも害はない; 差を確かめるなら複数ラン必要)。
+  反復数: L13 73–74、L14 67–68、L15 52 (epsilon は同じ 1e-4)。
+- TOTAL (3 step) は 674 → 672 → 687 s で変わっていないが、これは poisson の得が消えたのではなく、
+  3 ランの時間発展が最初の SN の後で分岐して RT subcycle 数と cooling の反復が変わったため:
+  L15 の RT subcycle 合計 1199 (337718) / 1452 (338146) / 1518 (338148)、rt-godunov 55.8 / 67.6 / 70.8 s、
+  cooling 57.7 / 69.8 / 73.0 s。hydro-godunov は 103.6 / 103.9 / 103.7 s で同じ (fine step 数 769 も同じ)。
+  **ランごとの比較は poisson の行で見ること**。ノード集合も 3 ランで違う (hydro-godunov が同じなのでノード速度の差は無い)。
+- 副産物: 337718 では fine step 12 で SN が 0.17 Msun のセルに入って T2 = 2.3e10 K になり、dt が
+  5.4e-5 → 3.0e-6 (18 分の 1) に落ちて、その後 1 step 1.1 倍ずつしか戻らない (769 fine step のうち 265 が dt < 1e-5)。
+  この coarse step 群が進めた時間は 0.0131 (337718) に対し 0.0175 (338146): 同じ計算量で 34% 違う。
+  **SN が軽いセルに入ったときの dt 崩壊が実効速度に効いている** (2b で言う「SN で遅くなる」の実体)。
+  dt の戻りが 1 step 1.1 倍なのはコード側の制限ではなく (`newdt_fine`/`courant_fine` にそういう制限は無い)、
+  熱いセルが膨張して音速が下がる物理的な時間。対策候補: SN の熱エネルギーを入れるセルの最小質量
+  (軽いセルには隣接セルにも配る) か最高温度の上限。物理を変えるので本番前に要検討。
+
+### 2g. 解法の自動選択 `cg_auto` (2026-11-11 追加)
+
+grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復数は refine 領域のセル単位の差し渡しで決まり、
+同期律速かどうかはランク数で決まる) ので、走りながら測って選ぶ。`patch/takashi/poisson_auto.f90`。
+
+- `&POISSON_PARAMS cg_auto=.true.` (既定 .false.)、`cg_auto_every=20`、`cg_auto_margin=0.1`。
+  `.false.` なら従来どおり `cg_levelmin` で固定 (旧 amr_step の分岐と bit 一致)。
+- `.true.` のとき `cg_levelmin` は初期値。level ごとに「試行フラグ」`cg_trial_due` を持ち、ランの開始時と
+  `cg_auto_every` coarse step ごとに全 level に立てる。フラグが立った level は次の解法を「今選んでいない方」で
+  行い、同時に選んでいる方の計測値を捨てる。その次の解法 (普通は同じ coarse step の次の fine step) で
+  選んでいる方を計り直し、両方揃った時点で MPI_ALLREDUCE(MIN) した値を比べ、`cg_auto_margin` 以上速ければ
+  切り替える (ヒステリシス)。MIN を取るのは、最後に到着したランクの時間が待ちを含まない純粋な解法時間だから。
+  決定は全ランクで同じ reduce 後の値で行うので分岐は一致する。
+  rank 1 が ` cg_auto: level 13  MG 0.0123 s  CG 0.0080 s  -> CG` を出す。
+- **まだ存在しない level** (宇宙論ランの初期など): `amr_step` は grid の無い level を呼ばないので、その level の
+  試行フラグは立ったまま残り、level が初めて現れた最初の解法で試行・判定される。それまでは `cg_levelmin` の
+  初期値 (既定 999 = MG) が使われるだけで害はない。現れたばかりで grid が少ない level の判定は意味が薄いが、
+  次の試行 step で見直される。
+- CG が `itermax=10000` で打ち切られたら (`phi_fine_cg.f90` に `cg_failed(ilevel)=.true.` を追加) その level は
+  以後 MG 固定 (ログに 1 行)。
+- 切り替えると解が丸め誤差レベルで変わる (どちらも epsilon まで収束した解だが残差のノルムが違う)。
+  bit 再現性が要るランでは `.false.`。
+- 状態 (`use_cg`, `t_solve_mg/cg`, `cg_failed` など) は `poisson_commons` に置き `init_poisson` で確保。restart では
+  初期化し直されるので最初の coarse step で再判定する。モジュール変更なので `bin/*.o *.mod` を消してビルド。
+- ファイル: 新規 `poisson_auto.f90`、patch に新規コピー `poisson_parameters.f90`, `phi_fine_cg.f90`、変更
+  `poisson_commons.f90`, `init_poisson.f90`, `amr_step.f90`, `read_params.f90` (to_dice も), `bin/Makefile*` (POISSONOBJ)。
+
 ## 3. 通信の隠蔽 (Phase 2) のやり残し
 
 - 実装済み: 全変数を 1 メッセージに集約 (`make_virtual_fine_dp_nv`)、`unew`/`rtunew`

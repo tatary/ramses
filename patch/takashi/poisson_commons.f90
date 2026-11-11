@@ -33,6 +33,15 @@ module poisson_commons
   ! Multigrid safety switch
   logical, allocatable, dimension(:) :: safe_mode
 
+  ! Automatic solver choice (cg_auto): per level
+  logical, allocatable, dimension(:) :: use_cg        ! current method (.true. = CG)
+  logical, allocatable, dimension(:) :: cg_failed     ! CG hit itermax once: never use CG again
+  real(dp),allocatable, dimension(:) :: t_solve_mg    ! last local solve time with multigrid (<0: none)
+  real(dp),allocatable, dimension(:) :: t_solve_cg    ! last local solve time with CG (<0: none)
+  logical, allocatable, dimension(:) :: cg_trial_due  ! next solve at this level tries the other method
+  logical, allocatable, dimension(:) :: cg_pending    ! trial done, waiting for the current method's time
+  integer :: cg_auto_step=-1                           ! coarse step at which the trial flags were last set
+
   ! Multipole coefficients
   real(dp),dimension(1:ndim+1)::multipole
 

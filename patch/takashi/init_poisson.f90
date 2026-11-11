@@ -62,6 +62,16 @@ subroutine init_poisson
   allocate(safe_mode(1:nlevelmax))
   safe_mode = .false.
 
+  ! Automatic solver choice (cg_auto); initial choice from cg_levelmin
+  allocate(use_cg(1:nlevelmax),cg_failed(1:nlevelmax))
+  allocate(t_solve_mg(1:nlevelmax),t_solve_cg(1:nlevelmax))
+  allocate(cg_trial_due(1:nlevelmax),cg_pending(1:nlevelmax))
+  do ilevel=1,nlevelmax
+     use_cg(ilevel)=(ilevel>levelmin .and. ilevel>=cg_levelmin)
+  end do
+  cg_failed=.false.; t_solve_mg=-1d0; t_solve_cg=-1d0
+  cg_trial_due=.true.; cg_pending=.false.; cg_auto_step=-1
+
   !--------------------------------
   ! For a restart, read poisson file
   !--------------------------------

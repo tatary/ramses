@@ -118,7 +118,7 @@ subroutine read_params
   namelist/amr_params/levelmin,levelmax,ngridmax,ngridtot &
   & ,npartmax,nparttot,nexpand,boxlen,nlevel_collapse
   namelist/poisson_params/epsilon,gravity_type,gravity_params &
-  & ,cg_levelmin,cic_levelmax
+  & ,cg_levelmin,cic_levelmax,cg_auto,cg_auto_every,cg_auto_margin
   namelist/lightcone_params/thetay_cone,thetaz_cone,zmax_cone
   namelist/movie_params/levelmax_frame,nw_frame,nh_frame,ivar_frame &
   & ,xcentre_frame,ycentre_frame,zcentre_frame &
