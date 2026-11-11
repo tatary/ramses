@@ -102,6 +102,10 @@ def write_script(str, snapnum, new)
     outputfile.print "ulimit -c 0\n"
     outputfile.print "\n"
     outputfile.print "cd ${SLURM_SUBMIT_DIR}\n"
+    if PinDebug
+        # node topology (runs on the first allocated node): NUMA nodes (SNC), cores, threads
+        outputfile.print "echo '=== node topology on' $(hostname); numactl -H; lscpu | grep -i 'numa\\|socket\\|core\\|thread\\|model name'\n"
+    end
     cpubind = PinDebug ? "verbose,cores" : "cores"
     # --hint is repeated on srun: like --cpus-per-task it is not reliably inherited from the header
     hint = UseNoMultithread ? " --hint=nomultithread" : ""

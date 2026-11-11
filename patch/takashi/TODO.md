@@ -548,6 +548,50 @@ OpenMP 化し、1 ノードで 1・2・3 スレッドの伸びとメモリ帯域
   TOTAL は 1 スレッド 61.9 s → 4 スレッド 27.8 s。クラスタでは `coolrates_module` のモジュール I/F が変わるので
   `bin/*.o *.mod` を消してビルドし、1 スレッドで cooling が 339648 (20.7/16.1/8.1 s) に戻ることを確認する。
 
+- **新キャッシュ版の本番テスト (2026-11-12)**: 1 スレッド flat-339730 (339648 と同じ履歴) は cooling 22.8 / 17.8 / 9.0 s で
+  非 OpenMP 版の 1.10 倍 (threadprivate 版は 2.06 倍、NOCACHE 版は 1.21 倍)。残り 10% は `atomic` のカウンタと
+  `-qopenmp` の `-auto` と思われるが追わない。他の行は 339648 と同じ。
+  4 スレッド flat-339731 (`KMP_BLOCKTIME=0`、履歴 656/512/512、dt 崩壊なし): coarse step 104.0 / 90.9 / 88.8 s。
+  履歴の揃う step 1 で 339648 比: hydro-godunov 23.4 → 9.6 s (2.43 倍)、rt-godunov 19.7 → 7.6 (2.58)、
+  cooling 20.7 → 8.9 (2.32)、hydro-rev ghostzones 19.2 → 7.1、star formation 43.4 → 17.6、poisson 20.9 → 21.2 (同じ)。
+  **step 1 の壁時計: 元の flat 339614 283.9 s → 束縛 339648 198.7 s → 4 スレッド 339731 104.0 s (2.73 倍)**。
+- **次の課題: ランク間のばらつきが広がった**。step 1 の hydro-godunov が min 7.9 / max 14.3 s (1.8 倍; flat では
+  20.8 / 26.4 = 1.27 倍)、cooling 7.7 / 13.8、rt-godunov 6.3 / 12.3。スレッドの効きがランクごとに違う
+  (grid の多いランクほど parallel region が長く効率が良い) ので、leaf セル数 × 粒子数のコストモデルがずれる。
+  待ちは rev ghostzones / rt-ghostzones / star formation に出る (star formation は min 11.6 / max 24.6)。
+  **ばらつきの正体 (339731 step 2 の解析)**: hydro-godunov のランク間の差は grid 数と相関しない (corr 0.18)
+  が、同じランクが cooling (0.83)、rt-godunov (0.91) でも遅い。ノード間の差ではなくノード内 (分散の 88%) で、
+  **ノード内の task 位置 6, 7, 20, 21 が一貫して 10–17% 遅い** (位置別平均 9.7 s に対し 10.8 / 11.4 / 10.8 / 10.7;
+  1 スレッドの 339648 では差なし)。この 4 つは物理コア 12–15、40–43 (socket 0) と 68–71、96–99 (socket 1) =
+  **56 コアを 14 コアずつ 4 分割した境界をまたぐ 4 コアブロック** (Sapphire Rapids の tile / SNC4 の NUMA 境界)。
+  28 task × 4 コアでは 14 が 4 で割れないので必ず 4 task がまたぐ。
+  **`numactl -H` で確認済み (2026-11-12)**: NUMA node 8 つ (SNC4)、node0 = コア 0–13 (+HT 112–125)、node1 = 14–27、
+  … node7 = 98–111。距離は同一 node 10、socket 内 14、socket 間 23。位置 6/20/7/21 の 4 コアブロック
+  (12–15, 40–43, 68–71, 96–99) がちょうど node 境界をまたぐ。
+  対策: (a) `cost_time_weighting=.true.` — 遅さがランクに固定された性質なので実測時間の補正で吸収できるはず
+  (2c の仕組み; namelist だけで試せる)。(b) NUMA に揃えたランク配置: 14 コア = 3 task × 4 コア + 2 コア空き
+  (24 task/ノード = 768 ランク) か 2 task × 7 スレッド (16 task/ノード = 512 ランク)。ランク数が変わるので
+  Mera.jl の repartition が要る。(c) またぐ 4 task だけスレッド数を減らす wrapper (SLURM_LOCALID で分岐) は hack。
+  step 1 の内訳 (104 s): poisson 21、hydro-godunov 9.6、cooling 8.9、rt-ghostzones 9.7、rt-godunov 7.6、
+  star formation 17.6、hydro-rev gz 7.1、refine 5.1、rt-rev gz 5.0。
+- **`cost_time_weighting=.true.` の 4 スレッド (flat-339758、2026-11-12)**: 仕組みは設計どおり動いた
+  (time cost factor min 0.87 / max 1.36、前 step の実測効率と corr 1.00、またぐ 4 位置の grids-work が 0.90–0.93
+  に減り、その hydro-godunov は 10.8/11.4/10.8/10.7 → 10.2/10.5/10.0/10.0 s) が、**全体は良くならない**:
+  履歴の揃う step 3 (subcycle 512、崩壊なし) で 88.8 → 93.0 s (+4.7%)。3 カーネル合計のランク最大/平均は
+  1.34 → 1.37 で変わらず (factor>1.15 の 56 ランクは仕事 0.88 倍でも効率 1.19 倍なので合計はまだ平均の 1.05 倍)、
+  一方 grid 数の分割が 1.10 → 1.17 と不均一になったので grid 数に比例する逐次部分 (poisson +1.3 s、
+  star formation +1.5 s、これらは同期を含む) が遅くなった。**`.false.` のまま** (2c の結論を維持)。
+  改良するなら factor をスレッド化部分のコスト (全体の 1/4 程度) にだけ掛ける形だが、得られても数 s/step。
+  ランクごとの効率差 (hydro 単独で 0.83–1.28、step 間で corr 0.82 と持続的) のうち NUMA またぎで説明できるのは
+  corr 0.63 分で、残りは grid 数・level 数・ghost 比・星数のどれとも相関しない (1 スレッドでも 0.87–1.13 の持続的な
+  差があり、4 スレッドとの corr は 0.49)。原因不明のまま保留。
+- **`restart_remap=.true.` は step 1 を直さない (2026-11-12 に確認)**: 339614 以降は起動直後に "Load balancing"
+  が出ている (restart_remap が効いている) のに、step 1 の分割は snapshot のものと grid 数で 0.2% しか違わず、
+  grids-work max/avg は 1.69 のまま。step 2 の先頭の balance で 1.10 になる。起動時の balance は `init_tree` が
+  粒子を levelmin までしか下ろしていない状態で走る (load_balance 自体は粒子を trunk に上げてから map を作るので
+  粒子は直接は効かないはず) など、1 step 目の状態が in-run と違うことが原因と思われるが未解明。
+  本番 (24 h = 数百 step) では 1 step 分なので優先度は低い。テストでは step 1 を比較に使わない。
+
 ### 2e. poisson まわりの上流変更の扱い (2026-11-09 時点、保留)
 
 `poisson/` は 2023-09 の上流のまま。上流 (ramses-organisation) のその後の poisson 変更は 3 つで、PCG の類は無い。
