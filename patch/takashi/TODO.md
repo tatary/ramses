@@ -473,6 +473,19 @@ OpenMP 化し、1 ノードで 1・2・3 スレッドの伸びとメモリ帯域
   (b) に対する (a) の hydro-godunov/rt-godunov/cooling の比が OpenMP の正味の効果 (手元では 3.1–3.7 倍)。
   (b) と 339614 の差が「配置だけの効果」。
 
+- **2 回目 (flat-339648、`--hint=nomultithread`、1 ランク物理コア 4 個、`OMP_NUM_THREADS=4`)**: Intel MPI の pin 表は
+  rank 0 が {0-3,112-115}、rank 1 が {56-59,168-171} で意図どおり 4 コア。しかし結果は 339635 (2 コア + HT) と
+  ほぼ同じ (465 s 対 473 s、hydro-godunov 23.4 対 25.3 s/step、rt-godunov と cooling は同一)。
+  **原因は binary に OpenMP が入っていなかったこと**: `Makefile.xd_intel` は `COMPILER = XD-INTEL` なのに、
+  `OPENMP=1` の `-qopenmp` を `GNU`/`INTEL` の分岐にしか足していなかった (2026-11-11 に `XD-INTEL`/`XD-GNU`/`XD-CRAY`
+  の分岐にも追加、`Makefile.xd`/`Makefile.xd_dice_intel` にも `OPENMP`/`BITREPRO`/`COOLRATES_NOCACHE` を追加)。
+  つまり 339635 と 339648 はどちらも「束縛を明示した flat」で、339614 に対する 1.4 倍は **束縛だけの効果**。
+  OpenMP の正味の効果は、`-qopenmp` 付きで作り直した binary (`ldd ramses3d | grep -i iomp` で libiomp5 が
+  出ることを確認) で `NumThreadsPerProc=4` と `=1` を流し直して測る。
+- **flat 運用への示唆**: 束縛を明示する (`--hint=nomultithread`、`--cpu-bind=cores`) だけで 3 step が 674 → 465 s
+  (1.45 倍)。`run_partial_intel.rb`/`run.rb` にも `--hint=nomultithread` を入れた (b83418e9, fd825fa3)。
+  339614 で何が起きていたか (HT の兄弟に 2 ランク?) は `--cpu-bind=verbose` を付けて流せば分かる。
+
 ### 2e. poisson まわりの上流変更の扱い (2026-11-09 時点、保留)
 
 `poisson/` は 2023-09 の上流のまま。上流 (ramses-organisation) のその後の poisson 変更は 3 つで、PCG の類は無い。

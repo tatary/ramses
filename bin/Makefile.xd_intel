@@ -163,6 +163,12 @@ ifeq ($(COMPILER),XD-GNU)
    FC = ftn
    F90 += -ffree-line-length-none -fimplicit-none
    FC += -ffree-line-length-none -fimplicit-none
+   ifeq ($(OPENMP),1)
+      F90 += -fopenmp
+   endif
+   ifeq ($(BITREPRO),1)
+      F90 += -ffp-contract=off
+   endif
    ifeq ($(DEBUG),1)
       F90 += -g -O0 -fbacktrace -fbounds-check -Wuninitialized -Wall
       FFLAGS += -ffpe-trap=zero,underflow,overflow,invalid -finit-real=nan
@@ -177,6 +183,12 @@ ifeq ($(COMPILER),XD-INTEL)
    FFLAGS += -DNOSYSTEM
    F90 += -fp-model source
    FC += -fp-model source
+   ifeq ($(OPENMP),1)
+      F90 += -qopenmp
+   endif
+   ifeq ($(BITREPRO),1)
+      F90 += -fp-model strict
+   endif
    ifeq ($(DEBUG),1)
       F90 += -g -O0 -fbacktrace -fbounds-check -Wuninitialized -Wall
       FFLAGS += -ffpe-trap=zero,underflow,overflow,invalid -finit-real=nan
