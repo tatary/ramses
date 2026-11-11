@@ -29,7 +29,7 @@ NumTasksPerSocket = 56 / NumThredsPerProc
 
 #RunName = "rt_sn"
 RunName = "test"
-StartUp = "srun"
+StartUp = "srun --hint=nomultithread"     # repeated on srun: not reliably inherited from the header
 #QName="M-large-b"
 #QName="M-test-b"
 #QName="P-test-b"
@@ -46,6 +46,7 @@ def write_script(str, snapnum, new)
     outputfile.print '#SBATCH --ntasks=', NumProc.to_s, "\n"
     outputfile.print '#SBATCH --ntasks-per-node=', NumTasksPerNode.to_s, "\n"
     outputfile.print '#SBATCH --ntasks-per-socket=', NumTasksPerSocket.to_s, "\n"
+    outputfile.print "#SBATCH --hint=nomultithread\n"     # one task per core, HT siblings left unused
     outputfile.print "#SBATCH -o flat-%J.out\n" 
     outputfile.print "#SBATCH --mem=461G\n"    # ノード当たりのメモリ容量
     #outputfile.print "#SBATCH --mem=115G\n"    # ノード当たりのメモリ容量
@@ -53,11 +54,15 @@ def write_script(str, snapnum, new)
     outputfile.print "#SBATCH --mail-user=t.t.okamoto@gmail.com\n"
     #outputfile.print ". /work/opt/local/bin/enable-oneapi.sh \n"
     outputfile.print "source /work/opt/local/bin/enable-cpe.sh \n"
-    outputfile.print "module swich PrgEnv-cray PrgEnv-gnu \n"
+    outputfile.print "module switch PrgEnv-cray PrgEnv-gnu \n"
     outputfile.print "export SLURM_MPI_TYPE=pmi2 \n"
     outputfile.print "export LD_LIBRARY_PATH=/lib64:${LD_LIBRARY_PATH} \n"
     outputfile.print "export FI_OFI_RXM_USE_SRX=0 \n" 
     outputfile.print "export FI_VERBS_PREFER_XRC=0 \n"
+    # a binary built with OPENMP=1 would otherwise start one thread per logical CPU in every rank
+    outputfile.print "export OMP_NUM_THREADS=", NumThredsPerProc.to_s, "\n"
+    outputfile.print "export OMP_STACKSIZE=64m\n"
+    outputfile.print "ulimit -s unlimited\n"
     outputfile.print "\n"
     outputfile.print "cd ${SLURM_SUBMIT_DIR}\n"
     if new == 1
