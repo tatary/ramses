@@ -165,7 +165,7 @@ CONTAINS
     UVrates=0.
     if(.not. haardt_madau) RETURN
 
-    call inp_UV_rates_table(1./aexp - 1., UVrates, .true.)
+    call inp_UV_rates_table(1./aexp - 1., UVrates, .false.)  ! no damping near z_reion, as the cloudy table and inp_UV_groups_table
 
     !if(myid==1) then
     !   write(*,*) 'The UV rates have changed to:'
@@ -1732,6 +1732,15 @@ CONTAINS
     value = 10.d0**(log10(fa) + (log10(fb) - log10(fa))/(b - a)*(x - a))
   end function linear_interpolation_in_log
   !=========================================================================
+  ! Linear interpolation (for parameters that can be negative)
+  !-------------------------------------------------------------------------
+  function linear_interpolation(x, a, b, fa, fb) result(value)
+    implicit none
+    real(dp)::x, a, b, fa, fb
+    real(dp)::value
+    value = fa + (fb - fa)/(b - a)*(x - a)
+  end function linear_interpolation
+  !=========================================================================
   ! This function is written by Takashi Okamoto (t.t.okamoto@gmail)
   ! It returns self-shielding factor for the UV background
   ! The function is based on Rahmati et al. 2013
@@ -1787,13 +1796,16 @@ CONTAINS
       f = linear_interpolation_in_log(zred, rahmati_redshift(i), &
         rahmati_redshift(i + 1), &
         rahmati_f(i), rahmati_f(i + 1))
-      alpha1 = linear_interpolation_in_log(zred, rahmati_redshift(i), &
+      ! alpha1, alpha2 and beta are interpolated linearly (alpha < 0, so
+      ! a log interpolation gives NaN for 3 < z < 10). Same as maincl.cpp
+      ! that generated the cloudy table.
+      alpha1 = linear_interpolation(zred, rahmati_redshift(i), &
         rahmati_redshift(i + 1), &
         rahmati_alpha1(i), rahmati_alpha1(i + 1))
-      alpha2 = linear_interpolation_in_log(zred, rahmati_redshift(i), &
+      alpha2 = linear_interpolation(zred, rahmati_redshift(i), &
         rahmati_redshift(i + 1), &
         rahmati_alpha2(i), rahmati_alpha2(i + 1))
-      beta = linear_interpolation_in_log(zred, rahmati_redshift(i), &
+      beta = linear_interpolation(zred, rahmati_redshift(i), &
         rahmati_redshift(i + 1), &
         rahmati_beta(i), rahmati_beta(i + 1))
       value = rahmati_fitting_func(nH, nH0, f, alpha1, alpha2, beta)
@@ -1826,14 +1838,16 @@ CONTAINS
     TT = T2*mu
     lTT = log10(TT)
     lnH = log10(nH)
-    if (zred .ge. z_reion) then
+    ! The UV-background tables cover z <= zred_uv_max (10) only; above
+    ! that (or above z_reion) use the CIE table (last redshift bin).
+    if (zred .ge. min(z_reion, zred_uv_max)) then
       izred = nbin_z_cloudy
     else
       log_1pz = log10(zred + 1.0d0)
       izred = (log_1pz - log_1pzmin)/(dlogz) + 1
     end if
 
-    if (zred .ge. z_reion) then
+    if (zred .ge. min(z_reion, zred_uv_max)) then
       if (lTT .ge. log_T_cloudy(nbin_T_cloudy)) then
         metal_cool_tot = 0d0
         metal_cool_prime = 0d0

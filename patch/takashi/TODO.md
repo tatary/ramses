@@ -77,6 +77,24 @@
 - DICE の検証: `tests/dice_rt_amr.nml` (4 ランク, 6 step, `star_as_nbody=.false.`) で LIGHT=1 と LIGHT=0 の
   `amr/hydro/part/grav/rt` 40 ファイルが bit 一致。LIGHT ビルドは `bin/*.o *.mod` を消してから。
 
+### 1g. (修正済 2026-11-12) `rt_cooling_module.f90` の self-shielding が 3 < z < 10 で NaN、cloudy テーブルが z > 10 で範囲外
+
+- `ss_factor_rahmati` (cloudy_metal_cooling かつ self_shielding のときの UVB 遮蔽) が α1, α2, β (負の値) を
+  `linear_interpolation_in_log` で補間していて `log10(負)` = NaN。Chardin の格子 (z=3〜10) の間の z で必ず起き、
+  UVrates 経由で化学・冷却全体に広がる。z ≤ 3 (DICE の z=0 run) と z ≥ 10 は格子端の値をそのまま使うので無事。
+  テーブルを作った `ramses_tables/cloudy_cooling/maincl.cpp` と同じく α, β は線形補間、n0 と f だけ log 補間に
+  変えた (`linear_interpolation` を追加)。z ≤ 3 は bit 不変。
+- `rt_cmp_cloudy_metals` は `z ≥ z_reion` で CIE テーブルに切り替えるが、UVB 付きテーブルは z ≤ 10 (`zred_uv_max`)
+  までしかない。`z_reion > 10` を指定すると 10 < z < z_reion で `izred ≥ 21` となり配列外を読む。判定を
+  `z ≥ min(z_reion, zred_uv_max)` にした。既定の `z_reion=8.5` では不変。
+- テーブル側の確認: `maincl.cpp` は Fortran と同じ Chardin et al. 2018 の z=3〜10 の値で、z < 3 は z=3 に固定、
+  z=0〜10 を log(1+z) 等間隔 20 bin + CIE 1 bin (`zred=-1`)。`dlogz` の計算も `generate_fortran_tables.py` と一致。
+  同じディレクトリの `cloudy_cooling.cpp` は別の格子・別のパラメータ (z<3 に Rahmati 2013 元論文の値) を使う古い
+  生成コードで、今のテーブルには使われていない。
+- UVrates の z_reion 付近の減衰 (`inp_UV_rates_table(..., z_damp=.true.)`、`10^(-20 (z/z_reion)^6)` 倍) は
+  cloudy テーブル (z < z_reion は減衰なしの HM12) と合わないので `.false.` にした。`inp_UV_groups_table` 側は
+  以前から `.false.`。これで H/He も金属も z_reion で一斉に UVB が入る。z=0 では減衰係数が 1 なので DICE run は不変。
+
 ## 2. level ごとの domain decomposition (balance_per_level) — 断念・削除済み (2026-10-29)
 
 細かい level `l` の担当領域と level `l-1` の担当領域が別の場所になる限り、level `l` の oct の親 grid
