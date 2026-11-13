@@ -100,7 +100,13 @@ subroutine read_hydro_params(nml_ok)
   ! Star formation parameters
   namelist/sf_params/m_star,n_star,T2_star,g_star,del_star &
   & ,eps_star,jeans_ncells,sf_virial,sf_trelax,sf_tdiss,sf_model&
-  & ,sf_log_properties,sf_imf,sf_compressive
+  & ,sf_log_properties,sf_imf,sf_compressive &
+  & ,sf_fg,pop2_model,pop2_njeans,Tpop2,loc_vir,pop2_peak_only,pop2_SFC_marker,pop2_H2depSF &  ! FG (patch/ks) star formation
+  & ,nonlocal_depletion,nonlocal_depletion_batch,nH_postSF &
+  & ,pop3_model,Zpop3,dpop3,mpop3max,mpop3_SNprog,pop3_dist_min_pc,pop3_tMyr_suppress_newstar,p3_output_minmass &
+  & ,SFC_dist_min_pc,SFC_nH_min,SFC_f_nH_min,SFC_fate,SFC_f_star,SFC_f_star_Zdep,SFC_f_rhocrop,SFC_f_rhoSF &
+  & ,SFC_distribution,SFC_rsize_min_pc,SFC_flg_thin,SFC_t_life,SFC_output_minmass &
+  & ,star_by_star,sbs_imf_name,sbs_Mmin
 
   ! Units parameters
   namelist/units_params/units_density,units_time,units_length
@@ -551,6 +557,65 @@ subroutine read_hydro_params(nml_ok)
   endif
 
   ! Last variable is ichem
+
+  !-----------------------------------------------------------------
+  ! FG (patch/ks) star formation: consistency checks
+  !-----------------------------------------------------------------
+  if(sf_fg)then
+    if(.not.(rt.or.neq_chem))then
+      if(myid==1)write(*,*)'sf_fg=.true. needs the ionisation fractions (rt or neq_chem) for Tpop2 and yH2'
+      nml_ok=.false.
+    endif
+    if(.not.metal)then
+      if(myid==1)write(*,*)'sf_fg=.true. needs metal=.true. (Zpop3 selects Pop II / Pop III)'
+      nml_ok=.false.
+    endif
+    if(sink)then
+      if(myid==1)write(*,*)'sf_fg=.true. is not yet compatible with sink=.true. (family 3 is Pop III; the ks sink is not ported)'
+      nml_ok=.false.
+    endif
+    if(f_w>0d0)then
+      if(myid==1)write(*,*)'sf_fg=.true. does not support f_w>0 (no debris family)'
+      nml_ok=.false.
+    endif
+    if(pop2_model<1.or.pop2_model>5)then
+      if(myid==1)write(*,*)'pop2_model must be 1-5'
+      nml_ok=.false.
+    endif
+    if(pop2_model==5.and..not.star_by_star)then
+      if(myid==1)write(*,*)'pop2_model=5 requires star_by_star=.true.'
+      nml_ok=.false.
+    endif
+    if(pop3_model<1.or.pop3_model>8)then
+      if(myid==1)write(*,*)'pop3_model must be 1-8'
+      nml_ok=.false.
+    endif
+    if(pop2_njeans<=0d0.and.n_star<=0d0)then
+      if(myid==1)write(*,*)'sf_fg: n_star must be positive when pop2_njeans<=0'
+      nml_ok=.false.
+    endif
+    if(m_star<=0d0)then
+      if(myid==1)write(*,*)'sf_fg: m_star is the Pop II particle mass in Msun and must be positive'
+      nml_ok=.false.
+    endif
+    if(SFC_fate/='crop')then
+      if(myid==1)write(*,*)'sf_fg: SFC_fate must be crop (homog is obsolete in patch/ks)'
+      nml_ok=.false.
+    endif
+    if(SFC_distribution/='mass_weight'.and.SFC_distribution/='spherical')then
+      if(myid==1)write(*,*)'sf_fg: SFC_distribution must be mass_weight or spherical'
+      nml_ok=.false.
+    endif
+    if(SFC_f_star_Zdep<0.or.SFC_f_star_Zdep>2)then
+      if(myid==1)write(*,*)'sf_fg: SFC_f_star_Zdep must be 0, 1 or 2'
+      nml_ok=.false.
+    endif
+    if(pop2_SFC_marker.and.(pop2_model==4.or.pop2_model==5))pop2_SFC_marker=.false.
+#ifndef RT
+    if(myid==1)write(*,*)'sf_fg=.true. requires an RT build (star_formation_fg is empty without -DRT)'
+    nml_ok=.false.
+#endif
+  endif
 
 #ifdef SOLVERmhd
   !-----------------------------------

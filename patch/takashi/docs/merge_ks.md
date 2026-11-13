@@ -271,3 +271,93 @@ HI と HeI の光電離に適用する。こちらにはこれを `&RT_PARAMS` �
 - restart: 2 層の output から `.true.` で再開 (Ls と footprint を読む)、`.false.` では
   "Restart file has a two-tier decomposition" で停止、単一分割の output から `.true.` で再開して最初の balance で 2 層に移行。
 - 本番規模 (ks の 448 / 1792 ランク) での効果は ks の 7g の結果 (355 s/step vs 415 s、メモリ 20%) に拠る。こちらでは未実施。
+
+## 星形成の移植 (2026-11-13): `sf_fg` と `star_formation_fg.f90`
+
+### 方式
+
+- ks の `star_formation.f90` (7500 行: 局所 Pop II、SFC、Pop III、非局所枯渇) は **別ファイル**
+  `patch/takashi/star_formation_fg.f90` に `star_formation_fg(ilevel)` として持ち込み、`&SF_PARAMS` の
+  `sf_fg=.true.` で `amr_step` が呼び分ける。takashi の `star_formation` (`sf_model`) は手つかずで、既定は bit 一致。
+  ks の `contains` 構造 (ホスト変数を共有する 30 本余り) をそのまま保てるのでこの方が簡単だった。
+- **粒子 family は `sf_fg` で切り分け**。`pm_commons` に `FAM_POP3=3, FAM_SN=4, FAM_DEAD=5, FAM_BH=6, FAM_SFC=7,
+  FAM_PSC=8` (番号は ks と同じ → ks の part ファイルから restart 可) と `is_pop3` 等を追加。上流の
+  `FAM_CLOUD/DEBRIS/OTHER` (3-5) と番号が重なるので、`sf_fg=.true.` では sink (cloud) と `f_w>0` を
+  `read_hydro_params` で禁止。`NFAMILIES=8`。header の family 表は Mera が位置で読む 11 行の並びを維持し、
+  `sf_fg` では 3-5 行目の名前を `pop3/supernova/dead_pop2` に、6-8 (`bh_pop3/SFC/PSC`) は fields の後に別ブロック。
+  名前に空白を入れない (Mera/yt が `split` で読む)。
+- **ログは takashi の仕組みに統一**: `sf_log.f90` (module `sf_log`: `sf_log_open/close/write_star`) を新設し、
+  `star_formation`, `feedback`, `star_formation_fg` が共用。ランクごとの `stars_XXXXX.outNNNNN`、restart は
+  `output_restart` のスナップショットで巻き戻す従来方式。列は従来 + 末尾に `family`。ks の
+  `write_log_star_formation` (rank 1 への MPI 集約、`Nnew_max=1e5` の自動配列) は削除し、粒子生成の 5 か所
+  (局所 Pop II、SFC 星、SFC 印、Pop III ×3) で直接書く。`logSFC` (SFC 1 個 1 行、rank 1) は ks のまま。
+- `my_utils.f90` (ufront、位置→cpu/cell)、`sbs_imf.f90` (star-by-star IMF) は ks からほぼそのまま
+  (`include 'mpif.h'` → `use mpi_mod`)。`ufront` (uold と同じ大きさ) は `init_amr` では確保せず
+  `set_ufront` の初回に確保 (`ensure_ufront`) — 非局所枯渇か SFC を使うときだけメモリを食う。`flag3` は
+  `sf_fg` のとき `init_amr` で確保。
+- `output_analysis.f90` は **stub** (ugvtk 出力: `output_around_SFC/star[_at_given_age]`)。持ち込むかは未決。
+- `cr_write_patch.sh`: `cat -e` が UTF-8 コメントを `M-"` に書き換えて埋め込み文字列を壊していたので `sed` に。
+
+### ks からの変更点
+
+- 全 level で呼ばれるが nlevelmax 以外は即 return (ks と同じ)。`amr_step`/`rt_step` の `uold(1:4)` 非同期交換の
+  start は `sf_fg` では nlevelmax だけにし、FG 側で end して**仮想セルを速度に変換**する。ks は変換していないので
+  領域境界の div v / 27 セル速度分散で仮想セルの運動量を速度として使っていた (ks 側のバグ; 本番は 448 ランク)。
+- `boxlen /= 1` 対応: ks の球殻・球内操作 (`get_shell_quantities`, `modify_sphere_*`, `crop_and_adjust_SFC`,
+  `distribute_stars`) はセル体積を `(1/2^l)^3` (単位箱) で計算し、境界判定を `[0,1]` としていた。
+  `vol_cell=(dx_cell*scale)**3`、境界は `boxlen` に。cosmo (boxlen=1) では同じ。
+- `mp0`/`msp0`: ks の `if(star_by_star.or.fire3_yields) mp0=mp` を `INIT_STELLAR_MASS` / `STELLAR_POPULATION_MASS`
+  の ifdef に。takashi の feedback (msp0) がそのまま FG の Pop II に効く。
+- 削除: test problems (`is_test`, `test_problem`, `add_star_particle_for_test`)、`fof_commons`、デバッグ用の
+  自己遮蔽 print (`comp_SH2`, `getMu`, `cmp_LVG_length_scale`)、BH/SN 関連の設定 print (別段階)、
+  `PXFMKDIR` → `execute_command_line`。
+- 大きな固定長配列 (`Nrbin×Npop3_max/SFC_n_max/Nnew_max` の殻配列、最大 50 MB) は allocatable に
+  (ifort ではスタックに載って落ちる)。
+- 末尾の `make_virtual_fine_dp` × nvar × level は `make_virtual_fine_dp_nv` (level あたり 1 メッセージ)。
+
+### 検証 (dice_rt_amr の 6 step、4 ランク; `tests/dice_rt_fg.nml`)
+
+| テスト | 結果 |
+|---|---|
+| 既定 (`sf_fg=.false.`) | hydro/part/grav/rt/amr 46 ファイルが変更前と bit 一致。`stars_*.out` は family 列を除き同一 |
+| 局所 Pop II (`pop2_model=2`) | 2675 セルで 2700 粒子 (100 Msun)。log の nH 前後から Σ 枯渇質量 = Σ 星質量 |
+| 同、LIGHT_MPI_COMM ビルド | heavy と 46 ファイル bit 一致 |
+| 同、`nonlocal_depletion=.true.` | 完走 (`ufront` 確保、球からの枯渇) |
+| 同、restart (output_00001 から) | 完走、時刻一致。bit 一致ではないが既定の restart も同様 (既存の性質) |
+| Pop III (`Zpop3=10`, `pop3_model=1`) | 10104 候補 → 120 Msun の Pop III、family 3 |
+| Pop III `pop3_model=6` (mdot 依存) | 1D プロファイルと `SFdata/pop3prof.*` まで動き、雲半径が箱 (100 kpc) を超えて ks の境界チェックで停止 (粗い試験箱のため) |
+| SFC (`pop2_model=4`) | 12 個の SFC (R 1-1.4 kpc、M 4-6e6 Msun、f* 0.045-0.05)、mass-weight 配置、crop、`logSFC` |
+| SFC + 二層分割 (`-DTWO_TIER_CHECK`) | 完走、STATUS ok。SFC の個数は同じで星の割り当ては分割依存 (候補の除外順が cpu 順なのは ks の性質) |
+| ks 設定 (QUADHILBERT, NGROUPS=5) | ビルド成功 |
+
+### 残り (TODO 3b)
+
+- ugvtk 出力 (`output_analysis`、3600 行) の移植可否。
+- `SFC_flg_thin` の cooling 側 (`collect_active_SFC` による遮蔽解除)、`flg_thin_star_cell`。
+- Pop III / SFC は takashi の feedback・RT では `is_star` でないので放射も SN も出ない (フィードバック段階で ks の
+  `rt_spectra`/`feedback` を対応させる)。
+- ks の part ファイルからの restart: ks は `mp0` を `star_by_star.or.use_initial_mass` のときだけ書き、takashi は
+  `INIT_STELLAR_MASS`/`STELLAR_POPULATION_MASS` で `mp0`,`msp0` を読む。ks 出力を読むビルドでは
+  `STELLAR_POPULATION_MASS=0` にするか reader を切り替える必要がある。
+- stdout が星 1 個ごとに数行 (ks のまま)。本番で抑える手段 (`verbose` ゲート) を検討。
+- `random_value_0to1` (SFC の配置、IMF 抽出) の乱数状態は restart で保存されない (ks と同じ)。
+
+### 非局所枯渇の一括処理 (2026-11-13、`nonlocal_depletion_batch`)
+
+ks の `deplete_gas_from_spheres` は新星 1 個ごとに「全 level の全セル走査 + ALLREDUSE 数本」を逐次に行う
+(重なった球で引きすぎないため、前の星の枯渇を反映してから次の星の殻質量を計算する)。1 step に N 個できると
+集団通信が O(N) 回になるので、`deplete_gas_from_spheres_batch` (既定 `nonlocal_depletion_batch=.true.`) に置き換えた。
+
+- 新星リスト (位置・質量) を 1 回共有 (`collect_newstar_info`、ks のまま)。
+- 各星について octree を根から辿り (`sphere_walk`/`sphere_walk_grid`)、球と交わる立方体だけ降りて、自分の
+  active grid (`cpu_map(father(igrid))==myid`) の leaf セルを集める。殻質量は最初 `rbin(13)` (≈4 dx_min) まで、
+  足りない星だけ範囲を倍にして再計算。ALLREDUCE は `(Nrbin × N)` 配列 1 本/round。
+- 半径と `f_i = M_i/M_enc,i` は ks と同じ規則 (`M_enc > M_i/0.2` の最小 rbin)。
+- 適用は**加法**: 球に含まれるセルは `ρ → ρ (1 − Σ_i f_i)`。引く質量は厳密に `Σ M_i`。重なったセルで
+  `Σ f_i > f_sum_max (=0.5)` になったら、その球の星の半径を 1 bin 広げて (f が減る) 検査し直す (反復ごとに
+  N 整数の ALLREDUCE 1 本)。`Nrbin` まで広げても超える場合だけ `f_sum_max` で clamp し、引けなかった質量を
+  警告に出す。重なりがなければ ks の逐次版と同じ結果 (fg4 で hydro の総和が一致)。
+- `uold/unew/ufront` の更新は `modify_sphere_by_factor` と同じ (nlevelmax は密度のみ、粗い level は全変数と unew の差分)。
+- 試験: `f_sum_max` を一時的に 0.05 にしたビルドで反復経路 (2–5 回、clamp なし、`M_removed = M_star`) を確認。
+  heavy/LIGHT bit 一致、二層分割 (`-DTWO_TIER_CHECK`) で完走。
+- `nH_postSF>0` の版と Pop III の `deplete_gas_around_pos` は逐次のまま。

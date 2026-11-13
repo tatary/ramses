@@ -537,7 +537,8 @@ recursive subroutine amr_step(ilevel,icount)
 #if NDIM==3
   ! Density and momentum for star_formation: start the owner -> virtual
   ! exchange here if rt_step did not (star_formation completes it).
-  if(hydro.and.star.and.(.not.static_gas))then
+  ! (sf_fg: star_formation_fg acts at nlevelmax only and completes it there)
+  if(hydro.and.star.and.(.not.static_gas).and.((.not.sf_fg).or.ilevel==nlevelmax))then
      if(.not.async_fwd(1)%active)then
         call timer('hydro - ghostzones','start')
 #ifdef SOLVERmhd
@@ -566,7 +567,15 @@ recursive subroutine amr_step(ilevel,icount)
   !----------------------------------
 #if NDIM==3
   call timer('star formation','start')
-  if(hydro.and.star.and.(.not.static_gas))call star_formation(ilevel)
+  if(hydro.and.star.and.(.not.static_gas))then
+    if(sf_fg)then
+#ifdef RT
+      call star_formation_fg(ilevel)   ! patch/ks star formation (Pop II / Pop III / SFC), merge_ks
+#endif
+    else
+      call star_formation(ilevel)
+    end if
+  end if
 #endif
   !---------------------------------------
   ! Update physical and virtual boundaries
@@ -747,7 +756,7 @@ subroutine rt_step(ilevel)
     ! After the last subcycle, uold of these grids is final: also start
     ! sending density and momentum to the virtual copies for
     ! star_formation, which completes the exchange (slot 1) itself.
-    if(last_sub .and. hydro .and. star .and. (.not.static_gas))then
+    if(last_sub .and. hydro .and. star .and. (.not.static_gas) .and. ((.not.sf_fg).or.ilevel==nlevelmax))then
 #ifdef SOLVERmhd
        call make_virtual_fine_dp_start(uold,nvar+3,1,4,ilevel,1)
 #else

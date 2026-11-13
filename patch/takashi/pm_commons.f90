@@ -75,10 +75,25 @@ module pm_commons
   integer, dimension(IRandNumSize) :: tracer_seed = -1
 
   ! Particle types
-  integer, parameter   :: NFAMILIES=5
+  ! Two interpretations of the family byte, selected at run time by sf_fg (&SF_PARAMS):
+  !   sf_fg=.false. (upstream): 1 DM, 2 star, 3 sink cloud, 4 debris (f_w>0), 5 other (DICE star_as_nbody)
+  !   sf_fg=.true.  (patch/ks): 1 DM, 2 Pop II star, 3 Pop III, 4 SN (just exploded), 5 dead Pop II,
+  !                             6 BH (Pop III remnant), 7 SFC (active star-forming cloud, zp=-radius),
+  !                             8 PSC (SFC past SFC_t_life)
+  ! The numbers 3-5 coincide on purpose (ks outputs can be restarted); is_cloud/is_debris and
+  ! is_pop3/is_SN/... must therefore only be used in the matching mode (docs/merge_ks.md).
+  integer, parameter   :: NFAMILIES=8
   integer(1),parameter :: FAM_DM=1, FAM_STAR=2, FAM_CLOUD=3, FAM_DEBRIS=4, FAM_OTHER=5, FAM_UNDEF=127
+  integer(1),parameter :: FAM_POP3=3, FAM_SN=4, FAM_DEAD=5, FAM_BH=6, FAM_SFC=7, FAM_PSC=8   ! sf_fg=.true.
   integer(1),parameter :: FAM_TRACER_GAS=0
   integer(1),parameter :: FAM_TRACER_DM=-1, FAM_TRACER_STAR=-2, FAM_TRACER_CLOUD=-3, FAM_TRACER_DEBRIS=-4, FAM_TRACER_OTHER=-5
+
+  ! SFC (star-forming cloud) particles of the FG star formation (sf_fg): list of the active ones
+  ! (collect_active_SFC in star_formation_fg.f90)
+  integer,parameter :: SFC_nmax_active = 10000 !maximum number of active SFC
+  integer :: SFC_n_active = 0 !number of active SFC
+  real(dp),dimension(1:3,1:SFC_nmax_active) :: SFC_pos_active !position of active SFC
+  real(dp),dimension(1:SFC_nmax_active) :: SFC_radius_active !radius of active SFC
 
   ! Customize here for particle tags within particle types (e.g. different kind of stars).
   ! Note that the type should be integer(1) (1 byte integers) for memory concerns.
@@ -87,10 +102,19 @@ module pm_commons
 
   ! Particle keys for outputing. They should match the above particle
   ! types, except for 'under' family
+  ! (-8..-6 and 6..8 are unused in the upstream mode; particle_family_keys_fg is the sf_fg table)
   character(len=13), dimension(-NFAMILIES:NFAMILIES), parameter :: particle_family_keys = (/ &
+    '       unused', '       unused', '       unused', &
     ' other_tracer', 'debris_tracer', ' cloud_tracer', '  star_tracer', ' other_tracer', &
     '   gas_tracer', &
-    '           DM', '         star', '        cloud', '       debris', '        other'/)
+    '           DM', '         star', '        cloud', '       debris', '        other', &
+    '       unused', '       unused', '       unused'/)
+  character(len=13), dimension(-NFAMILIES:NFAMILIES), parameter :: particle_family_keys_fg = (/ &
+    '       unused', '       unused', '       unused', &
+    ' other_tracer', 'debris_tracer', ' cloud_tracer', '  star_tracer', ' other_tracer', &
+    '   gas_tracer', &
+    '           DM', '         star', '         pop3', '    supernova', '    dead_pop2', &
+    '      bh_pop3', '          SFC', '          PSC'/)   ! no blanks in a key (Mera/yt parse the header table)
 
   type(part_t), allocatable, dimension(:) :: typep  ! Particle type array
 
@@ -114,6 +138,37 @@ contains
     type(part_t), intent(in) :: typep
     is_star = typep%family == FAM_STAR
   end function is_star
+
+  ! sf_fg=.true. families (patch/ks); meaningless when sf_fg=.false. (3-5 are cloud/debris/other there)
+  elemental logical pure function is_pop3(typep)
+    type(part_t), intent(in) :: typep
+    is_pop3 = typep%family == FAM_POP3
+  end function is_pop3
+
+  elemental logical pure function is_SN(typep)
+    type(part_t), intent(in) :: typep
+    is_SN = typep%family == FAM_SN
+  end function is_SN
+
+  elemental logical pure function is_DEAD(typep)
+    type(part_t), intent(in) :: typep
+    is_DEAD = typep%family == FAM_DEAD
+  end function is_DEAD
+
+  elemental logical pure function is_BH(typep)
+    type(part_t), intent(in) :: typep
+    is_BH = typep%family == FAM_BH
+  end function is_BH
+
+  elemental logical pure function is_SFC(typep)
+    type(part_t), intent(in) :: typep
+    is_SFC = typep%family == FAM_SFC
+  end function is_SFC
+
+  elemental logical pure function is_PSC(typep)
+    type(part_t), intent(in) :: typep
+    is_PSC = typep%family == FAM_PSC
+  end function is_PSC
 
   elemental logical pure function is_cloud(typep)
     type(part_t), intent(in) :: typep

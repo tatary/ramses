@@ -59,6 +59,10 @@ subroutine init_amr
   allocate(flag2(0:ncell)) ! Note: starting from 0
   allocate(son  (1:ncell)) ! Son index
   flag1=0; flag2=0; son=0
+  if(sf_fg)then
+    allocate(flag3(0:ncell)) ! Pop III mass per cell (star_formation_fg)
+    flag3=0d0
+  end if
 
   ! Allocate MPI cell-based arrays
   allocate(cpu_map    (1:ncell)) ! Cpu map

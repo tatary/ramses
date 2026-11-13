@@ -789,9 +789,9 @@ subroutine output_header(filename)
   integer::ilun
   character(LEN=80)::fileloc
 #ifdef LONGINT
-  integer(i8b)::npart_family_loc(-5:5), npart_family(-5:5), npart_all_loc, npart_all
+  integer(i8b)::npart_family_loc(-NFAMILIES:NFAMILIES), npart_family(-NFAMILIES:NFAMILIES), npart_all_loc, npart_all
 #else
-  integer::npart_family_loc(-5:5), npart_family(-5:5), npart_all_loc, npart_all
+  integer::npart_family_loc(-NFAMILIES:NFAMILIES), npart_family(-NFAMILIES:NFAMILIES), npart_all_loc, npart_all
 #endif
   integer :: ifam, ipart
 
@@ -810,16 +810,17 @@ subroutine output_header(filename)
     if (levelp(ipart) > 0) then
       npart_all_loc = npart_all_loc + 1
       ifam = typep(ipart)%family
-      npart_family_loc(ifam) = npart_family_loc(ifam) + 1
+      ! FAM_UNDEF (127, e.g. sink cloud particles of the ks sink) is counted as 'undefined' below
+      if(abs(ifam)<=NFAMILIES) npart_family_loc(ifam) = npart_family_loc(ifam) + 1
     end if
   end do
 
 #ifndef WITHOUTMPI
 #ifdef LONGINT
-  call MPI_ALLREDUCE(npart_family_loc,npart_family,11,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
+  call MPI_ALLREDUCE(npart_family_loc,npart_family,2*NFAMILIES+1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
   call MPI_ALLREDUCE(npart_all_loc,npart_all,1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
 #else
-  call MPI_ALLREDUCE(npart_family_loc,npart_family,11,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+  call MPI_ALLREDUCE(npart_family_loc,npart_family,2*NFAMILIES+1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
   call MPI_ALLREDUCE(npart_all_loc,npart_all,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
 #endif
 #else
@@ -829,9 +830,17 @@ subroutine output_header(filename)
 
   if (myid == 1) then
     write(ilun, '(a1,a12,a10)') '#', 'Family', 'Count'
-    do ifam = -NFAMILIES, NFAMILIES
-      write(ilun, '(a13, i10)') &
-        trim(particle_family_keys(ifam)), npart_family(ifam)
+    ! The table keeps the 11 rows of the upstream layout (readers such as Mera parse it by
+    ! position); with sf_fg the rows 3-5 carry the ks names and the extra families 6-8 are
+    ! listed in a separate block after the particle fields.
+    do ifam = -5, 5
+      if(sf_fg)then
+        write(ilun, '(a13, i10)') &
+          trim(particle_family_keys_fg(ifam)), npart_family(ifam)
+      else
+        write(ilun, '(a13, i10)') &
+          trim(particle_family_keys(ifam)), npart_family(ifam)
+      end if
     end do
     write(ilun, '(a13, i10)') &
       'undefined', npart_all - sum(npart_family)
@@ -856,6 +865,15 @@ subroutine output_header(filename)
       write(ilun,'(a)',advance='no')'mpop '
 #endif
     endif
+    if(sf_fg)then
+      ! families 6-8 of the FG star formation (not part of the 11-row table above)
+      write(ilun,*)
+      write(ilun, '(a1,a12,a10)') '#', 'FG family', 'Count'
+      do ifam = 6, NFAMILIES
+        write(ilun, '(a13, i10)') &
+          trim(particle_family_keys_fg(ifam)), npart_family(ifam)
+      end do
+    end if
     close(ilun)
 
   endif

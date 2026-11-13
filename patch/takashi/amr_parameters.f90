@@ -233,6 +233,51 @@ module amr_parameters
   logical ::sf_log_properties=.false.   ! Log in ascii files birth properties of stars and supernovae
   logical ::sf_imf=.false.              ! Activate IMF sampling for SN feedback when resolution allows it
   logical ::sf_compressive=.false.      ! Advect compressive and solenoidal turbulence terms separately
+
+  !------------------------------------------------------------------------------------------------
+  ! FG (first-galaxy, patch/ks) star formation: sf_fg=.true. calls star_formation_fg instead of
+  ! star_formation and interprets the particle families as in patch/ks (pm_commons). All of the
+  ! following are only used when sf_fg=.true. (docs/merge_ks.md). Defaults are those of patch/ks.
+  !------------------------------------------------------------------------------------------------
+  logical ::sf_fg=.false.
+  ! Pop II
+  integer :: pop2_model = 2  !1 -> rho cond, 2 -> + div v cond (fiducial), 3 -> + phi cond, 4 -> SFC (star-forming cloud), 5 -> SFC star-by-star
+  real(dp) :: pop2_njeans = 4. !rho_th for pop2 formation determined by the condition lamJ = pop2_njeans*dxmin, n_star is used if pop2_njeans <= 0
+  real(dp) :: Tpop2 = 1d4     !threshold T for pop2 formation (cf. T<1e4 in Ricotti+ 2016)
+  real(dp) :: loc_vir = -1.d0  ! local virial parameter threshold for star formation (no condition if negative)
+  logical :: pop2_peak_only = .false. ! Pop II forms only in cells that are the density maximum of their 27-cell cube
+  logical :: pop2_SFC_marker = .false. ! local Pop II models (pop2_model 1-3): massless FAM_SFC marker where the SFC condition is met (NOTES_pop2_model_comparison)
+  logical :: pop2_H2depSF = .false. !whether PopII SF efficiency is multiplied by the H2 abundance or not
+  logical :: nonlocal_depletion = .false. !depleting gas at star formation from a finite spherical region instead of the cell including the particle
+  logical :: nonlocal_depletion_batch = .true. !merge_ks: deplete the spheres of all new stars at once (collective calls independent of the number of stars); .false. = ks sequential version
+  real(dp) :: nH_postSF = -1d0 !density of post-star-forming cell in cm-3 (not used if negative or nonlocal_depletion = .false.)
+  ! Pop III
+  integer :: pop3_model = 1  !1 -> 80+40 Msun binary (fiducial), 2 -> + the first Pop III 1000 Msun, 3 -> mpop3max, 4 -> mdot-dep mass (single), 5 -> mdot-dep (binary), 6 -> mdot-dep (multiple), 7/8 -> Salpeter/flat IMF 10-500 Msun
+  real(dp) :: Zpop3 = 1d-5     ! Metallicity for Pop III formation in Zsun ( Z < Zpop3*Zsun )
+  real(dp) :: dpop3 = 0.1      ! Density for Pop III formation in H/cc (nH > dpop3); <0: the Pop II Jeans condition
+  real(dp) :: mpop3max = 300   ! Pop III star mass for pop3_model=3 [Msun]
+  real(dp) :: mpop3_SNprog = -1d0 !progenitor mass regarding pop3 SN (same as mpop3max if negative, used only for pop3_model = 3)
+  real(dp) :: pop3_dist_min_pc = 1d2 !minimum stellar distance for pop3 formation (pc)
+  real(dp) :: pop3_tMyr_suppress_newstar = 2d0 !time for suppressing successive pop3 formation (Myr)
+  real(dp) :: p3_output_minmass = -1d0 !ugvtk output around a new Pop III only above this mass [Msun] (<0: all)
+  ! SFC (star-forming cloud) model, pop2_model = 4/5
+  real(dp) :: SFC_dist_min_pc = 1d2 !minimum distance for simulataneous SFC formation (pc)
+  real(dp) :: SFC_nH_min = -1d3 !minimum (outer-boundary) density for SFC (cm-3)
+  real(dp) :: SFC_f_nH_min = 1d-1 !minimum (outer-boundary) density factor for SFC (nH_min = SFC_f_nH_min * nH_cen)
+  character(LEN=128) :: SFC_fate = 'crop' !fate of SFC after SF ('crop'; 'homog' is obsolete)
+  real(dp) :: SFC_f_star = -1d-1 !constant star formation efficiency in SFC (He+2019 formula if negative)
+  integer :: SFC_f_star_Zdep = 0 !low-metallicity factor of the He+2019 efficiency: 0 fixed 0.2; 1 Sugimura+2024 eq. 2; 2 He+2019 sec. 3.4
+  real(dp) :: SFC_f_rhocrop = 2d0 !ratio of threshold density for crop and average density (SFC_fate = 'crop')
+  real(dp) :: SFC_f_rhoSF = 1d0 !ratio of threshold density for star formation and average density (SFC_distribution = 'mass_weight')
+  character(LEN=128) :: SFC_distribution = 'mass_weight' !stellar distribution in SFC ('spherical' or 'mass_weight')
+  real(dp) :: SFC_rsize_min_pc = 1d0 !minimum size for SFC (pc)
+  logical :: SFC_flg_thin = .false. !let photons freely escape from active SFC (cooling side; not ported yet)
+  real(dp) :: SFC_t_life = 1d1 !life time of active SFC in Myr
+  real(dp) :: SFC_output_minmass = -1d0 !ugvtk output around a new SFC only above this mass [Msun] (<0: all)
+  ! star-by-star (pop2_model = 5) IMF
+  logical :: star_by_star = .false. ! use star-by-star feedback models (for radiation and SN)
+  character(len=16) :: sbs_imf_name='Chabrier' ! IMF name (either Chabrier or Chon)
+  real(dp) :: sbs_Mmin = 1d0   ! minimum resolved stellar mass [Msun]
   logical ::cooling_ism = .false.      ! Use cooling module from Audit & Hennebelle 2005 (non-RT)
   ! instead of ramses classical cooling
   integer :: pressure_fix_cond = 1

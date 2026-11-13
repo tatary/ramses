@@ -31,7 +31,8 @@ if [ $# == 0 ]
 fi
 
 # one Fortran string literal per source line: "..." ($ -> space, " -> ')
-sed 's/\$/ /g' .tmp_output.txt | sed "s/\"/'/g" | cat -e | sed 's/\$/\"/' | sed 's/^/"/' > .test_lines.txt
+# (no 'cat -e': with LC_ALL=C it rewrote UTF-8 bytes as M-x sequences, some of which contain a '"')
+sed 's/\$/ /g' .tmp_output.txt | sed "s/\"/'/g" | sed 's/$/"/' | sed 's/^/"/' > .test_lines.txt
 
 cat << EOF2 > .test_before.f90
 subroutine output_patch(filename)

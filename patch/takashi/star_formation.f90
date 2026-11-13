@@ -8,6 +8,7 @@ subroutine star_formation(ilevel)
   use constants, only: M_sun, Myr2sec, Gyr2sec, mH, pi, rhoc, twopi
   use random
   use mpi_mod
+  use sf_log
   implicit none
 #ifndef WITHOUTMPI
   integer::info,info2,dummy_io
@@ -81,53 +82,7 @@ subroutine star_formation(ilevel)
 
   if(verbose)write(*,*)' Entering star_formation'
 
-  if(sf_log_properties.and.ifout.gt.1) then
-    call title(ifout-1,nchar)
-    if(IOGROUPSIZEREP>0) then
-      call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
-      filedirini='output_'//TRIM(nchar)//'/'
-      filedir='output_'//TRIM(nchar)//'/group_'//TRIM(ncharcpu)//'/'
-    else
-      filedir='output_'//TRIM(nchar)//'/'
-    endif
-    filename=TRIM(filedir)//'stars_'//TRIM(nchar)//'.out'
-    ilun=myid+103
-    call title(myid,nchar)
-    fileloc=TRIM(filename)//TRIM(nchar)
-    ! Wait for the token
-#ifndef WITHOUTMPI
-    if(IOGROUPSIZE>0) then
-      if (mod(myid-1,IOGROUPSIZE)/=0) then
-        call MPI_RECV(dummy_io,1,MPI_INTEGER,myid-1-1,tag,&
-        & MPI_COMM_WORLD,MPI_STATUS_IGNORE,info2)
-      end if
-    endif
-#endif
-
-    inquire(file=fileloc,exist=file_exist)
-    if((.not.file_exist).or.(ifout-1.ne.ifout_stars_log)) then
-      open(ilun, file=fileloc, status='replace', form='formatted')
-      write(ilun,'(A24)',advance='no') '# event id  ilevel  mp  '
-      do idim=1,ndim
-        write(ilun,'(A2,I1,A2)',advance='no') 'xp',idim,'  '
-      enddo
-      do idim=1,ndim
-        write(ilun,'(A2,I1,A2)',advance='no') 'vp',idim,'  '
-      enddo
-      do ivar=1,nvar
-        if(ivar.ge.10) then
-          write(ilun,'(A1,I2,A2)',advance='no') 'u',ivar,'  '
-        else
-          write(ilun,'(A1,I1,A2)',advance='no') 'u',ivar,'  '
-        endif
-      enddo
-      write(ilun,'(A5)',advance='no') 'tag  '
-      write(ilun,'(A1)') ' '
-      ifout_stars_log = ifout-1
-    else
-      open(ilun, file=fileloc, status="old", position="append", action="write", form='formatted')
-    endif
-  endif
+  call sf_log_open(ilun)
 
   ! Conversion factor from user units to cgs units
   call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
@@ -900,34 +855,7 @@ subroutine star_formation(ilevel)
           if(metal)zp(ind_debris(i))=zg+eta_sn*yield*(1-zg)*n*mstar/mdebris
         endif
 
-        if(sf_log_properties) then
-          write(ilun,'(I10)',advance='no') 0
-          write(ilun,'(2I10,E24.12)',advance='no') idp(ind_part(i)),ilevel,mp(ind_part(i))
-          do idim=1,ndim
-            write(ilun,'(E24.12)',advance='no') xp(ind_part(i),idim)
-          enddo
-          do idim=1,ndim
-            write(ilun,'(E24.12)',advance='no') vp(ind_part(i),idim)
-          enddo
-          write(ilun,'(E24.12)',advance='no') uold(ind_cell_new(i),1)
-          do ivar=2,nvar
-            if(ivar.eq.ndim+2)then
-              ! Temperature
-              uvar=(gamma-1.0d0)*(uold(ind_cell_new(i),ndim+2))*scale_T2
-#ifdef SOLVERmhd
-            else if(ivar.ge.ndim+3.and.ivar.le.ndim+2+ndim)then
-              ! Average of left and right magnetic fields (Mizuki Ono, 2026/06/13)
-              uvar=0.5d0*(uold(ind_cell_new(i),ivar)+ &
-                & uold(ind_cell_new(i),nvar+ivar-(ndim+2)))
-#endif
-            else
-              uvar=uold(ind_cell_new(i),ivar)
-            endif
-            write(ilun,'(E24.12)',advance='no') uvar
-          enddo
-          write(ilun,'(I10)',advance='no') typep(ind_part(i))%tag
-          write(ilun,'(A1)') ' '
-        endif
+        if(sf_log_properties) call sf_log_write_star(ilun,ind_part(i),ind_cell_new(i),ilevel,.true.)
 
 
       end do
@@ -998,7 +926,7 @@ subroutine star_formation(ilevel)
     end do
   end do
 
-  if(sf_log_properties) close(ilun)
+  call sf_log_close(ilun)
 
 end subroutine star_formation
 #endif

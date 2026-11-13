@@ -90,6 +90,11 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
   `cooling_fine_part(ilevel,1/2)` は emission grid (他ランクが ghost として持つ自分の grid) を先に
   冷却するための分割版 (`cooling_fine` と同じ結果)。`star_formation` の `uold(1:4)` 交換は
   `amr_step` が slot 1 で start し、`star_formation` が end して ghost を自分で速度に変換する。
+- ks (杉村さん版) からの移植 (`merge_ks` ブランチ、`docs/merge_ks.md`): 星形成は `&SF_PARAMS` の `sf_fg=.true.` で
+  `star_formation_fg.f90` (Pop II 局所/SFC、Pop III、非局所枯渇) に切り替わる。このとき粒子 family 3-8 は
+  `FAM_POP3/SN/DEAD/BH/SFC/PSC` の意味になる (`pm_commons`; 既定では上流の cloud/debris/other)。補助: `my_utils.f90`
+  (ufront)、`sbs_imf.f90`、`output_analysis.f90` (ugvtk の stub)、`sf_log.f90` (星形成/SN ログの共通 writer)。
+  テストは `tests/dice_rt_fg.nml`。
 - やり残し・既知のバグ: `patch/takashi/TODO.md`。
 
 ## 作業の進め方

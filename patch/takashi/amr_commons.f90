@@ -77,6 +77,11 @@ module amr_commons
   integer ,allocatable,dimension(:)  ::son     ! sons grids
   integer ,allocatable,dimension(:)  ::flag1   ! flag for refine
   integer ,allocatable,dimension(:)  ::flag2   ! flag for expansion
+  ! FG star formation (sf_fg, star_formation_fg.f90): Pop III mass per cell (allocated in init_amr if sf_fg)
+  real(dp),allocatable,dimension(:)  ::flag3
+  ! FG star formation: hydro variables at the front of the update (unew + virtual-boundary fluxes),
+  ! used by the non-local gas depletion and the SFC model; allocated on first use (my_utils:ensure_ufront)
+  real(dp),allocatable,dimension(:,:)::ufront
 
   ! Global indexing
   integer ,allocatable,dimension(:)  ::cpu_map  ! domain decomposition

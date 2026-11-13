@@ -722,8 +722,19 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
 - `test_flag` の修正 (子の refine を所有者から配る) は ks と同じく常時有効にした (2026-11-13; 単一分割でも
   境界例で孤児 grid を作るバグなので)。既定テストは bit 一致。本番では境界例で buffer oct が少し増える方向。
 - Mera.jl の two-tier 出力 (`hilbert2t`) と QUADHILBERT 対応は後回し (merge_ks.md 末尾)。
-- 残りの段階: 星形成・フィードバック (star_formation, feedback, mechanical_fine, sn_*、SN reservoir のフック 5 か所)、
-  sink/BH (bhpop3)、Pop III、SFC。ks 用の回帰ラン (FG 初期条件で FG バイナリと比較) は未実施。
+- 星形成は移植済み (2026-11-13, `sf_fg`, `star_formation_fg.f90`; merge_ks.md「星形成の移植」)。残り:
+  - ugvtk 出力 (`output_analysis.f90` は stub)。SFC/Pop III 形成時と年齢ごとの入れ子 VTK を出すかどうか。
+  - `SFC_flg_thin` / `flg_thin_star_cell` の cooling 側、`fJeans_cool`。
+  - Pop III (family 3) と SFC は takashi の feedback/RT では `is_star` でないので放射も SN も出ない → フィードバック段階。
+  - ks の part ファイルからの restart: `mp0` の有無 (ks は star_by_star/fire3_yields のときだけ) と `msp0` (takashi のみ)。
+  - FG の stdout (星 1 個ごとの print) の抑制。`random_value_0to1` の乱数状態は restart で保存されない (ks と同じ)。
+  - `sf_fg` では sink (cloud=family 3) と `f_w>0` を禁止している。sink は ks の `sink_particle.f90` (cloud は `idp<0`) を移植する段階で解除。
+  - 非局所枯渇の一括版 `deplete_gas_from_spheres_batch` (`nonlocal_depletion_batch`, 既定 .true.) を入れた
+    (2026-11-13; merge_ks.md「非局所枯渇の一括処理」)。`nH_postSF>0` の `deplete_gas_with_fixed_postSF_density` と
+    Pop III の `deplete_gas_around_pos` は ks の逐次版のまま (個数が少ない)。SN reservoir も同じ octree 走査
+    (`sphere_walk`) が使える。
+- 残りの段階: フィードバック (feedback, mechanical_fine, sn_*、SN reservoir のフック 5 か所)、sink/BH (bhpop3)。
+  ks 用の回帰ラン (FG 初期条件で FG バイナリと比較) は未実施。
 
 ## 4. 運用上のメモ
 
