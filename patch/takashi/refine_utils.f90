@@ -27,6 +27,7 @@ end subroutine refine
 subroutine refine_coarse
   use amr_commons
   use mpi_mod
+  use sn_energy_reservoir, only: sn_pending, sn_pending_coolstop !FG feedback (merge_ks)
   implicit none
 #ifndef WITHOUTMPI
   integer::info
@@ -40,6 +41,8 @@ subroutine refine_coarse
   integer(i8b)::tmp_long
 #endif
 
+  if(allocated(sn_pending))call make_virtual_fine_dp(sn_pending(1),1) !FG feedback (merge_ks)
+  if(allocated(sn_pending_coolstop))call make_virtual_fine_dp(sn_pending_coolstop(1),1)
   if(verbose)write(*,*)'  Entering refine_coarse'
 
   ! Constants
@@ -166,6 +169,7 @@ end subroutine refine_coarse
 !###############################################################
 subroutine make_grid_coarse(ind_cell,ibound,boundary_region)
   use amr_commons
+  use sn_energy_reservoir, only: refine_sn_reservoir !FG feedback (merge_ks)
   implicit none
   integer::ind_cell,ibound
   logical::boundary_region
@@ -326,6 +330,7 @@ subroutine make_grid_coarse(ind_cell,ibound,boundary_region)
      end if
   end if
 
+  call refine_sn_reservoir([ind_cell],[ind_grid_son]) !FG feedback (merge_ks): initialize newly allocated cells
 end subroutine make_grid_coarse
 !###############################################################
 !###############################################################
@@ -335,6 +340,7 @@ subroutine refine_fine(ilevel)
   use amr_commons
   use tracer_utils
   use mpi_mod
+  use sn_energy_reservoir, only: sn_pending, sn_pending_coolstop !FG feedback (merge_ks)
   implicit none
 #ifndef WITHOUTMPI
   integer::info
@@ -363,6 +369,12 @@ subroutine refine_fine(ilevel)
 
   if(ilevel==nlevelmax)return
   if(numbtot(1,ilevel)==0)return
+  if(allocated(sn_pending))then !FG feedback (merge_ks): child owners can differ from the parent owner
+    call make_virtual_fine_dp(sn_pending(1),ilevel)
+    call make_virtual_fine_dp(sn_pending(1),ilevel+1)
+    call make_virtual_fine_dp(sn_pending_coolstop(1),ilevel)
+    call make_virtual_fine_dp(sn_pending_coolstop(1),ilevel+1)
+  endif
   if(verbose)write(*,111)ilevel
 
   !--------------------------
@@ -591,6 +603,7 @@ end subroutine refine_fine
 !###############################################################
 subroutine make_grid_fine(ind_grid,ind_cell,ind,ilevel,nn,ibound,boundary_region)
   use amr_commons
+  use sn_energy_reservoir, only: refine_sn_reservoir !FG feedback (merge_ks)
   use hydro_commons
   use poisson_commons, ONLY:f, phi,phi_old
 #ifdef RT
@@ -947,6 +960,7 @@ subroutine make_grid_fine(ind_grid,ind_cell,ind,ilevel,nn,ibound,boundary_region
 #endif
   endif
 
+  call refine_sn_reservoir(ind_cell(:nn),ind_grid_son(:nn)) !FG feedback (merge_ks): conservative pending energy transfer
 end subroutine make_grid_fine
 !###############################################################
 !###############################################################
@@ -954,6 +968,7 @@ end subroutine make_grid_fine
 !###############################################################
 subroutine kill_grid(ind_cell,ilevel,nn,ibound,boundary_region)
   use amr_commons
+  use sn_energy_reservoir, only: coarsen_sn_reservoir !FG feedback (merge_ks)
   use pm_commons
   use hydro_commons
   use poisson_commons
@@ -995,6 +1010,8 @@ subroutine kill_grid(ind_cell,ilevel,nn,ibound,boundary_region)
   do i=1,nn
      ind_grid_son(i)=son(ind_cell(i))
   end do
+
+  call coarsen_sn_reservoir(ind_cell(:nn),ind_grid_son(:nn)) !FG feedback (merge_ks): gather before grids are freed
 
   ! Disconnect son grids from father cells
   do i=1,nn

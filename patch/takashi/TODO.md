@@ -733,8 +733,12 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
     (2026-11-13; merge_ks.md「非局所枯渇の一括処理」)。`nH_postSF>0` の `deplete_gas_with_fixed_postSF_density` と
     Pop III の `deplete_gas_around_pos` は ks の逐次版のまま (個数が少ない)。SN reservoir も同じ octree 走査
     (`sphere_walk`) が使える。
-- 残りの段階: フィードバック (feedback, mechanical_fine, sn_*、SN reservoir のフック 5 か所)、sink/BH (bhpop3)。
-  ks 用の回帰ラン (FG 初期条件で FG バイナリと比較) は未実施。
+- フィードバックは移植済み (2026-11-13; merge_ks.md「フィードバックの移植」): Pop III SN、SFC→PSC、SN reservoir
+  (`SN_reservoir`)、冷却停止タイマー (`fcool_stop`)、Pop III の放射。残り:
+  - 未移植: mechanical/spread/nonlocal_SN、star-by-star の SN (Inoue+2011, FAM_DEAD)、`pop2_SN_model`、hypernova X 線 (`isXray`)。
+  - reservoir の pending エネルギーを含む checkpoint からの restart は経路のみ確認 (pending が 0 の output からの restart は一致)。
+  - 一括非局所枯渇と SN reservoir は別の octree 走査 (`sphere_walk` と `get_sn_sphere_stats_events`)。統合の余地。
+- 残りの段階: sink/BH (bhpop3、ks の `sink_particle.f90`)、ugvtk 出力。ks 用の回帰ラン (FG 初期条件で FG バイナリと比較) は未実施。
 
 ## 4. 運用上のメモ
 

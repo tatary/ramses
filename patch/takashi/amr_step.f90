@@ -1,4 +1,5 @@
 recursive subroutine amr_step(ilevel,icount)
+  use sn_energy_reservoir, only: prepare_sn_reservoir !FG feedback (merge_ks)
   use amr_commons
   use pm_commons
   use hydro_commons
@@ -40,6 +41,7 @@ recursive subroutine amr_step(ilevel,icount)
   !-------------------------------------------
   ! Make new refinements and update boundaries
   !-------------------------------------------
+  call prepare_sn_reservoir(ilevel) !FG feedback (merge_ks): release pending SN heat before AMR changes and newdt_fine
   call timer('refine','start')
   if(levelmin.lt.nlevelmax .and.(.not.static.or.(nstep_coarse_old.eq.nstep_coarse.and.restart_remap)))then
     if(ilevel==levelmin.or.icount>1)then

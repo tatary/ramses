@@ -278,6 +278,13 @@ module amr_parameters
   logical :: star_by_star = .false. ! use star-by-star feedback models (for radiation and SN)
   character(len=16) :: sbs_imf_name='Chabrier' ! IMF name (either Chabrier or Chon)
   real(dp) :: sbs_Mmin = 1d0   ! minimum resolved stellar mass [Msun]
+  ! FG feedback (merge_ks 2026-11-13): Pop III SNe (feedback.f90), SN energy reservoir (sn_energy_reservoir.f90)
+  real(dp) :: pop3_ESN = 1d50      ! Pop III SN energy [erg] for pop3_model 1/2 (ks production 3d52); other models: Wise+2012 by mass
+  logical  :: SN_reservoir = .false.   ! store the SN heat and release it into a cooling-radius sphere (volume weighted) before the next refinement
+  logical  :: SN_radius_search = .false. ! evaluate/log the SN injection radii (set by SN_reservoir)
+  real(dp) :: Ncell_SN_max = 4d0   ! radius search cap: r_max = Ncell_SN_max * host dx
+  real(dp) :: fcool_stop = -1d0    ! >0: cooling is disabled for fcool_stop x sound-crossing time after a SN (needs a free passive scalar: ivar_coolstop=nvar)
+  integer  :: ivar_coolstop = -1   ! index of the cooling-stop timer scalar (set in read_hydro_params when fcool_stop>0)
   logical ::cooling_ism = .false.      ! Use cooling module from Audit & Hennebelle 2005 (non-RT)
   ! instead of ramses classical cooling
   integer :: pressure_fix_cond = 1

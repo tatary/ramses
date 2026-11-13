@@ -208,10 +208,10 @@ subroutine coolfine1(ind_grid,ngrid,ilevel)
   real(kind=8),dimension(1:nvector)::T2min,Zsolar,boost
   real(dp),dimension(1:3)::skip_loc
   real(kind=8)::dx,dx_loc,scale,vol_loc
+  logical,dimension(1:nvector)::cooling_on   ! (also used outside the RT block; was declared inside -> RT=0 build failed)
 #ifdef RT
   integer::ii,ig,iNp,il
   real(kind=8),dimension(1:nvector):: ekk_new,T2_new
-  logical,dimension(1:nvector)::cooling_on
   real(dp)::scale_Np,scale_Fp,work,Npc,Npnew, kIR, E_rad, TR
   real(dp),dimension(1:ndim)::Fpnew
   real(dp),dimension(nIons, 1:nvector):: xion
@@ -538,6 +538,14 @@ subroutine coolfine1(ind_grid,ngrid,ilevel)
         end do
       end if
       if(barotropic_eos)cooling_on(1:nleaf)=.false.
+      if(fcool_stop>0d0) then !FG feedback (merge_ks): cooling-stop timer [Myr] set by SNe (ivar_coolstop)
+        do i=1,nleaf
+          if(uold(ind_leaf(i),ivar_coolstop) .gt. 0d0) then
+            cooling_on(i)=.false.
+            uold(ind_leaf(i),ivar_coolstop) = MAX(uold(ind_leaf(i),ivar_coolstop) - dtnew(ilevel)*scale_t/Myr2sec, 0d0)
+          endif
+        end do
+      end if
     endif
 
     if(rt_vc) then ! Do the Lorentz boost. Eqs A4 and A5. in RT15

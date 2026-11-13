@@ -228,6 +228,8 @@ endif
 ifeq ($(USE_TURB),1)
    MODOBJ += turb_parameters.o turb_commons.o
 endif
+# FG feedback (merge_ks): SN radius search / energy reservoir modules (after hydro/rt modules)
+MODOBJ += sn_sphere_stats.o sn_feedback_radius.o sn_energy_reservoir.o
 
 AMROBJ = read_params.o init_amr.o init_time.o init_refine.o tracer_utils.o adaptive_loop.o \
          amr_step.o update_time.o output_amr.o flag_utils.o \

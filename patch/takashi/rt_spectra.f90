@@ -506,7 +506,7 @@ CONTAINS
     sum_cse_cpu = 0d0
     t_sne_Gyr = t_sne / 1d3
     do i=1,npartmax
-      if(levelp(i).le.0 .or. .NOT.is_star(typep(i)))                       &
+      if(levelp(i).le.0 .or. .NOT.(is_star(typep(i)).or.(sf_fg.and.is_pop3(typep(i))))) &
         cycle ! not a star
       ! particle exists and is a star
       mass = mp(i)
@@ -518,6 +518,18 @@ CONTAINS
 #endif
 #endif
       call getAgeGyr(tp(i), age)                         !     age = [Gyrs]
+      if(sf_fg.and.is_pop3(typep(i)))then
+        ! FG Pop III star (merge_ks): Schaerer (2002) photon rates by mass, 1e5 K blackbody group properties
+#ifdef INIT_STELLAR_MASS
+        mass = mp0(i)
+#endif
+        if(pop3_model==1 .or. pop3_model==2)then
+          call get_pop3_Nphoton_pop3_model(mass, L_star)   ! [# s-1 M_sun-1]
+        else
+          call get_pop3_Nphoton(mass, L_star)
+        endif
+        call get_pop3_props(1d5, egy_star, csn_star, cse_star)
+      else
       ! second condition below is for kinetic SN feedback
 #ifndef INIT_STELLAR_MASS
       if(age.gt.t_sne_Gyr .or. (eta_sn.gt.0.0 .and. f_w.gt.0.0)) then
@@ -536,6 +548,7 @@ CONTAINS
         call inp_SED_table(age, Z, 2+2*ii, .true., csn_star(:,ii))! [cm^2]
         call inp_SED_table(age, Z, 3+2*ii, .true., cse_star(:,ii))! [cm^2]
       end do
+      endif
 
       do ip=1,nSEDgroups
         L_star(ip) = L_star(ip) * mass             !       [# photons s-1]
@@ -661,8 +674,8 @@ CONTAINS
             ! Save next particle       <--- Very important !!!
             next_part = nextp(ipart)
             ! Select only star particles
-            if(is_star(typep(ipart))) then
-              npart2 = npart2+1     ! only stars
+            if(is_star(typep(ipart)) .or. (sf_fg.and.is_pop3(typep(ipart)))) then
+              npart2 = npart2+1     ! only stars (FG: and Pop III)
             endif
             ipart = next_part        ! Go to next particle
           end do
@@ -678,7 +691,7 @@ CONTAINS
             ! Save next particle      <--- Very important !!!
             next_part = nextp(ipart)
             ! Select only star particles
-            if(is_star(typep(ipart))) then
+            if(is_star(typep(ipart)) .or. (sf_fg.and.is_pop3(typep(ipart)))) then
               if(ig==0)then
                 ig=1
                 ind_grid(ig)=igrid
@@ -1054,6 +1067,191 @@ CONTAINS
 
 #if NGROUPS > 0
 !*************************************************************************
+!*************************************************************************
+! FG Pop III radiation (merge_ks, from patch/ks rt_spectra): photon rates per Msun from fits to
+! Schaerer (2002) tables 4/5 by group energy, group properties of a 1e5 K blackbody, lifetime fit.
+! No X-ray/hypernova groups (ks isXray) here. p3_noFUV / p3_noEUV (&RT_PARAMS) suppress bands.
+!*************************************************************************
+  SUBROUTINE get_pop3_Nphoton_pop3_model(mass, nphoton)
+    ! pop3_model 1/2: a particle lighter than 300 Msun is the 80+40 Msun binary
+    use amr_commons, only:dp
+    implicit none
+    real(dp),intent(in)::mass
+    real(dp) :: mass1, mass2
+    real(dp),dimension(1:nSEDgroups)::nphoton,nphoton1, nphoton2
+    real(dp):: scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,scale_msun
+    call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+    scale_msun = scale_l**3*scale_d/1.989d33
+    if (mass*scale_msun > 3d2) then
+      call get_pop3_Nphoton(mass, nphoton) ! [nphoton] = #/s/Msun
+    else
+      mass1 = 8d1/scale_msun
+      call get_pop3_Nphoton(mass1, nphoton1)
+      mass2 = 4d1/scale_msun
+      call get_pop3_Nphoton(mass2, nphoton2)
+      nphoton(:) = (nphoton1(:)*8d1+nphoton2(:)*4d1)/1.2d2   ! per Msun of the 120 Msun particle
+    end if
+  end subroutine get_pop3_Nphoton_pop3_model
+
+  SUBROUTINE get_pop3_Nphoton(m, nphoton)
+    ! number of photons per s per Msun of a Pop III star of mass m (code units)
+    use amr_commons, only:dp
+    use rt_parameters, only: group_egy, LWgroup, p3_noFUV, p3_noEUV
+    implicit none
+    real(dp),intent(in)::m
+    real(dp),dimension(1:nSEDgroups)::nphoton
+    real(dp)::x,y,ev_avg,frac
+    integer ::ip,j,ndeg,nbin_HII
+    integer ::ndeg_HII=3,ndeg_HeII=5,ndeg_HeIII=3,ndeg_H2=3
+    real(dp),dimension(0:3)::a_HII,a_HeIII,a_H2
+    real(dp),dimension(0:5)::a_HeII,a_fit
+    real(dp):: scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,scale_msun
+    real(dp):: x_fit !fit is up to 1000 Msun and the formula is diverging outside (KS MODIFIED)
+    call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+    scale_msun = scale_l**3*scale_d/1.989d33
+    ! fit to Schaerer (2002) Table 4,5
+    a_HII = (/3.7931090e+01,1.4585544e+01,-6.0434098e+00,8.9166773e-01/)
+    a_HeII = (/-1.4045167e+01,1.6406353e+02,-1.7101901e+02,8.8029022e+01,-2.2113640e+01,2.1670952e+00/)
+    a_HeIII = (/2.3361417e+01,2.5165704e+01,-7.9901436e+00,8.7320721e-01/)
+    a_H2 = (/4.3037504e+01,6.7958632e+00,-2.2352535e+00,2.9633043e-01/)
+    x = log10(m*scale_msun)
+    nphoton(:) = 0d0
+    nbin_HII = 0
+    ! two bins for HII (13.6-15.2, 15.2-24.59)?
+    do ip=1,nSEDgroups
+      ev_avg = group_egy(ip)
+      if(ev_avg.gt.13.60.and.ev_avg.lt.24.59) nbin_HII = nbin_HII + 1
+    end do
+    do ip=1,nSEDgroups
+      ev_avg = group_egy(ip)
+      frac = 1d0
+      if      (ev_avg.gt.11.20.and.ev_avg.lt.13.60) then
+        ndeg = ndeg_H2
+        a_fit(0:ndeg)=a_H2
+      else if (ev_avg.gt.13.60.and.ev_avg.lt.24.59) then
+        ndeg = ndeg_HII
+        a_fit(0:ndeg)=a_HII
+        if(nbin_HII.eq.2)then ! (i.e. 13.6-15.2, 15.2-24.59)
+          if(ev_avg.lt.15.20)then ! for T=1d5K black body spectrum
+            frac = 0.1
+          else
+            frac = 0.9
+          endif
+        endif
+      else if (ev_avg.gt.24.59.and.ev_avg.lt.54.42) then
+        ndeg = ndeg_HeII
+        a_fit(0:ndeg)=a_HeII
+      else if (ev_avg.gt.54.42) then
+        ndeg = ndeg_HeIII
+        a_fit(0:ndeg)=a_HeIII
+      else ! neglect any optical to IR photons
+        ndeg = 0
+        a_fit(:)=0d0
+      endif
+      if(ndeg.eq.0) then
+        nphoton(ip) = 0d0
+      else
+        y = 0d0
+        x_fit = min(x,3d0)   ! the fits are valid up to 1000 Msun; linear scaling above (KS)
+        do j=0,ndeg
+          y = y + x_fit**dble(j)*a_fit(j)
+        end do
+        y = y + x-x_fit
+        nphoton(ip) = 10d0**y*frac
+      endif
+    end do
+    nphoton(:) = nphoton(:) / (m*scale_msun)   ! #/s per Msun
+    if (LWgroup>0 .and. LWgroup<=nSEDgroups) then
+      if (p3_noFUV) nphoton(LWgroup)=0d0
+      if (p3_noEUV) nphoton(LWgroup+1:nSEDgroups)=0d0
+    end if
+  end subroutine get_pop3_Nphoton
+
+  SUBROUTINE get_pop3_props (Tk,egy_star,csn_star,cse_star)
+    ! average energies and cross sections of a blackbody of temperature Tk (computed once)
+    use amr_commons, only:dp
+    use rt_parameters, only: nIons, groupL0, groupL1
+    implicit none
+    real(dp),dimension(1:nSEDgroups,1:nIons)::csn_star,cse_star
+    real(dp),dimension(1:nSEDgroups)::egy_star
+    real(dp)::Tk,pL0,pL1,lam_cm
+    integer ::nLs=2000,i,ip,ii
+    real(dp),allocatable,dimension(:)::Ls,fakeSED
+    real(dp),dimension(:,:),allocatable,save::csn_star_pop3,cse_star_pop3
+    real(dp),dimension(:),allocatable,save::egy_star_pop3
+    real(dp)::h_pl=6.6260755d-27,kB=1.3806504d-16,c_cms=2.999d10
+    logical,save:: initialise=.true.
+    if(initialise)then
+      allocate(csn_star_pop3(nSEDgroups,nIons),cse_star_pop3(nSEDgroups,nIons),egy_star_pop3(nSEDgroups))
+      allocate(Ls(1:nLs))
+      allocate(fakeSED(1:nLs))
+      do i=1,nLs
+        Ls(i) = 10d0**(dble(i)/nLs*(5d0-0d0))  ! 1A - 10000A
+        lam_cm = Ls(i)/1d8 ! A->cm
+        if(h_pl*c_cms/lam_cm/kB/Tk.ge.500)then ! exp causes floating overflow - JP
+          fakeSED(i) = 0
+        else
+          fakeSED(i) = 2d0*h_pl*c_cms/lam_cm**5d0/(exp(h_pl*c_cms/lam_cm/kB/Tk)-1d0)
+        endif
+      end do
+      do ip=1,nSEDgroups
+        pL0 = groupL0(ip)
+        pL1 = groupL1(ip)
+        egy_star_pop3(ip) = getSEDEgy(Ls,fakeSED,nLs,pL0,pL1)
+        do ii=1,nIons
+          csn_star_pop3(ip,ii) = getSEDcsn(Ls,fakeSED,nLs,pL0,pL1,ii)
+          cse_star_pop3(ip,ii) = getSEDcse(Ls,fakeSED,nLs,pL0,pL1,ii)
+        end do
+      end do
+      deallocate(Ls,fakeSED)
+      initialise = .false.
+    endif
+    csn_star(:,:) = csn_star_pop3(:,:)
+    cse_star(:,:) = cse_star_pop3(:,:)
+    egy_star(:)   = egy_star_pop3(:)
+  end subroutine get_pop3_props
+
+  SUBROUTINE getNPhotonsEmitted_pop3(mass,age_Gyr,dt_loc_Gyr,nphoton)
+    ! photons emitted per Msun during dt_loc_Gyr by a Pop III star of mass (code units)
+    use amr_commons, only:dp
+    use amr_parameters, only: pop3_model
+    implicit none
+    real(dp),intent(in)::mass,age_Gyr,dt_loc_Gyr
+    real(dp)::lifetime_Gyr
+    real(dp),dimension(1:nSEDgroups)::nphoton
+    if (pop3_model == 1 .or. pop3_model == 2) then
+      ! the particle disappears at its SN (feedback.f90): no lifetime cut here
+      call get_pop3_Nphoton_pop3_model(mass, nphoton) ! [nphoton] = #/s/Msun
+      nphoton(:) = nphoton(:)*dt_loc_Gyr*1d9*365d0*24d0*3600d0
+    else
+      call get_pop3_ageGyr(mass,lifetime_Gyr)
+      nphoton(:)=0d0
+      if (age_Gyr.le.lifetime_Gyr) then
+        call get_pop3_Nphoton(mass, nphoton) ! [nphoton] = #/s/Msun
+        nphoton(:) = nphoton(:)*dt_loc_Gyr*1d9*365d0*24d0*3600d0
+      endif
+    end if
+  end subroutine getNPhotonsEmitted_pop3
+
+  SUBROUTINE get_pop3_ageGyr(mass,age_gyr)
+    ! Pop III lifetime [Gyr] fit (ks mechanical_fine_pop3)
+    use amr_commons, only:dp
+    implicit none
+    real(dp)::mass,age_gyr,logm
+    real(dp),dimension(0:3)::a_fit
+    integer::ndeg=3,i
+    real(dp):: scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,scale_msun
+    call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+    scale_msun = scale_l**3*scale_d/1.989d33
+    a_fit = (/0.7595398e+00,-3.7303953e+00,1.4031973e+00,-1.7896967e-01/)
+    age_gyr = 0d0
+    logm    = log10(mass*scale_msun)
+    do i=0,ndeg
+      age_gyr = age_gyr + a_fit(i)*logm**dble(i)
+    end do
+    age_gyr = 10d0**age_gyr
+  end subroutine get_pop3_ageGyr
+
   SUBROUTINE star_RT_vsweep(ind_grid,ind_part,ind_grid_part,ng,np,dt,ilevel)
 
 ! This routine is called by subroutine star_rt_feedback.
@@ -1221,6 +1419,14 @@ CONTAINS
       call getAgeGyr(tp(ind_part(j)), age)          !  End-of-dt age [Gyrs]
       ! Possibilities:     Born i) before dt, ii) within dt, iii) after dt:
       dt_loc_Gyr = max(min(dt_Gyr, age), 0.)
+      if(sf_fg.and.is_pop3(typep(ind_part(j))))then
+        ! FG Pop III star (merge_ks): Schaerer (2002) rates by mass, until its lifetime (pop3_model 1/2: until the SN)
+        mass = mp(ind_part(j))
+#ifdef INIT_STELLAR_MASS
+        mass = mp0(ind_part(j))
+#endif
+        call getNPhotonsEmitted_pop3(mass,age,dt_loc_Gyr,part_NpInp(j,1:nSEDgroups))
+      else
       call getNPhotonsEmitted(age,dt_loc_Gyr,z,part_NpInp(j,1:nSEDgroups))
 #ifndef INIT_STELLAR_MASS
       mass = mp(ind_part(j))
@@ -1236,6 +1442,7 @@ CONTAINS
       mass = msp0(ind_part(j))
 #endif
 #endif
+      endif   ! Pop III / Pop II
       ! part_NpInp(j,:) = part_NpInp(j,:)*mass*scale_inp !#photons
       part_NpInp(j,:) = group_on*part_NpInp(j,:)*mass*scale_inp !#photons
 

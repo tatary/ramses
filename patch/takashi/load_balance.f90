@@ -4,6 +4,7 @@
 !#########################################################################
 subroutine load_balance
   use amr_commons
+  use sn_energy_reservoir, only: sn_pending, sn_pending_coolstop !FG feedback (merge_ks)
   use pm_commons
   use hydro_commons, ONLY: nvar
 #ifndef WITHOUTMPI
@@ -88,6 +89,8 @@ subroutine load_balance
 #else
         end do
 #endif
+        if(allocated(sn_pending))call make_virtual_fine_dp(sn_pending(1),ilevel) !FG feedback (merge_ks)
+        if(allocated(sn_pending_coolstop))call make_virtual_fine_dp(sn_pending_coolstop(1),ilevel)
         if(momentum_feedback>0)then
            call make_virtual_fine_dp(pstarold(1),ilevel)
         endif
@@ -1080,11 +1083,13 @@ subroutine defrag
   use amr_commons
   use pm_commons
   use poisson_commons
+  use sn_energy_reservoir, only: sn_pending, reorder_sn_reservoir !FG feedback (merge_ks)
   use hydro_commons
 #ifdef RT
   use rt_hydro_commons
 #endif
   implicit none
+  integer,allocatable::reservoir_order(:) !FG feedback (merge_ks)
 
   integer::ncache,ngrid2,igridmax,i,igrid,ibound,ilevel
   integer::iskip1,iskip2,igrid1,igrid2,ind1,icell1,icell2
@@ -1092,6 +1097,7 @@ subroutine defrag
 
   if(verbose)write(*,*)'Defragmenting main memory...'
 
+  if(allocated(sn_pending))allocate(reservoir_order(ngridmax)) !FG feedback (merge_ks)
   ngrid2=0
   igridmax=0
   do ilevel=1,nlevelmax
@@ -1106,6 +1112,7 @@ subroutine defrag
         if(ncache>0)then
            igrid=istart
            do i=1,ncache
+              if(allocated(sn_pending))reservoir_order(ngrid2+i)=igrid !FG feedback (merge_ks)
               cpu_map2(igrid)=ngrid2+i
               igridmax=max(igridmax,igrid)
               igrid=next(igrid)
@@ -1114,6 +1121,8 @@ subroutine defrag
         end if
      end do
   end do
+
+  if(allocated(sn_pending))call reorder_sn_reservoir(reservoir_order(:ngrid2)) !FG feedback (merge_ks)
 
   ngrid2=0
   do igrid=1,igridmax

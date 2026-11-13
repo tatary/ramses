@@ -95,6 +95,13 @@ module pm_commons
   real(dp),dimension(1:3,1:SFC_nmax_active) :: SFC_pos_active !position of active SFC
   real(dp),dimension(1:SFC_nmax_active) :: SFC_radius_active !radius of active SFC
 
+  ! SN events of the current step on this rank (feedback.f90 -> SN reservoir / radius search; merge_ks)
+  integer,parameter :: SNinfo_nSNmax = 10000      !maximum number of SNe per rank and step
+  integer :: SNinfo_nSN = 0                       !number recorded on this rank
+  integer,dimension(1:SNinfo_nSNmax) :: SNinfo_idp
+  real(dp),dimension(1:SNinfo_nSNmax) :: SNinfo_ESN    !pure SN energy [code units] (no winds)
+  real(dp),dimension(1:3,1:SNinfo_nSNmax) :: SNinfo_pos
+
   ! Customize here for particle tags within particle types (e.g. different kind of stars).
   ! Note that the type should be integer(1) (1 byte integers) for memory concerns.
   ! Also don't forget to create a function is_<type>_<tag>. See the wiki for a more complete example.

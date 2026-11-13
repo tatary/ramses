@@ -161,7 +161,7 @@ SUBROUTINE read_rt_params(nml_ok)
   & ,cloudy_metal_cooling, cloudy_metal_file,attn_after_chem        &
   & ,rt_skip_convergence, relax_x_by_ne                             &
   & ,isH2Katz, PEH_all_FUV, sec_ion, LWgroup, LW_ss_model, LW_ss_dust, LW_abs_thin, LW_abs_atom &
-  & ,LW_ss_from_incident_surface_yH2                                 &
+  & ,LW_ss_from_incident_surface_yH2, p3_noFUV, p3_noEUV              &
   ! RT regions (for initialization)                                 &
   & ,rt_nregion, rt_region_type                                     &
   & ,rt_reg_x_center, rt_reg_y_center, rt_reg_z_center              &

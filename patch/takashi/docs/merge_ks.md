@@ -361,3 +361,54 @@ ks の `deplete_gas_from_spheres` は新星 1 個ごとに「全 level の全セ
 - 試験: `f_sum_max` を一時的に 0.05 にしたビルドで反復経路 (2–5 回、clamp なし、`M_removed = M_star`) を確認。
   heavy/LIGHT bit 一致、二層分割 (`-DTWO_TIER_CHECK`) で完走。
 - `nH_postSF>0` の版と Pop III の `deplete_gas_around_pos` は逐次のまま。
+
+## フィードバックの移植 (2026-11-13)
+
+ks 本番 (`ngridmax_fire3.nml`) は `thermal_feedback` + FIRE-3 yields + **SN reservoir** + 冷却停止タイマーで、
+`mechanical_feedback` / `spread_feedback` / `nonlocal_SN` は使っていない (ks の amr_step にも「このプロジェクトでは使わない」
+とある)。takashi の `feedbk` は既に FIRE-3 (msp0 方式) なので、差分だけを takashi の `feedback.f90` に足した。
+
+### 入れたもの
+
+- **Pop III の SN** (`feedbk`、`sf_fg` の `FAM_POP3` 粒子): Schaerer (2002) の寿命 (`cal_tpop3`; pop3_model 1/2 は 4 Myr) の
+  経過時に 1 回だけ爆発。エネルギーは Wise+2012 の質量依存式、pop3_model 1/2 は `pop3_ESN` (本番 3e52 erg)。残骸質量・金属
+  は ks の表 (`cal_mrem`, `cal_mmet`; 1/2 は残骸 100 Msun・金属 9 Msun)。300 Msun 超 (model 2 の 1000 Msun) は直接崩壊。
+  SN 後の family は `FAM_BH` (sink の段階で bhpop3 の種)。ログは `stars_*.out` の event=1 行 (family 3 で記録してから BH に)。
+  `thermal_feedback` の粒子選択は `is_star .or. (sf_fg .and. is_pop3)`。
+- **SFC → PSC** (`thermal_feedback`、`sf_fg`): `SFC_t_life` を過ぎた `FAM_SFC` を `FAM_PSC` に。
+- **SN reservoir** (`sn_sphere_stats.f90`, `sn_feedback_radius.f90`, `sn_energy_reservoir.f90`; ks からほぼそのまま、`use mpi_mod`):
+  `&FEEDBACK_PARAMS` の `SN_reservoir=.true.` で、feedbk は純 SN 熱 (`f_esn × E_SN × N_SN`、風の熱は除く) を unew に入れず
+  `pending_heat` として除き、`thermal_feedback` 末尾で全ランク共通のイベント列 (位置・E・idp、ALLREDUCE 3 本) を作って
+  半径探索 (冷却半径 `28.4 pc nH^-3/7 (E/1e51)^2/7 f(Z)^-1/7` と `r < r_cool/2`、候補は host 半対角から 1.2 倍刻みで
+  `Ncell_SN_max × dx` まで、集団通信 2 本) → `deposit_sn_reservoir` が球内の自分の leaf に体積比例で `sn_pending` [erg/コード体積]
+  を積む。`amr_step` の refine 前の `prepare_sn_reservoir(ilevel)` が nlevelmax→ilevel の順に `uold` へ反映 (`upload_fine` と
+  ghost 更新込み)。refine/derefine (`refine_sn_reservoir`/`coarsen_sn_reservoir`)、load balance の ghost 共有、defrag の並べ替え、
+  hydro checkpoint 末尾の版付きトレーラ (reservoir 使用時のみ書く; 無いときは旧 checkpoint 扱い) を takashi の各ファイルにフック。
+  粗い step ごとに rank 1 が `SN reservoir: released X erg into N cells` を出す (追加)。
+- **冷却停止タイマー** `fcool_stop` (`&FEEDBACK_PARAMS`): `ivar_coolstop=nvar` の passive scalar に `fcool_stop × dx/c_s` [Myr] を
+  置き、`cooling_fine` が正の間は冷却せず dt を引く。reservoir 使用時は反映時に host セルだけ、即時注入時は feedbk が設定。
+  NPSCAL を 1 つ増やしたビルドが必要 (ks 設定は NPSCAL=3; `read_hydro_params` が検査)。
+- **Pop III の放射** (`rt_spectra.f90`): `is_pop3` を線源に含め、Schaerer (2002) 表のフィット (`get_pop3_Nphoton[_pop3_model]`、
+  群のエネルギーで帯を判定)、1e5 K 黒体の群特性 (`get_pop3_props`)、寿命 (`get_pop3_ageGyr`; model 1/2 は SN まで)。
+  `&RT_PARAMS` に `p3_noFUV`, `p3_noEUV`。X 線/hypernova 群 (`isXray`, `rt_hypernova`) は未移植。
+- `cooling_fine.f90`: `cooling_on` の宣言が `#ifdef RT` の中にあって RT=0 ビルドが落ちていた (cooling 移植時の退行) のを修正。
+
+### 持ち込まなかったもの
+
+`mechanical_fine[_pop3]`, `spread_fine`, `feedback_flag`, `nonlocal_feedback` (nonlocal_SN, nHmax_preSN)、star-by-star の SN
+(Inoue+2011 残骸、`FAM_DEAD` 化)、`pop2_SN_model` (fixed/stochastic/mass_dep; takashi は常に FIRE-3)、`logSN` (takashi の
+`stars_*.out` event=1 行で代替)、hypernova X 線。
+
+### 検証 (dice_rt_amr 14 step、4 ランク)
+
+| テスト | 結果 |
+|---|---|
+| 既定 (`sf_fg=.false.`, reservoir off) | 46 ファイル bit 一致 (hydro のトレーラは reservoir 使用時のみ) |
+| Pop III SN 即時注入 (Zpop3=10, pop3_model=1, 1e50 erg) | 846 個が step 13 (4 Myr) に爆発、BH(PopIII)=846、event=1 行 family 3 |
+| 同 + reservoir (3e52 erg) | 半径探索 846 件 (球 69、host 未解像 104、候補なし 673)、放出エネルギー = ΣE_SN (2.538e55 erg) |
+| 同 + `fcool_stop=8` (NPSCAL=2 ビルド) | `ivar_coolstop=11`、完走 |
+| Pop II FIRE-3 + reservoir | 1916 SN (全て host 未解像 = 単一セル)、放出 = ΣE_SN、event=1 行 family 2 |
+| LIGHT / 二層分割 (`-DTWO_TIER_CHECK`) | heavy と 69 ファイル bit 一致 / 完走、STATUS ok、同じ放出量 |
+| restart (output_00002 から) | 同じ 846 SN と放出量 (トレーラ読み込み経路) |
+| RT=0 ビルド (sedov) | ビルド・実行 OK |
+| ks 設定 (QUADHILBERT, NPSCAL=3) | ビルド OK |

@@ -22,6 +22,13 @@ subroutine thermal_feedback(ilevel)
   use hydro_commons
   use mpi_mod
   use sf_log
+  use constants, only: Myr2sec
+#ifdef RT
+  ! FG feedback (merge_ks): SN radius search / energy reservoir
+  use sn_sphere_stats, only: sn_radius_choice
+  use sn_energy_reservoir, only: deposit_sn_reservoir
+  use sn_feedback_radius, only: evaluate_sn_feedback_radii, report_sn_feedback_radii
+#endif
   implicit none
 #ifndef WITHOUTMPI
   integer::info2,dummy_io
@@ -39,8 +46,20 @@ subroutine thermal_feedback(ilevel)
   character(LEN=5)::nchar,ncharcpu
   logical::file_exist
   integer,parameter::tag=1120
+  ! FG feedback (merge_ks)
+  logical,dimension(1:nvector),save::ok3          ! Pop III flag of the gathered particles
+  real(dp)::t_sfc,current_time
+  real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,sn_scale_ene
+  integer::nSN_tot,iSN,ioff,info
+  integer,dimension(1:ncpu)::nSN_list
+  real(dp),allocatable::pos_glob(:,:),ESN_glob(:)
+  integer,allocatable::idp_glob(:)
+#ifdef RT
+  type(sn_radius_choice),allocatable::choices(:)
+#endif
 
   call sf_log_open(ilun)
+  SNinfo_nSN=0
 
 
   if(numbtot(1,ilevel)==0)return
@@ -65,7 +84,7 @@ subroutine thermal_feedback(ilevel)
            do jpart=1,npart1
               ! Save next particle   <--- Very important !!!
               next_part=nextp(ipart)
-              if ( is_star(typep(ipart)) ) then
+              if ( is_star(typep(ipart)) .or. (sf_fg.and.is_pop3(typep(ipart))) ) then
                  npart2=npart2+1
               endif
               ipart=next_part  ! Go to next particle
@@ -82,7 +101,7 @@ subroutine thermal_feedback(ilevel)
               ! Save next particle   <--- Very important !!!
               next_part=nextp(ipart)
               ! Select only star particles
-              if ( is_star(typep(ipart)) ) then
+              if ( is_star(typep(ipart)) .or. (sf_fg.and.is_pop3(typep(ipart))) ) then
                  if(ig==0)then
                     ig=1
                     ind_grid(ig)=igrid
@@ -90,9 +109,10 @@ subroutine thermal_feedback(ilevel)
                  ip=ip+1
                  ind_part(ip)=ipart
                  ind_grid_part(ip)=ig
+                 ok3(ip)=is_pop3(typep(ipart))
               endif
               if(ip==nvector)then
-                 call feedbk(ind_grid,ind_part,ind_grid_part,ig,ip,ilevel)
+                 call feedbk(ind_grid,ind_part,ind_grid_part,ig,ip,ilevel,ok3)
                  ip=0
                  ig=0
               end if
@@ -103,9 +123,82 @@ subroutine thermal_feedback(ilevel)
         igrid=next(igrid)   ! Go to next grid
      end do
      ! End loop over grids
-     if(ip>0)call feedbk(ind_grid,ind_part,ind_grid_part,ig,ip,ilevel)
+     if(ip>0)call feedbk(ind_grid,ind_part,ind_grid_part,ig,ip,ilevel,ok3)
   end do
   ! End loop over cpus
+
+  !---------------------------------------------------------------------------
+  ! FG feedback (merge_ks): SFC particles (sf_fg) past SFC_t_life become PSC
+  !---------------------------------------------------------------------------
+  if(sf_fg)then
+     call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+     if(use_proper_time)then
+        t_sfc=SFC_t_life*Myr2sec/(scale_t/aexp**2)
+        current_time=texp
+     else
+        t_sfc=SFC_t_life*Myr2sec/scale_t
+        current_time=t
+     endif
+     do icpu=1,ncpu
+        igrid=headl(icpu,ilevel)
+        do jgrid=1,numbl(icpu,ilevel)
+           npart1=numbp(igrid)
+           if(npart1>0)then
+              ipart=headp(igrid)
+              do jpart=1,npart1
+                 next_part=nextp(ipart)
+                 if(is_SFC(typep(ipart)))then
+                    if(tp(ipart)+t_sfc<current_time)then
+                       typep(ipart)%family=FAM_PSC
+                       write(*,'(A,3I8,A,1PE10.3,A,1P3E16.8)')"** SFC converted to PSC after its lifetime ** myid, ilevel, idp: ",&
+                            & myid,ilevel,idp(ipart),", R_SFC [kpc]: ",-zp(ipart)*scale_l/3.0857d21,", pos: ",xp(ipart,1:3)
+                    endif
+                 endif
+                 ipart=next_part
+              end do
+           endif
+           igrid=next(igrid)
+        end do
+     end do
+  endif
+
+  !---------------------------------------------------------------------------
+  ! FG feedback (merge_ks): SN radius search and energy reservoir (ks, TO ADDED).
+  ! All ranks see the same ordered event list; the search uses the pre-injection
+  ! uold (feedbk wrote into unew). The reservoir receives the pure SN heat that
+  ! feedbk left out of unew (pending_heat).
+  !---------------------------------------------------------------------------
+#ifdef RT
+  if(SN_radius_search)then
+     nSN_list=0
+     nSN_list(myid)=SNinfo_nSN
+#ifndef WITHOUTMPI
+     call MPI_ALLREDUCE(MPI_IN_PLACE,nSN_list,ncpu,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+     nSN_tot=sum(nSN_list)
+     if(nSN_tot>0)then
+        allocate(pos_glob(3,nSN_tot),ESN_glob(nSN_tot),idp_glob(nSN_tot),choices(nSN_tot))
+        pos_glob=0d0; ESN_glob=0d0; idp_glob=0
+        ioff=sum(nSN_list(1:myid-1))
+        do iSN=1,SNinfo_nSN
+           pos_glob(1:3,ioff+iSN)=SNinfo_pos(1:3,iSN)
+           ESN_glob(ioff+iSN)=SNinfo_ESN(iSN)
+           idp_glob(ioff+iSN)=SNinfo_idp(iSN)
+        end do
+#ifndef WITHOUTMPI
+        call MPI_ALLREDUCE(MPI_IN_PLACE,pos_glob,3*nSN_tot,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+        call MPI_ALLREDUCE(MPI_IN_PLACE,ESN_glob,nSN_tot,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+        call MPI_ALLREDUCE(MPI_IN_PLACE,idp_glob,nSN_tot,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+        call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+        sn_scale_ene=scale_d*scale_l**3*scale_v**2
+        call evaluate_sn_feedback_radii(pos_glob,ESN_glob*sn_scale_ene,uold,scale_l,scale_d,scale_nH,choices)
+        call report_sn_feedback_radii(ilevel,idp_glob,ESN_glob*sn_scale_ene,choices,scale_l,scale_nH)
+        if(SN_reservoir)call deposit_sn_reservoir(pos_glob,ESN_glob*sn_scale_ene,choices)
+        deallocate(pos_glob,ESN_glob,idp_glob,choices)
+     endif
+  endif
+#endif
 
   call sf_log_close(ilun)
 
@@ -118,7 +211,7 @@ end subroutine thermal_feedback
 !################################################################
 !################################################################
 #if NDIM==3
-subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
+subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel,ok3)
   use amr_commons
   use pm_commons
   use hydro_commons
@@ -130,6 +223,9 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   integer::ng,np,ilevel
   integer,dimension(1:nvector)::ind_grid
   integer,dimension(1:nvector)::ind_grid_part,ind_part
+  logical,dimension(1:nvector)::ok3   ! FG (merge_ks): .true. for Pop III particles (sf_fg); the SN of a Pop III
+                                      ! star is a single event at the end of its life (Schaerer 2002 lifetime,
+                                      ! Wise+2012 energy, remnant/metal mass tables of ks feedbk)
   real(dp), dimension(1:nelements)::yields, metallicities
   !-----------------------------------------------------------------------
   ! This routine is called by subroutine feedback. Each stellar particle
@@ -163,6 +259,11 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   integer::irad
 #endif
   integer ,dimension(1:ncpu,1:IRandNumSize)::allseed
+  ! FG feedback (merge_ks)
+  real(dp),dimension(1:nvector),save::pending_heat,e_sn_part   ! SN heat kept for the reservoir; pure SN energy per particle
+  logical,dimension(1:nvector),save::pop3_sn
+  real(dp)::e_sn,e_sn_erg,mprog,mHe,mrem,mmet,t_hne,t0_3,rho_1,ekk_1,eth_1,T2_1,cs_1
+  real(dp),external::cal_mrem,cal_mmet,cal_tpop3
 #ifdef SOLVERmhd
 !------------------------------------------------------------------------
 ! Added by Mizuki Ono (2026/06/13)
@@ -330,9 +431,63 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
      ethermal(j)=0d0
   end do
 
+  pending_heat(1:np)=0d0; e_sn_part(1:np)=0d0; pop3_sn(1:np)=.false.
   ! Compute stellar mass loss and thermal feedback due to supernovae
   if(f_w==0)then
      do j=1,np
+        e_sn=0d0; dE_winds=0d0
+        if(ok3(j))then
+        !-----------------------------------------------------------------
+        ! FG Pop III star (sf_fg): one SN or direct collapse at the end of
+        ! its life (ks feedbk); nothing before that
+        !-----------------------------------------------------------------
+        birth_time=tp(ind_part(j))
+        t_age_Gyr=(current_time-birth_time)*scale_t/Gyr2sec
+        mprog=mp(ind_part(j))*scale_Msol
+        if(pop3_model==3 .and. mpop3_SNprog>=0d0) mprog=mpop3_SNprog
+        t_hne=cal_tpop3(mprog)   ! lifetime [Myr]
+        if(use_proper_time)then
+           t0_3=t_hne*Myr2sec/(scale_t/aexp**2)
+        else
+           t0_3=t_hne*Myr2sec/scale_t
+        endif
+        if(birth_time.lt.(current_time-t0_3).and.birth_time.ge.(current_time-t0_3-dteff(j)))then
+           if((pop3_model==1.or.pop3_model==2).and.mp(ind_part(j))*scale_Msol>3d2)then
+              ! the 1000 Msun star of pop3_model=2 collapses directly: no SN
+              typep(ind_part(j))%family=FAM_BH
+              write(*,'(A,3I8,1PE12.4,A,1P3E16.8)')"** POPIII direct collapse BH formation ** myid, ilevel, idp, M [Msun]: ",&
+                   & myid,ilevel,idp(ind_part(j)),mp(ind_part(j))*scale_Msol,", pos: ",xp(ind_part(j),1:3)
+           else
+              ! SN energy: Wise+2012 by progenitor mass; pop3_ESN for the 80+40 Msun binary models
+              mHe=13d0/24d0*(mprog-20d0)
+              if(mprog>=11d0.and.mprog<20d0)then
+                 e_sn_erg=1d51
+              else if(mprog>=20d0.and.mprog<=40.000001d0)then
+                 e_sn_erg=(-13.714d0+1.086d0*mprog)*1d51
+              else if(mprog>=139.999999d0.and.mprog<=260.000001d0)then
+                 e_sn_erg=(5d0+1.304d0*(mHe-64d0))*1d51
+              else if(mprog<11d0)then
+                 e_sn_erg=2d45   ! just keep the gas warm
+              else
+                 e_sn_erg=0d0    ! direct collapse (40 < M < 140 or M > 260)
+              endif
+              if(pop3_model==1.or.pop3_model==2) e_sn_erg=pop3_ESN
+              e_sn=e_sn_erg/(scale_mcgs*scale_v**2)
+              mrem=cal_mrem(mprog)
+              mmet=cal_mmet(mprog)
+              mejecta=(mprog-mrem)/scale_Msol
+              mloss(j)=mejecta/vol_loc(j)
+              ethermal(j)=e_sn/vol_loc(j)
+              if(metal) mzloss(j)=mmet/scale_Msol/vol_loc(j)
+              mp(ind_part(j))=mp(ind_part(j))-mejecta
+              pop3_sn(j)=.true.   ! family -> BH after the log line below
+              write(*,'(A,/,3I8,5(1PE12.4),/,A,1P3E16.8)')&
+                   & "** POPIII SN explosion or direct collapse ** myid, ilevel, idp, Mprog[Msun], Mejecta[Msun], E_SN[erg], Zej, t_age[Myr]: ",&
+                   & myid,ilevel,idp(ind_part(j)),mprog,mejecta*scale_Msol,e_sn_erg,mmet/max(mejecta*scale_Msol,1d-100),t_age_Gyr*1d3,&
+                   & 'pos: ',xp(ind_part(j),1:3)
+           endif
+        endif
+        else
         dt_Gyr = dteff(j)*scale_t/Gyr2sec
         m_in_sol = mp(ind_part(j))*scale_Msol
         birth_time=tp(ind_part(j))
@@ -402,9 +557,27 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                nsn_rank = nsn_rank + 1
             endif
          endif
+         e_sn = f_esn * ethermal(j)   ! pure SN energy of this step [code units] (FG feedback: reservoir / timer)
          ethermal(j) = (f_esn * ethermal(j) + dE_winds)/vol_loc(j)
          !ethermal(j)=ethermal(j)+mejecta*ESN/vol_loc(j)
          mp(ind_part(j))=mp(ind_part(j))-mejecta
+        end if   ! Pop II / Pop III
+        !-----------------------------------------------------------------
+        ! FG feedback (merge_ks): keep the pure SN heat for the reservoir and
+        ! record the event for the radius search (thermal_feedback)
+        !-----------------------------------------------------------------
+        e_sn_part(j)=e_sn
+        if(SN_reservoir.and.e_sn>0d0) pending_heat(j)=e_sn/vol_loc(j)
+        if(SN_radius_search.and.e_sn>0d0)then
+           if(SNinfo_nSN>=SNinfo_nSNmax)then
+              write(*,*)'SN event buffer full on rank',myid
+              call clean_stop
+           endif
+           SNinfo_nSN=SNinfo_nSN+1
+           SNinfo_ESN(SNinfo_nSN)=e_sn
+           SNinfo_pos(1:3,SNinfo_nSN)=xp(ind_part(j),1:3)
+           SNinfo_idp(SNinfo_nSN)=idp(ind_part(j))
+        endif
 !------------------------------------------------------------------------
 ! Modified by Mizuki Ono (2026/10/28)
 ! Record log (sf_log_properties) before MHD loop injection (grid update).
@@ -446,6 +619,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
                write(ilun,'(I10)',advance='no') typep(ind_part(j))%family
                write(ilun,'(A1)') ' '
          endif
+         if(pop3_sn(j)) typep(ind_part(j))%family=FAM_BH   ! FG: Pop III remnant (ks: BH, later a sink with bhpop3)
 #ifdef SOLVERmhd
 !------------------------------------------------------------------------
 ! Added by Mizuki Ono (2026/06/13)
@@ -665,7 +839,16 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
      unew(indp(j),4)=unew(indp(j),4)+mloss(j)*vp(ind_part(j),3)
      !unew(indp(j),5)=unew(indp(j),5)+mloss(j)*ekinetic(j)+ &
          ! & ethermal(j)*(1d0+RAD_BOOST)
-     unew(indp(j),5)=unew(indp(j),5)+mloss(j)*ekinetic(j)+ethermal(j)
+     unew(indp(j),5)=unew(indp(j),5)+mloss(j)*ekinetic(j)+ethermal(j)-pending_heat(j)   ! FG: the pending SN heat goes to the reservoir
+     ! FG feedback (merge_ks): cooling-stop timer [Myr] on the host cell (immediate injection; the reservoir sets it when it releases the heat)
+     if(.not.SN_reservoir .and. fcool_stop>0d0 .and. e_sn_part(j)>0d0)then
+        rho_1=max(unew(indp(j),1),smallr)
+        ekk_1=0.5d0*(unew(indp(j),2)**2+unew(indp(j),3)**2+unew(indp(j),4)**2)/rho_1
+        eth_1=unew(indp(j),5)-ekk_1
+        T2_1=(gamma-1d0)*eth_1/rho_1
+        cs_1=sqrt(gamma*max(T2_1,smallc**2))
+        unew(indp(j),ivar_coolstop)=fcool_stop*vol_loc(j)**(1d0/3d0)/cs_1*scale_t/Myr2sec
+     endif
      if((ethermal(j) .gt. 0.99*(f_esn*ESN/vol_loc(j))).and.f_esn .gt. 0) then
          e = 0.d0
          do idim=1,ndim
@@ -1570,3 +1753,108 @@ end subroutine get_wind_yields
 !###########################################################
 !###########################################################
 !###########################################################
+!################################################################
+! FG feedback (merge_ks): Pop III remnant mass, metal yield and lifetime tables of ks feedbk
+! (Wise+2012 / Schaerer 2002; pop3_model 1/2: 80+40 Msun binary, 100 Msun remnant, 9 Msun metals, 4 Myr)
+!################################################################
+function cal_mrem(mprog)
+  use amr_parameters, only : pop3_model !KS ADDED
+  implicit none
+  real(kind=8)::cal_mrem
+  real(kind=8)::mprog
+  integer::i
+  real(kind=8),dimension(1:10)::wwmass,wwmrem
+  wwmass=(/ 11.d0 , 13.d0 , 15.d0 , 18.d0 , 20.d0 , 22.d0 , 25.d0 , 30.d0 , 35.d0 , 40.000001d0 /) ! progenitor mass
+  wwmrem=(/ 1.35 , 1.28 , 1.53 , 3.40 , 4.12 , 1.49 , 6.36 , 8.17 , 12.8 , 16.6 /) ! remnant mass
+
+  !if(mprog.ge.11.and.mprog.le.40)then
+  if(mprog.ge.11.and.mprog.le.40)then
+    do i=1,9
+      !if(mprog.ge.wwmass(i) .and. mprog.lt.wwmass(i+1))then
+      if(mprog.ge.wwmass(i) .and. mprog.le.wwmass(i+1))then
+        cal_mrem=(wwmrem(i+1)-wwmrem(i))/(wwmass(i+1)-wwmass(i))*(mprog-wwmass(i))+wwmrem(i)
+      endif
+    enddo
+  else if(mprog.ge.139.999999d0 .and. mprog.le.260.000001d0)then ! PISN
+    cal_mrem=0d0
+  else if (mprog .lt.11) then                                          ! implosion
+    cal_mrem=1.1
+  else
+    cal_mrem=mprog
+  endif
+
+  !specification of pop3_model (KS ADDED)
+  if (pop3_model == 1 .or. pop3_model == 2) then
+    cal_mrem = 1d2 !assume M_ejecta= 20 Msun of 40 Msun star SN in 80+40 Msun binary (100 Msun remained as BHs)
+  end if
+
+end function cal_mrem
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
+function cal_mmet(mprog)
+  use amr_parameters, only : pop3_model !KS ADDED
+  implicit none
+  real(kind=8)::cal_mmet
+  real(kind=8)::mprog,mHe
+  integer::i
+  if(mprog.ge.11.and.mprog.lt.20)then
+    cal_mmet=0.107+0.3383*(mprog-11.)
+  else if(mprog.ge.20.and.mprog.le.40.000001d0)then
+    cal_mmet=-2.7650+0.2974*mprog
+  else if(mprog.ge.139.999999d0.and.mprog.le.260.000001d0)then
+    cal_mmet=13./24.*(mprog-20.)
+  else
+    cal_mmet=0.
+  endif
+
+  !specification of pop3_model (KS ADDED)
+  if (pop3_model == 1 .or. pop3_model == 2) then
+    cal_mmet = 9d0 !assume M_metal= 9 Msun of 40 Msun star SN in 80+40 Msun binary
+  end if
+
+end function cal_mmet
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
+function cal_tpop3(mprog)
+  use amr_parameters, only : pop3_model !KS ADDED
+  implicit none
+  real(kind=8)::cal_tpop3
+  real(kind=8)::mprog
+  integer::i
+  real(kind=8),dimension(1:14)::mini,tlife ! Schaerer 2002 - Table 4 & 5
+  !(KS MEMO) no mass loss results for M < 60 Msun (Table 4) and stronng mass loss results for M > 80 Msun (Table 5)
+  mini =(/   5.0 ,   9.0 ,  15.0 ,  25.0 ,  40.0 ,   60.0 , 80.0 , &
+  &   100.0 , 150.0 , 200.0 , 220.0 , 300.0 , 500.0 , 1001.0 /) ! Msun
+  tlife=(/ 61.90 , 20.22 , 10.40 , 6.459 , 3.864 , 3.464 , 3.722 , &
+  &   3.392 , 2.947 , 2.628 , 2.624 , 2.152 , 2.450 , 2.430  /) ! Myr
+  cal_tpop3=tlife(1)
+
+  if(mprog.ge.5d0.and.mprog.le.1000.9999999d0)then
+    do i=1,13
+      if(mprog.gt.mini(i).and.mprog.le.mini(i+1))then
+        cal_tpop3=(tlife(i+1)-tlife(i))/(mini(i+1)-mini(i))*(mprog-mini(i))+tlife(i)
+      endif
+    enddo
+  else if (mprog .lt. 5) then
+    cal_tpop3 = tlife(1)
+  else
+    cal_tpop3 = tlife(14)
+  end if
+
+  !specification of pop3_model (KS ADDED)
+  if (pop3_model == 1 .or. pop3_model == 2) then
+    if (mprog < 3d2) then
+      cal_tpop3 = 4d0 !assume t_life = 4Myr for 80+40 Msun binary (use original value for 1000 Msun star)
+    end if
+  end if
+
+  ! !**************** KS DEBUG ******************!
+  ! print *, "*** WARNING *** cal_tpop3 is artificially reduced by facotor of 1/1000 for easy debugging"
+  ! cal_tpop3 = 1d-3*cal_tpop3
+  ! !**************** KS DEBUG ******************!
+
+end function cal_tpop3

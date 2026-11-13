@@ -1,5 +1,8 @@
 subroutine read_hydro_params(nml_ok)
   use amr_commons
+#ifdef RT
+  use rt_parameters, only: nIons
+#endif
   use hydro_commons
   use mpi_mod
   implicit none
@@ -89,7 +92,8 @@ subroutine read_hydro_params(nml_ok)
   namelist/feedback_params/eta_sn,eta_ssn,yield,rbubble,f_ek,ndebris &
   & ,f_w,f_esn,mass_gmc,kappa_IR,delayed_cooling,momentum_feedback &
   & ,ir_feedback,ir_eff,t_diss,t_sne,mass_star_max,mass_sne_min &
-  & ,f_esn_loop
+  & ,f_esn_loop &
+  & ,pop3_ESN,SN_reservoir,SN_radius_search,Ncell_SN_max,fcool_stop   ! FG feedback (merge_ks)
 
   ! Cooling / basic chemistry parameters
   namelist/cooling_params/cooling,metal,isothermal,haardt_madau,J21 &
@@ -557,6 +561,44 @@ subroutine read_hydro_params(nml_ok)
   endif
 
   ! Last variable is ichem
+
+  !-----------------------------------------------------------------
+  ! FG feedback (merge_ks): cooling-stop timer scalar and SN reservoir
+  !-----------------------------------------------------------------
+  if(fcool_stop>0d0)then
+    ivar_coolstop=nvar
+#ifdef RT
+    if(nvar<ichem+nIons)then
+      if(myid==1)write(*,*)'fcool_stop>0 needs a free passive scalar after the ions (NPSCAL+1): ivar_coolstop=nvar=',nvar,' ichem+nIons=',ichem+nIons
+      nml_ok=.false.
+    endif
+#else
+    if(nvar<ichem)then
+      if(myid==1)write(*,*)'fcool_stop>0 needs a free passive scalar (NPSCAL+1)'
+      nml_ok=.false.
+    endif
+#endif
+    if(ivar_refine>0.and.ivar_refine>=ivar_coolstop)then
+      if(myid==1)write(*,*)'ivar_refine = ',ivar_refine,' ivar_coolstop = ',ivar_coolstop,' and nvar = ',nvar
+      nml_ok=.false.
+    endif
+    if(myid==1)write(*,*)'   ivar_coolstop = ',ivar_coolstop
+  endif
+  if(SN_reservoir)then
+    SN_radius_search=.true.
+    if(.not.hydro)then
+      if(myid==1)write(*,*)'SN_reservoir requires hydro'
+      nml_ok=.false.
+    endif
+#ifndef RT
+    if(myid==1)write(*,*)'SN_reservoir requires an RT build (the radius search uses the ion fractions for mu)'
+    nml_ok=.false.
+#endif
+  endif
+  if(Ncell_SN_max<=0d0)then
+    if(myid==1)write(*,*)'Ncell_SN_max must be positive'
+    nml_ok=.false.
+  endif
 
   !-----------------------------------------------------------------
   ! FG (patch/ks) star formation: consistency checks
