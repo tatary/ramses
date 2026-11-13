@@ -114,12 +114,7 @@ subroutine star_formation_fg(ilevel)
   real(dp) :: scale_pc
   real(dp) :: Temp, yHI, yHII, yH2, yHeI, yHeII, yHeIII, yel, xmu
   real(dp) :: cI2,njeans_lmax,lamJ_min,dpop2
-  integer :: n_pop2, n_pop3, n_sn, n_dead, n_bh, n_pop2_glob, n_pop3_glob, n_sn_glob, n_dead_glob, n_bh_glob
-  integer :: n_sfc, n_sfc_glob, n_psc, n_psc_glob
-  real(dp) :: m_pop2, m_pop3, m_sn, m_dead, m_bh, m_pop2_glob, m_pop3_glob, m_sm_glob, m_dead_glob, m_bh_glob, &
-    m_sfc, m_sfc_glob, m_psc, m_psc_glob
   real(dp),parameter :: yH2pop3 = 1d-10 !threshold yH2 for pop3 formation (yH2>1e-5 in Ricotti+ 2016)
-  real(dp) :: mstar_tot_glob !mstar_tot is quantity for each cpu (but nstar_tot is for all cpus)
   !real(dp),parameter :: Tpop2 = 1d4 !threshold T; T<1e4 in Ricotti+ 2016
 
   !for calculation of divergence
@@ -1948,94 +1943,52 @@ contains
   ! output summary (KS ADDED)
   !------------------------------------------
   subroutine star_formation_summary()
-    !---- get number of particles ----!
-    !initialization
-    n_pop2 = 0; n_pop3 = 0;  n_sn = 0; n_dead = 0; n_bh = 0; n_sfc = 0; n_psc = 0
-    n_pop2_glob = 0; n_pop3_glob = 0;  n_sn_glob = 0; n_dead_glob = 0; n_bh_glob = 0; n_sfc_glob = 0; n_psc_glob = 0
-
-    !for mass
-    m_pop2 = 0; m_pop3 = 0;  m_sn = 0; m_dead = 0; m_bh = 0; m_sfc = 0; m_psc = 0
-    m_pop2_glob = 0; m_pop3_glob = 0;  m_sm_glob = 0; m_dead_glob = 0; m_bh_glob = 0; m_sfc_glob = 0; m_psc_glob = 0
-
-
+    ! number and mass of the particles of each FG family (1 Pop II, 2 Pop III, 3 SN, 4 dead, 5 BH, 6 SFC, 7 PSC)
+    ! and the accumulated stellar mass; two ALLREDUCEs (ks: 15)
+    integer,parameter :: nfam = 7
+    integer,dimension(1:nfam) :: nloc, nglob
+    real(dp),dimension(1:nfam+1) :: mloc, mglob
+    integer :: ifam
+    nloc(:) = 0; mloc(:) = 0d0
     do i=1,npartmax ! find particles in each cpu
-      ! if( is_star(typep(i)) ) n_pop2 = n_pop2+1
-      ! if( is_pop3(typep(i)) ) n_pop3 = n_pop3+1
-      ! if( is_SN(typep(i)) ) n_sn = n_sn+1
-      ! if( is_DEAD(typep(i)) ) n_dead = n_dead+1
-      ! if( is_BH(typep(i)) ) n_bh = n_bh+1
-      ! if( is_SFC(typep(i)) ) n_sfc = n_sfc+1
-      ! if( is_PSC(typep(i)) ) n_psc = n_psc+1
-
-      if( is_star(typep(i)) ) then
-        n_pop2 = n_pop2+1
-        m_pop2 = m_pop2+mp(i)
-      end if
-      if( is_pop3(typep(i)) ) then
-        n_pop3 = n_pop3+1
-        m_pop3 = m_pop3+mp(i)
-      end if
-      if( is_SN(typep(i)) ) then
-        n_sn = n_sn+1
-        m_sn = m_sn+mp(i)
-      end if
-      if( is_DEAD(typep(i)) ) then
-        n_dead = n_dead+1
-        m_dead = m_dead+mp(i)
-      end if
-      if( is_BH(typep(i)) ) then
-        n_bh = n_bh+1
-        m_bh = m_bh+mp(i)
-      end if
-      if( is_SFC(typep(i)) ) then
-        n_sfc = n_sfc+1
-        m_sfc = m_sfc+mp(i)
-      end if
-      if( is_PSC(typep(i)) ) then
-        n_psc = n_psc+1
-        m_psc = m_psc+mp(i)
-      end if
+      if (levelp(i) == 0) cycle   ! free slot
+      select case (typep(i)%family)
+      case (FAM_STAR); ifam = 1
+      case (FAM_POP3); ifam = 2
+      case (FAM_SN);   ifam = 3
+      case (FAM_DEAD); ifam = 4
+      case (FAM_BH);   ifam = 5
+      case (FAM_SFC);  ifam = 6
+      case (FAM_PSC);  ifam = 7
+      case default;    cycle
+      end select
+      nloc(ifam) = nloc(ifam) + 1
+      mloc(ifam) = mloc(ifam) + mp(i)
     enddo
-
-    !cpu local -> cpu global
-    call MPI_ALLREDUCE(n_pop2,n_pop2_glob,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(n_pop3,n_pop3_glob,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(n_sn,n_sn_glob,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(n_dead,n_dead_glob,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(n_bh,n_bh_glob,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(n_sfc,n_sfc_glob,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(n_psc,n_psc_glob,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
-
-    call MPI_ALLREDUCE(m_pop2,m_pop2_glob,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(m_pop3,m_pop3_glob,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(m_sn,m_sm_glob,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(m_dead,m_dead_glob,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(m_bh,m_bh_glob,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(m_sfc,m_sfc_glob,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
-    call MPI_ALLREDUCE(m_psc,m_psc_glob,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
-
-    call MPI_ALLREDUCE(mstar_tot,mstar_tot_glob,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+    mloc(nfam+1) = mstar_tot
+    call MPI_ALLREDUCE(nloc,nglob,nfam,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+    call MPI_ALLREDUCE(mloc,mglob,nfam+1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
 
     !---- output message -----!
     if(myid==1 .and. nstar_tot>0) then
       write(*,'("Star formation by this step:  Ntot=",I10,", Mtot=",1PE12.3)')&
-        nstar_tot,mstar_tot_glob*scale_msun
+        nstar_tot,mglob(nfam+1)*scale_msun
       write(*,'(7(A, I8))') &
-        'Current summary for particle number: Pop II=', n_pop2_glob,&
-        ', Pop III=', n_pop3_glob, &
-        ', SN=', n_sn_glob, &
-        ', DEAD(PopII)=', n_dead_glob, &
-        ', BH(PopIII)=', n_bh_glob, &
-        ', SFC=', n_sfc_glob, &
-        ', PSC=', n_psc_glob
+        'Current summary for particle number: Pop II=', nglob(1),&
+        ', Pop III=', nglob(2), &
+        ', SN=', nglob(3), &
+        ', DEAD(PopII)=', nglob(4), &
+        ', BH(PopIII)=', nglob(5), &
+        ', SFC=', nglob(6), &
+        ', PSC=', nglob(7)
       write(*,'(7(A, 1PE12.3))') &
-        'Current summary for particle mass[Msun]: Pop II=', m_pop2_glob*scale_msun, &
-        ', Pop III=', m_pop3_glob*scale_msun, &
-        ', SN=', m_sm_glob*scale_msun, &
-        ', DEAD(PopII)=', m_dead_glob*scale_msun, &
-        ', BH(PopIII)=', m_bh_glob*scale_msun, &
-        ', SFC=', m_sfc_glob*scale_msun, &
-        ', PSC=', m_psc_glob*scale_msun
+        'Current summary for particle mass[Msun]: Pop II=', mglob(1)*scale_msun, &
+        ', Pop III=', mglob(2)*scale_msun, &
+        ', SN=', mglob(3)*scale_msun, &
+        ', DEAD(PopII)=', mglob(4)*scale_msun, &
+        ', BH(PopIII)=', mglob(5)*scale_msun, &
+        ', SFC=', mglob(6)*scale_msun, &
+        ', PSC=', mglob(7)*scale_msun
     end if
   end subroutine star_formation_summary
 
