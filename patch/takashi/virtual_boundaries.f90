@@ -46,6 +46,8 @@ subroutine authorize_fine(ilevel)
   ! -------------------------------------------------------------------
   integer::ismooth,ibound,ngrid,i,ncache,iskip,igrid,ind,icpu
   integer::ix,iy,iz,idim,nx_loc,isub
+  integer::jdom,idom          ! two-tier
+  real(qdp)::kmin,kmax        ! two-tier footprints
   integer,dimension(1:3)::n_nbor
   integer,dimension(1:nvector),save::ind_grid,ind_cell
   integer,dimension(1:nvector,0:twondim),save::igridn
@@ -148,14 +150,51 @@ subroutine authorize_fine(ilevel)
           ! Compute minimum and maximum ordering key
           call cmp_minmaxorder(xx,order_min,order_max,dx_loc,ngrid)
           ! Determine if cell is authorized
-          do isub=1,overload
-            do i=1,ngrid
-              if(    order_max(i)>bound_key(myid-1+(isub-1)*ncpu).and.&
-              & order_min(i)<bound_key(myid  +(isub-1)*ncpu) )then
-                flag2(ind_cell(i))=1
-              endif
+          if(.not.two_tier_balance)then
+            do isub=1,overload
+              do i=1,ngrid
+                if(    order_max(i)>bound_key(myid-1+(isub-1)*ncpu).and.&
+                & order_min(i)<bound_key(myid  +(isub-1)*ncpu) )then
+                  flag2(ind_cell(i))=1
+                endif
+              end do
             end do
-          end do
+          else
+            ! two-tier (ported from patch/ks): (1) the coarse interval, only when the child
+            ! grid (level ilevel+1) is in the coarse tier; (2) the footprints of my fine
+            ! domains at every level (their coarse ancestors and the fine grids themselves);
+            ! (3) for fine-tier children, the part of the cell inside my coarse interval
+            ! that is outside every footprint (a fine grid born there would be mine).
+            if(ilevel+1<=two_tier_ls)then
+              do isub=1,overload
+                do i=1,ngrid
+                  if(    order_max(i)>bound_key(myid-1+(isub-1)*ncpu).and.&
+                  & order_min(i)<bound_key(myid  +(isub-1)*ncpu) )then
+                    flag2(ind_cell(i))=1
+                  endif
+                end do
+              end do
+            end if
+            do isub=1,overload
+              jdom=two_tier_fine_dom(myid,isub)
+              do i=1,ngrid
+                if(two_tier_foot_overlap(order_min(i),order_max(i),jdom,two_tier_nfoot,foot_lo,foot_hi,foot_first))then
+                  flag2(ind_cell(i))=1
+                end if
+              end do
+            end do
+            if(ilevel+1>two_tier_ls)then
+              do isub=1,overload
+                idom=myid+(isub-1)*ncpu
+                do i=1,ngrid
+                  kmin=max(order_min(i),bound_key(idom-1)); kmax=min(order_max(i),bound_key(idom))
+                  if(kmax>kmin)then
+                    if(.not.two_tier_in_one_foot(kmin,kmax,two_tier_nfoot,foot_lo,foot_hi))flag2(ind_cell(i))=1
+                  end if
+                end do
+              end do
+            end if
+          end if
         else ! recursive bisection method
           do i=1,ngrid
             ! Test if cell overlaps the cpu
@@ -175,14 +214,46 @@ subroutine authorize_fine(ilevel)
         ! For load balancing operations
         if(balance)then
           if(ordering/='bisection') then
-            do isub=1,overload
-              do i=1,ngrid
-                if(    order_max(i)>bound_key2(myid-1+(isub-1)*ncpu).and.&
-                & order_min(i)<bound_key2(myid  +(isub-1)*ncpu) )then
-                  flag2(ind_cell(i))=1
-                endif
+            if(.not.two_tier_balance)then
+              do isub=1,overload
+                do i=1,ngrid
+                  if(    order_max(i)>bound_key2(myid-1+(isub-1)*ncpu).and.&
+                  & order_min(i)<bound_key2(myid  +(isub-1)*ncpu) )then
+                    flag2(ind_cell(i))=1
+                  endif
+                end do
               end do
-            end do
+            else   ! two-tier, as above with the new partition
+              if(ilevel+1<=two_tier_ls2)then
+                do isub=1,overload
+                  do i=1,ngrid
+                    if(    order_max(i)>bound_key2(myid-1+(isub-1)*ncpu).and.&
+                    & order_min(i)<bound_key2(myid  +(isub-1)*ncpu) )then
+                      flag2(ind_cell(i))=1
+                    endif
+                  end do
+                end do
+              end if
+              do isub=1,overload
+                jdom=two_tier_fine_dom(myid,isub)
+                do i=1,ngrid
+                  if(two_tier_foot_overlap(order_min(i),order_max(i),jdom,two_tier_nfoot2,foot_lo2,foot_hi2,foot_first2))then
+                    flag2(ind_cell(i))=1
+                  end if
+                end do
+              end do
+              if(ilevel+1>two_tier_ls2)then
+                do isub=1,overload
+                  idom=myid+(isub-1)*ncpu
+                  do i=1,ngrid
+                    kmin=max(order_min(i),bound_key2(idom-1)); kmax=min(order_max(i),bound_key2(idom))
+                    if(kmax>kmin)then
+                      if(.not.two_tier_in_one_foot(kmin,kmax,two_tier_nfoot2,foot_lo2,foot_hi2))flag2(ind_cell(i))=1
+                    end if
+                  end do
+                end do
+              end if
+            end if
           else
             do i=1,ngrid
               ! Test if cell overlaps the cpu with new cpu map
@@ -1292,6 +1363,7 @@ subroutine build_comm(ilevel)
   use poisson_commons, only: lookup_mg
   use mpi_mod
   implicit none
+  integer::nbad,nbad_tot   ! two-tier sanity check
   integer::ilevel
   ! -------------------------------------------------------------------
   ! This routine builds the communication structure for level ilevel.
@@ -1611,6 +1683,31 @@ subroutine build_comm(ilevel)
   ! Wait for full completion of sends and receives
   call MPI_WAITALL(countsend,reqsend,statuses,info)
   call MPI_WAITALL(emission(ilevel)%nactive,reqrecv,statuses,info)
+  ! two-tier sanity check (ported from patch/ks): every grid that another cpu holds as a
+  ! virtual copy of one of my grids must exist here (index>0). A zero index means that
+  ! cpu_map (owner) and authorize_fine disagree; the ghost exchange would then read
+  ! grid 0 silently. Local check only; with -DTWO_TIER_CHECK a collective diagnostic.
+  if(two_tier_balance)then
+    nbad=0
+    do i=1,emission(ilevel)%ngrids_tot
+      if(emission(ilevel)%igrid(i)<=0)nbad=nbad+1
+    end do
+#ifdef TWO_TIER_CHECK
+    call MPI_ALLREDUCE(nbad,nbad_tot,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+    if(nbad_tot>0)then
+      if(nbad>0)write(*,'(" build_comm: cpu ",I6," level ",I3,": ",I9," virtual grids on other cpus have no owner copy here")')myid,ilevel,nbad
+      flush(6)
+      call MPI_BARRIER(MPI_COMM_WORLD,info)
+      call MPI_ABORT(MPI_COMM_WORLD,1,info)
+    end if
+#else
+    if(nbad>0)then
+      write(*,'(" build_comm: cpu ",I6," level ",I3,": ",I9," virtual grids on other cpus have no owner copy here")')myid,ilevel,nbad
+      flush(6)
+      call MPI_ABORT(MPI_COMM_WORLD,1,info)
+    end if
+#endif
+  end if
 #else
   ! Pre-populate cpuid and ngrids before phase loop
   idx=1
@@ -1774,6 +1871,36 @@ subroutine build_comm(ilevel)
 
 111 format('   Entering build_comm for level ',I2)
 
+#ifndef LIGHT_MPI_COMM
+  ! two-tier sanity check (ported from patch/ks): every grid that another cpu holds as a
+  ! virtual copy of one of my grids must exist here (index>0). A zero index means that
+  ! cpu_map (owner) and authorize_fine disagree; the ghost exchange would then read
+  ! grid 0 silently. Local check only; with -DTWO_TIER_CHECK a collective diagnostic.
+  if(two_tier_balance)then
+    nbad=0
+    do icpu=1,ncpu
+      do i=1,emission(icpu,ilevel)%ngrid
+        if(emission(icpu,ilevel)%igrid(i)<=0)nbad=nbad+1
+      end do
+    end do
+#ifdef TWO_TIER_CHECK
+    call MPI_ALLREDUCE(nbad,nbad_tot,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+    if(nbad_tot>0)then
+      if(nbad>0)write(*,'(" build_comm: cpu ",I6," level ",I3,": ",I9," virtual grids on other cpus have no owner copy here")')myid,ilevel,nbad
+      flush(6)
+      call debug_missing_owner(ilevel)
+      call MPI_BARRIER(MPI_COMM_WORLD,info)
+      call MPI_ABORT(MPI_COMM_WORLD,1,info)
+    end if
+#else
+    if(nbad>0)then
+      write(*,'(" build_comm: cpu ",I6," level ",I3,": ",I9," virtual grids on other cpus have no owner copy here")')myid,ilevel,nbad
+      flush(6)
+      call MPI_ABORT(MPI_COMM_WORLD,1,info)
+    end if
+#endif
+  end if
+#endif
 end subroutine build_comm
 !################################################################
 !################################################################
@@ -2341,3 +2468,315 @@ subroutine make_virtual_reverse_dp_end(xx,nvtot,iv1,iv2,ivstep,ilevel,ih)
 111 format('   Entering make_virtual_reverse_dp_end for level ',I2,' vars ',I3,'-',I3,' step ',I3)
 
 end subroutine make_virtual_reverse_dp_end
+
+!################################################################
+! two-tier diagnostics (ported from patch/ks; -DTWO_TIER_CHECK):
+! check_tree_consistency, two_tier_authorized, debug_missing_owner.
+! Heavy communicator layout only (reception(icpu,ilevel)%igrid).
+!################################################################
+#ifndef LIGHT_MPI_COMM
+subroutine check_tree_consistency(ilevel)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::ilevel
+  ! -------------------------------------------------------------------
+  ! TO ADDED 2026-11-05 (two-tier tests, -DTWO_TIER_CHECK): after
+  ! build_comm(ilevel), check every grid of the active and reception
+  ! lists of level ilevel:
+  !  (a) son(father(igrid)) == igrid   (a stale grid left in a list after
+  !      its father was destroyed: suspicion for bug 4b-2 of the notes)
+  !  (b) its father grid is in a list of level ilevel-1 (ancestors of
+  !      held grids are held)
+  !  (c) cpu_map(father(igrid)) is myid for active grids and icpu for
+  !      reception(icpu) grids (lists and cpu_map agree)
+  ! Aborts collectively if anything is wrong.
+  ! -------------------------------------------------------------------
+  integer::icpu,i,igrid,icell,fgrid,nbad,nbad_tot,info,ncache,iown,nprint
+  integer,allocatable,dimension(:)::mark
+
+  allocate(mark(1:ngridmax))
+  mark=0
+  if(ilevel>1)then
+    do i=1,active(ilevel-1)%ngrid
+      mark(active(ilevel-1)%igrid(i))=1
+    end do
+    do icpu=1,ncpu
+      do i=1,reception(icpu,ilevel-1)%ngrid
+        mark(reception(icpu,ilevel-1)%igrid(i))=1
+      end do
+    end do
+  end if
+  nbad=0; nprint=0
+  do icpu=0,ncpu
+    if(icpu==0)then
+      ncache=active(ilevel)%ngrid
+      iown=myid
+    else
+      if(icpu==myid)cycle
+      ncache=reception(icpu,ilevel)%ngrid
+      iown=icpu
+    end if
+    do i=1,ncache
+      if(icpu==0)then
+        igrid=active(ilevel)%igrid(i)
+      else
+        igrid=reception(icpu,ilevel)%igrid(i)
+      end if
+      icell=father(igrid)
+      fgrid=0
+      if(icell>ncoarse)fgrid=mod(icell-ncoarse-1,ngridmax)+1
+      if(son(icell)/=igrid.or.(ilevel>1.and.mark(max(fgrid,1))==0).or.cpu_map(icell)/=iown)then
+        nbad=nbad+1
+        if(nprint<10)then
+          nprint=nprint+1
+          write(*,'(" check_tree_consistency: cpu",I6," level",I3," list",I6," grid",I9," xg",3(1X,ES22.15))') &
+          & myid,ilevel,icpu,igrid,xg(igrid,1:ndim)
+          write(*,'("   father cell",I12," son",I9," cpu_map",I6," (list owner",I6,") father grid",I9," held",I2)') &
+          & icell,son(icell),cpu_map(icell),iown,fgrid,mark(max(fgrid,1))
+        end if
+      end if
+    end do
+  end do
+  deallocate(mark)
+  nbad_tot=nbad
+#ifndef WITHOUTMPI
+  call MPI_ALLREDUCE(nbad,nbad_tot,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+  if(nbad_tot>0)then
+    if(nbad>0)write(*,'(" check_tree_consistency: cpu",I6," level",I3,":",I9," inconsistent grids")')myid,ilevel,nbad
+    flush(6)
+#ifndef WITHOUTMPI
+    call MPI_BARRIER(MPI_COMM_WORLD,info)
+    call MPI_ABORT(MPI_COMM_WORLD,1,info)
+#else
+    stop
+#endif
+  end if
+end subroutine check_tree_consistency
+!################################################################
+!################################################################
+!################################################################
+!################################################################
+subroutine two_tier_authorized(xx,dx_cell,icpu,ilevel,auth_c,auth_f,cowner)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  real(dp),dimension(1:nvector,1:ndim)::xx
+  real(dp)::dx_cell
+  integer::icpu,ilevel
+  logical::auth_c,auth_f
+  integer::cowner
+  ! -------------------------------------------------------------------
+  ! TO ADDED 2026-11-05: diagnostic helper. For the cell centred at xx(1,:)
+  ! (user units, size dx_cell, level ilevel-1, i.e. its child grid is at
+  ! level ilevel): does cpu icpu authorize it through its coarse interval
+  ! (auth_c; only meaningful if ilevel <= two_tier_ls) or its fine
+  ! interval (auth_f), and who owns the child grid (cowner).
+  ! -------------------------------------------------------------------
+  real(qdp),dimension(1:nvector),save::omin,omax
+  integer,dimension(1:nvector),save::cc
+  integer::isub,idom,jdom
+  real(qdp)::kmin,kmax
+  call cmp_minmaxorder(xx,omin,omax,dx_cell,1)
+  auth_c=.false.; auth_f=.false.
+  do isub=1,overload
+    idom=icpu+(isub-1)*ncpu
+    if(omax(1)>bound_key(idom-1).and.omin(1)<bound_key(idom))auth_c=.true.
+    if(two_tier_balance)then !TO MODIFIED 2026-11-06: footprints (as in authorize_fine)
+      jdom=two_tier_fine_dom(icpu,isub)
+      if(two_tier_foot_overlap(omin(1),omax(1),jdom,two_tier_nfoot,foot_lo,foot_hi,foot_first))auth_f=.true.
+      if(ilevel>two_tier_ls)then
+        kmin=max(omin(1),bound_key(idom-1)); kmax=min(omax(1),bound_key(idom))
+        if(kmax>kmin)then
+          if(.not.two_tier_in_one_foot(kmin,kmax,two_tier_nfoot,foot_lo,foot_hi))auth_f=.true.
+        end if
+      end if
+    end if
+  end do
+  call cmp_cpumap_lev(xx,cc,1,ilevel)
+  cowner=cc(1)
+end subroutine two_tier_authorized
+!################################################################
+!################################################################
+!################################################################
+!################################################################
+subroutine debug_missing_owner(ilevel)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::ilevel
+  ! -------------------------------------------------------------------
+  ! TO ADDED 2026-11-05 (ported from the per-level attempt, see
+  ! tools/two_tier_ref/b7bc4fae/virtual_boundaries.f90): called
+  ! collectively by build_comm when at least one cpu received a zero grid
+  ! index for a virtual grid of level ilevel. Every holder learns which of
+  ! its virtual grids are missing on their claimed owner (echo of the
+  ! index list), prints the grid, its father cell and the authorization
+  ! test of the owner, and sends the grid position to the owner, which
+  ! prints its local tree along the path to that position.
+  ! -------------------------------------------------------------------
+#ifndef WITHOUTMPI
+  integer::info,tag=102,tag2=103
+  integer,dimension(ncpu)::reqsend,reqrecv,sendcnt,recvcnt,soff,roff,eoff
+  integer,dimension(MPI_STATUS_SIZE,ncpu)::statuses
+  integer::countsend,countrecv,icpu,i,igrid,icell,fgrid,ind,nb,l,nxny,nx_loc
+  integer::jgrid,jcell,jind,idim,nsend,nrecv,ntot,cowner
+  real(dp),dimension(1:3)::x,skip_loc
+  real(dp)::scale
+  real(dp),dimension(1:nvector,1:ndim),save::xx
+  real(dp),allocatable,dimension(:)::sbuf,rbuf
+  integer,allocatable,dimension(:)::echo
+  logical::auth_c,auth_f
+
+  nxny=nx*ny
+  nx_loc=icoarse_max-icoarse_min+1
+  scale=boxlen/dble(nx_loc)
+  skip_loc=(/0.0d0,0.0d0,0.0d0/)
+  if(ndim>0)skip_loc(1)=dble(icoarse_min)
+  if(ndim>1)skip_loc(2)=dble(jcoarse_min)
+  if(ndim>2)skip_loc(3)=dble(kcoarse_min)
+
+  ! Echo the received index lists back to the holders
+  eoff(1)=0
+  do icpu=2,ncpu
+    eoff(icpu)=eoff(icpu-1)+reception(icpu-1,ilevel)%ngrid
+  end do
+  ntot=eoff(ncpu)+reception(ncpu,ilevel)%ngrid
+  allocate(echo(1:max(ntot,1)))
+  echo=1
+  countrecv=0
+  do icpu=1,ncpu
+    if(reception(icpu,ilevel)%ngrid>0)then
+      countrecv=countrecv+1
+      call MPI_IRECV(echo(eoff(icpu)+1),reception(icpu,ilevel)%ngrid, &
+      & MPI_INTEGER,icpu-1,tag,MPI_COMM_WORLD,reqrecv(countrecv),info)
+    end if
+  end do
+  countsend=0
+  do icpu=1,ncpu
+    if(emission(icpu,ilevel)%ngrid>0)then
+      countsend=countsend+1
+      call MPI_ISEND(emission(icpu,ilevel)%igrid,emission(icpu,ilevel)%ngrid, &
+      & MPI_INTEGER,icpu-1,tag,MPI_COMM_WORLD,reqsend(countsend),info)
+    end if
+  end do
+  call MPI_WAITALL(countsend,reqsend,statuses,info)
+  call MPI_WAITALL(countrecv,reqrecv,statuses,info)
+
+  ! Holder side: report missing grids and collect their positions
+  sendcnt=0
+  do icpu=1,ncpu
+    do i=1,reception(icpu,ilevel)%ngrid
+      if(echo(eoff(icpu)+i)<=0)sendcnt(icpu)=sendcnt(icpu)+1
+    end do
+  end do
+  soff(1)=0
+  do icpu=2,ncpu
+    soff(icpu)=soff(icpu-1)+3*sendcnt(icpu-1)
+  end do
+  nsend=soff(ncpu)+3*sendcnt(ncpu)
+  allocate(sbuf(1:max(nsend,1)))
+  do icpu=1,ncpu
+    nb=0
+    do i=1,reception(icpu,ilevel)%ngrid
+      if(echo(eoff(icpu)+i)>0)cycle
+      igrid=reception(icpu,ilevel)%igrid(i)
+      icell=father(igrid)
+      fgrid=0; ind=0; jgrid=0
+      if(icell>ncoarse)then
+        fgrid=mod(icell-ncoarse-1,ngridmax)+1
+        ind=(icell-ncoarse-1)/ngridmax+1
+        jgrid=cpu_map(father(fgrid))
+      end if
+      do idim=1,ndim
+        xx(1,idim)=(xg(igrid,idim)-skip_loc(idim))*scale
+      end do
+      call two_tier_authorized(xx,0.5d0**(ilevel-1)*scale,icpu,ilevel,auth_c,auth_f,cowner)
+      write(*,'(" MISSING holder",I6," level",I3," claimed owner",I6," grid",I9," xg",3(1X,ES22.15))') &
+      & myid,ilevel,icpu,igrid,xg(igrid,1:ndim)
+      write(*,'(" MISSING holder",I6,"   father cell: grid",I9," ind",I2," cpu_map",I6," flag1",I9," son",I9,&
+      & " father grid owner",I6," active",L2," cmp_cpumap_lev(centre,level)",I6)') &
+      & myid,fgrid,ind,cpu_map(icell),flag1(icell),son(icell),jgrid,jgrid==myid,cowner
+      write(*,'(" MISSING holder",I6,"   owner authorizes father cell: coarse",L2," (applies",L2,") fine",L2," Ls",I3)') &
+      & myid,auth_c,ilevel<=two_tier_ls,auth_f,two_tier_ls
+      sbuf(soff(icpu)+3*nb+1:soff(icpu)+3*nb+3)=0d0
+      do idim=1,ndim
+        sbuf(soff(icpu)+3*nb+idim)=xg(igrid,idim)
+      end do
+      nb=nb+1
+    end do
+  end do
+
+  ! Send positions to the claimed owners
+  call MPI_ALLTOALL(sendcnt,1,MPI_INTEGER,recvcnt,1,MPI_INTEGER,MPI_COMM_WORLD,info)
+  roff(1)=0
+  do icpu=2,ncpu
+    roff(icpu)=roff(icpu-1)+3*recvcnt(icpu-1)
+  end do
+  nrecv=roff(ncpu)+3*recvcnt(ncpu)
+  allocate(rbuf(1:max(nrecv,1)))
+  countrecv=0
+  do icpu=1,ncpu
+    if(recvcnt(icpu)>0)then
+      countrecv=countrecv+1
+      call MPI_IRECV(rbuf(roff(icpu)+1),3*recvcnt(icpu),MPI_DOUBLE_PRECISION,icpu-1,tag2, &
+      & MPI_COMM_WORLD,reqrecv(countrecv),info)
+    end if
+  end do
+  countsend=0
+  do icpu=1,ncpu
+    if(sendcnt(icpu)>0)then
+      countsend=countsend+1
+      call MPI_ISEND(sbuf(soff(icpu)+1),3*sendcnt(icpu),MPI_DOUBLE_PRECISION,icpu-1,tag2, &
+      & MPI_COMM_WORLD,reqsend(countsend),info)
+    end if
+  end do
+  call MPI_WAITALL(countsend,reqsend,statuses,info)
+  call MPI_WAITALL(countrecv,reqrecv,statuses,info)
+
+  ! Owner side: walk the local tree down to the missing grid
+  do icpu=1,ncpu
+    do i=1,recvcnt(icpu)
+      x(1:3)=rbuf(roff(icpu)+3*(i-1)+1:roff(icpu)+3*(i-1)+3)
+      write(*,'(" OWNER",I6," level",I3," grid held by",I6," at xg",3(1X,ES22.15))')myid,ilevel,icpu,x(1:ndim)
+      ind=1+int(x(1))
+      if(ndim>1)ind=ind+int(x(2))*nx
+      if(ndim>2)ind=ind+int(x(3))*nxny
+      write(*,'(" OWNER",I6,"   level  0 coarse cell",I9," cpu_map",I6," son",I9)')myid,ind,cpu_map(ind),son(ind)
+      igrid=son(ind)
+      do l=1,ilevel-1
+        if(igrid==0)then
+          write(*,'(" OWNER",I6,"   level",I3," no grid here")')myid,l
+          exit
+        end if
+        jind=1
+        do idim=1,ndim
+          if(x(idim)>xg(igrid,idim))jind=jind+2**(idim-1)
+        end do
+        jcell=ncoarse+(jind-1)*ngridmax+igrid
+        write(*,'(" OWNER",I6,"   level",I3," grid",I9," owner",I6," cell ind",I2," cpu_map",I6," flag1",I9," son",I9)') &
+        & myid,l,igrid,cpu_map(father(igrid)),jind,cpu_map(jcell),flag1(jcell),son(jcell)
+        do idim=1,ndim
+          xx(1,idim)=(xg(igrid,idim)-skip_loc(idim))*scale
+          if(x(idim)>xg(igrid,idim))then
+            xx(1,idim)=xx(1,idim)+0.5d0**(l+1)*scale
+          else
+            xx(1,idim)=xx(1,idim)-0.5d0**(l+1)*scale
+          end if
+        end do
+        call two_tier_authorized(xx,0.5d0**l*scale,myid,l+1,auth_c,auth_f,cowner)
+        write(*,'(" OWNER",I6,"   level",I3,"   cell authorized for me: coarse",L2," (applies",L2,") fine",L2,&
+        & "  child grid owner",I6)')myid,l,auth_c,l+1<=two_tier_ls,auth_f,cowner
+        igrid=son(jcell)
+      end do
+      if(igrid>0.and.l==ilevel)write(*,'(" OWNER",I6,"   level",I3," grid",I9," exists here, owner",I6)') &
+      & myid,ilevel,igrid,cpu_map(father(igrid))
+    end do
+  end do
+  deallocate(sbuf,rbuf,echo)
+  flush(6)
+  call MPI_BARRIER(MPI_COMM_WORLD,info)
+#endif
+end subroutine debug_missing_owner
+#endif

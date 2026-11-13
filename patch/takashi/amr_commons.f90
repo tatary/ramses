@@ -85,6 +85,19 @@ module amr_commons
   ! Hilbert key
   real(qdp),allocatable,dimension(:)::hilbert_key
   real(qdp),allocatable,dimension(:)::bound_key,bound_key2
+  ! two-tier domain decomposition (ported from patch/ks 2026-11-13, docs/merge_ks.md)
+  real(qdp),allocatable,dimension(:)::bound_key_f,bound_key2_f ! fine-tier boundaries (grids at level > two_tier_ls), current / new
+  integer::two_tier_ls=0,two_tier_ls2=0                        ! last level of the coarse tier, current / new (nlevelmax: single partition)
+  ! Fine footprints: the fine tier owns a key only inside the footprint of its domain, i.e. the
+  ! key ranges of the level-two_tier_ls cells that contained fine grids at the last load balance,
+  ! clipped to the domain interval (sorted, disjoint, grouped by domain: intervals
+  ! foot_first(idom-1)+1..foot_first(idom) belong to domain idom). A fine-tier key outside every
+  ! footprint (a fine grid born since the last balance in an empty region) belongs to the coarse
+  ! owner of the key. So a cpu holds the coarse ancestors of its footprints only, not of its whole
+  ! fine key interval.
+  integer::two_tier_nfoot=0,two_tier_nfoot2=0
+  real(qdp),allocatable,dimension(:)::foot_lo,foot_hi,foot_lo2,foot_hi2
+  integer,allocatable,dimension(:)::foot_first,foot_first2
   real(qdp)                         ::order_all_min,order_all_max
 
   ! Recursive bisection
@@ -220,5 +233,86 @@ module amr_commons
   real(dp)::units_time=1.0d0     ! [seconds]
   real(dp)::units_length=1.0d0   ! [cm]
 
+contains
+  ! two-tier domain decomposition helpers (ported from patch/ks).
+  ! Fine-tier domain idom belongs to cpu two_tier_fine_cpu(idom); with
+  ! two_tier_test_shift=0 this is the usual mod(idom-1,ncpu)+1.
+  pure integer function two_tier_fine_cpu(idom)
+    integer,intent(in)::idom
+    two_tier_fine_cpu=modulo(idom-1+two_tier_test_shift,ncpu)+1
+  end function two_tier_fine_cpu
+  ! Fine-tier domain index of cpu icpu (overload sub-domain isub)
+  pure integer function two_tier_fine_dom(icpu,isub)
+    integer,intent(in)::icpu,isub
+    two_tier_fine_dom=modulo(icpu-1-two_tier_test_shift,ncpu)+1+(isub-1)*ncpu
+  end function two_tier_fine_dom
+  ! Is key inside a footprint interval of domain idom?
+  pure logical function two_tier_in_foot(key,idom,nfoot,lo,hi,first)
+    real(qdp),intent(in)::key
+    integer,intent(in)::idom,nfoot
+    real(qdp),intent(in),dimension(1:max(nfoot,1))::lo,hi
+    integer,intent(in),dimension(0:ndomain)::first
+    integer::jlo,jhi,j
+    two_tier_in_foot=.false.
+    jlo=first(idom-1)+1; jhi=first(idom)
+    if(jhi<jlo)return
+    do while(jhi>jlo)          ! last interval of the domain with lo<=key
+      j=(jlo+jhi+1)/2
+      if(lo(j)<=key)then
+        jlo=j
+      else
+        jhi=j-1
+      end if
+    end do
+    if(lo(jlo)<=key.and.key<hi(jlo))two_tier_in_foot=.true.
+  end function two_tier_in_foot
+  ! Does the key range [kmin,kmax) overlap a footprint interval of domain idom?
+  pure logical function two_tier_foot_overlap(kmin,kmax,idom,nfoot,lo,hi,first)
+    real(qdp),intent(in)::kmin,kmax
+    integer,intent(in)::idom,nfoot
+    real(qdp),intent(in),dimension(1:max(nfoot,1))::lo,hi
+    integer,intent(in),dimension(0:ndomain)::first
+    integer::jlo,jhi,j
+    two_tier_foot_overlap=.false.
+    jlo=first(idom-1)+1; jhi=first(idom)
+    if(jhi<jlo)return
+    if(lo(jlo)>=kmax)return
+    do while(jhi>jlo)          ! last interval of the domain with lo<kmax
+      j=(jlo+jhi+1)/2
+      if(lo(j)<kmax)then
+        jlo=j
+      else
+        jhi=j-1
+      end if
+    end do
+    if(hi(jlo)>kmin)two_tier_foot_overlap=.true.
+  end function two_tier_foot_overlap
+  ! Is [kmin,kmax) inside the footprints (one interval, or touching intervals of
+  ! neighbouring domains) of the whole list? False means it contains a gap.
+  pure logical function two_tier_in_one_foot(kmin,kmax,nfoot,lo,hi)
+    real(qdp),intent(in)::kmin,kmax
+    integer,intent(in)::nfoot
+    real(qdp),intent(in),dimension(1:max(nfoot,1))::lo,hi
+    integer::jlo,jhi,j
+    real(qdp)::h
+    two_tier_in_one_foot=.false.
+    if(nfoot==0)return
+    if(lo(1)>kmin)return
+    jlo=1; jhi=nfoot
+    do while(jhi>jlo)          ! last interval with lo<=kmin
+      j=(jlo+jhi+1)/2
+      if(lo(j)<=kmin)then
+        jlo=j
+      else
+        jhi=j-1
+      end if
+    end do
+    h=hi(jlo); j=jlo
+    do while(j<nfoot)
+      if(lo(j+1)/=h)exit
+      j=j+1; h=hi(j)
+    end do
+    two_tier_in_one_foot=(kmax<=h)
+  end function two_tier_in_one_foot
 end module amr_commons
 

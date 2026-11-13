@@ -717,6 +717,14 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   非同期版では使っていない (常に IRECV/ISEND)。超多ランクで粗い level のメモリが
   問題になれば検討。
 
+## 3b. patch/ks からの移植 (merge_ks ブランチ、docs/merge_ks.md)
+
+- `test_flag` の修正 (子の refine を所有者から配る) は ks と同じく常時有効にした (2026-11-13; 単一分割でも
+  境界例で孤児 grid を作るバグなので)。既定テストは bit 一致。本番では境界例で buffer oct が少し増える方向。
+- Mera.jl の two-tier 出力 (`hilbert2t`) と QUADHILBERT 対応は後回し (merge_ks.md 末尾)。
+- 残りの段階: 星形成・フィードバック (star_formation, feedback, mechanical_fine, sn_*、SN reservoir のフック 5 か所)、
+  sink/BH (bhpop3)、Pop III、SFC。ks 用の回帰ラン (FG 初期条件で FG バイナリと比較) は未実施。
+
 ## 4. 運用上のメモ
 
 - **並列度を変えた restart (2026-10-29 確認)**: RAMSES 自身は書いたときと同じ ncpu でしか restart できないが、

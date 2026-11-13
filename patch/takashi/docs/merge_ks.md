@@ -122,7 +122,8 @@ ks の `jobfiles/xd/smbh/ngridmax_intel.sh` (ベース `namelist/test_problem/sm
 - 出力形式が変わる (`hilbert2t` + 末尾レコード)。Mera の `repartition`/読み込みは非対応なので、two-tier の output からは
   ランク数変更ができない (ks は単一分割の restart を別に保持)。既定 `.false.` では出力は不変。
 - `test_flag` の修正は ks では常時有効 (16 ランクの試験では bit 一致、本番では境界例で buffer oct が増える方向)。
-  takashi ではまず `two_tier_balance` でゲートし、既存テストの bit 一致を確かめてから常時有効にするか決める。
+  takashi でも常時有効にした (2026-11-13): 単一分割でも踏める孤児 grid のバグなので two-tier 専用にしない。
+  既定テスト (dice_rt_amr heavy/LIGHT、dice_amr) は常時有効でも変更前バイナリと bit 一致。
 - `-DTWO_TIER_CHECK` の集団診断 (`check_tree_consistency`, `debug_missing_owner`, `check_particle_tree`) も一緒に持ってくる。
 - takashi の DICE 本番 (levelmin 6 / levelmax 15) は ks の zoom (levelmin 7 / levelmax 21、grid の 97% が粗い level) と
   構造が違い、balance 後の grids-work max/avg は 1.10 (TODO 2d-3)。効くかどうかは別問題。
@@ -235,3 +236,38 @@ HI と HeI の光電離に適用する。こちらにはこれを `&RT_PARAMS` �
 - ks の `stop` (x_e の範囲外) は x_e のクランプに置き換え、関数は pure に。
 - 検証: 既定で bit 一致 (40 ファイル)。`sec_ion=.true.` + 放射する星で完走、圧力総和 -2e-5 (星の SED は 65.7 eV の群まで
   なので 1 次電子が 28 eV を超えるのは HeII 群の一部だけ)。
+
+## 2 層分割 (two_tier_balance) の移植 (2026-11-13)
+
+上の「移植性」の表のとおりに入れた。namelist (`&RUN_PARAMS`): `two_tier_balance` (既定 .false.)、`two_tier_level`
+(Ls、0 で自動)、`two_tier_fine_frac`、`two_tier_test_shift`。`ordering='bisection'` とは併用不可 (read_params で停止)。
+
+- `amr_parameters`, `read_params` (+`to_dice`), `amr_commons` (`bound_key_f/2_f`, `two_tier_ls/2`, footprint 配列、
+  `contains` に補助関数 5 つ): ks のまま。
+- `load_balance.f90`: `load_balance` の末尾 (bound_key_f と footprint の更新、`two_tier_report`、STATUS 行)、
+  `cmp_new_cpu_map` 冒頭の分岐、ks の新規ルーチン 14 本 (`cmp_new_cpu_map_two_tier`, `two_tier_cut`, footprint 処理、
+  `cmp_cpumap_lev`, `cmp_cpumap_pos`, `two_tier_report`, `check_particle_tree` など) を末尾に追加。`check_cloud_count` (sink) は
+  入れていない。ks の `include 'mpif.h'` は `use mpi_mod` に (gfortran は同一ファイル内の型違いの暗黙呼び出しを拒否する)。
+  key (`real(qdp)`) の通信は `MPI_BYTE` なので QUADHILBERT でもそのまま (ks 設定のビルドで確認)。
+- `virtual_boundaries.f90`: `authorize_fine` に 2 層の分岐 (現在と新しい分割の両方)、`build_comm` の末尾に
+  「他ランクが ghost として持つ自分の grid が手元に無い」検査 (heavy/LIGHT 両方)、`-DTWO_TIER_CHECK` で集団診断
+  (`check_tree_consistency`, `two_tier_authorized`, `debug_missing_owner`; heavy 構造のみなので `#ifndef LIGHT_MPI_COMM`)。
+- `refine_utils.f90` を patch に新設 (上流 + `cmp_cpumap_lev` の 2 行)。
+- `flag_utils.f90` `test_flag`: 「子が他ランクで refine されている」を所有者から flag2 で配る修正。ks と同じく常時有効
+  (当初 `two_tier_balance` でゲートしていたが、単一分割でも踏めるバグなので外した; 既定テストは bit 一致のまま)。
+  コストは level ごとに `make_virtual_fine_int(flag2, ilevel+1)` が 1 回増えるだけ。
+- `init_amr.f90`: 初期値 (`bound_key_f=bound_key`, `Ls=nlevelmax`)、level-1 grid の所有者 `cmp_cpumap_lev(…,1)`、restart の
+  `'2t'` 印の検査と末尾レコード (`read_two_tier_record`; 2 系統の reader の両方)、`two_tier_bcast_foot`。
+- `output_amr.f90`: amr ファイルの ordering レコードを `'hilbert2t'` に、末尾レコード (Ls, bound_key_f, footprint)、
+  `info_twotier_XXXXX.txt`、info の DOMAIN 表は hull。
+- ks から持ち込まなかったもの: `cost_weighting=.false.` 時の線形重み、SN reservoir の転送 (手順 4 で)、
+  `sink_particle`/`rt_spectra`/`my_utils` の `cmp_cpumap_pos` 呼び出し (ks 物理側)、`get_mem`。
+
+検証 (dice_rt_amr, 4 ランク, levelmin 6 / levelmax 8, 6 step, nremap=1):
+- 既定 (`.false.`): heavy と LIGHT のビルドが変更前と bit 一致 (40 ファイルずつ)、`dice_amr` も (32 ファイル)。
+- `two_tier_balance=.true., two_tier_level=7` と `two_tier_level=6, two_tier_test_shift=1` (`-DTWO_TIER_CHECK` ビルド):
+  完走、毎 step の balance で `TWO_TIER STATUS ... ok`、`check_particle_tree` 0 件、footprint 1148 区間。
+  hydro の総和は単一分割と 1e-15 の相対差 (集団和の順序)。LIGHT ビルドでも同じ namelist で完走。
+- restart: 2 層の output から `.true.` で再開 (Ls と footprint を読む)、`.false.` では
+  "Restart file has a two-tier decomposition" で停止、単一分割の output から `.true.` で再開して最初の balance で 2 層に移行。
+- 本番規模 (ks の 448 / 1792 ランク) での効果は ks の 7g の結果 (355 s/step vs 415 s、メモリ 20%) に拠る。こちらでは未実施。

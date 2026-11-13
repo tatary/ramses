@@ -220,6 +220,11 @@ subroutine load_balance
   !--------------------------------------
   if(ordering/='bisection') then
      bound_key=bound_key2
+     if(two_tier_balance)then   ! two-tier: fine-tier boundaries, Ls and footprints
+       bound_key_f=bound_key2_f
+       two_tier_ls=two_tier_ls2
+       call two_tier_set_foot(1,two_tier_nfoot2,foot_lo2,foot_hi2,foot_first2)
+     end if
   else
      bisec_cpubox_min=bisec_cpubox_min2
      bisec_cpubox_max=bisec_cpubox_max2
@@ -271,6 +276,11 @@ subroutine load_balance
   call refine_coarse
   call build_comm(1)
   shrink=.false.
+  if(two_tier_balance)call two_tier_report      ! grid/ghost statistics per level
+#ifdef TWO_TIER_CHECK
+  if(pic.and.(.not.init))call check_particle_tree('load_balance')
+#endif
+  if(two_tier_balance.and.myid==1)write(*,'(" TWO_TIER STATUS step",I7," load balance ok")')nstep_coarse
 
   balance=.false.
 
@@ -358,6 +368,12 @@ subroutine cmp_new_cpu_map
   endif
 
   if(verbose) print *,"Entering cmp_new_cpu_map"
+
+  ! two-tier decomposition has its own routine (below)
+  if(two_tier_balance.and.ordering/='bisection')then
+    call cmp_new_cpu_map_two_tier
+    return
+  end if
 
   if(ordering/='bisection') then      ! begin if not bisection
 
@@ -1680,3 +1696,837 @@ end subroutine defrag
 !#########################################################################
 !#########################################################################
 !#########################################################################
+
+!#########################################################################
+!#########################################################################
+! two-tier domain decomposition (ported from patch/ks 2026-11-13; design in
+! ks NOTES_handover_two_tier_2026-11-05.md, summary in docs/merge_ks.md).
+! MPI calls in these routines use mpi_mod like the rest of the patch (ks used
+! include 'mpif.h'; gfortran rejects mixed-type implicit calls in one file).
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+! TO ADDED 2026-11-05: two-tier domain decomposition
+! (NOTES_handover_two_tier_2026-11-05.md). Grids at level <= two_tier_ls are
+! owned according to bound_key (coarse tier, balanced by memory: octs and
+! particles), grids at level > two_tier_ls according to bound_key_f (fine
+! tier, balanced by cost = octs x fine steps per coarse step). A cell at
+! level l stores the owner of its child grid (level l+1), so a cell uses the
+! tier of level l+1. The owner of a grid is decided by the Hilbert key of its
+! centre (= centre of its father cell), as in cmp_cpumap.
+!#########################################################################
+subroutine two_tier_find_dom(key,bkey,idom)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  real(qdp)::key
+  real(qdp),dimension(0:ndomain)::bkey
+  integer::idom
+  !----------------------------------------------------------------------
+  ! Domain idom with bkey(idom-1) <= key < bkey(idom); ndomain if none
+  ! (same convention as cmp_cpumap, binary search instead of a scan).
+  !----------------------------------------------------------------------
+  integer::jlo,jhi,j
+  idom=ndomain
+  if(key<bkey(0).or.key>=bkey(ndomain))return
+  jlo=1; jhi=ndomain
+  do while(jhi>jlo)
+    j=(jlo+jhi)/2
+    if(key<bkey(j))then
+      jhi=j
+    else
+      jlo=j+1
+    end if
+  end do
+  idom=jlo
+end subroutine two_tier_find_dom
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine two_tier_cpu_of_key(order,c,nn,lgrid,bkey_c,bkey_f,ls,nfoot,lo,hi,first)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::nn,lgrid,ls,nfoot
+  real(qdp),dimension(1:nvector)::order
+  integer,dimension(1:nvector)::c
+  real(qdp),dimension(0:ndomain)::bkey_c,bkey_f
+  real(qdp),dimension(1:max(nfoot,1))::lo,hi
+  integer,dimension(0:ndomain)::first
+  !----------------------------------------------------------------------
+  ! Owner cpu of grids at level lgrid whose centre key is order(:), for the
+  ! decomposition (bkey_c, bkey_f, ls, footprints). TO MODIFIED 2026-11-06:
+  ! a fine-tier key outside the footprint of its fine domain belongs to the
+  ! coarse owner of the key (see amr_commons).
+  !----------------------------------------------------------------------
+  integer::i,idom
+  if(lgrid<=ls)then
+    do i=1,nn
+      call two_tier_find_dom(order(i),bkey_c,idom)
+      c(i)=mod(idom-1,ncpu)+1
+    end do
+  else
+    do i=1,nn
+      call two_tier_find_dom(order(i),bkey_f,idom)
+      if(two_tier_in_foot(order(i),idom,nfoot,lo,hi,first))then
+        c(i)=two_tier_fine_cpu(idom)
+      else
+        call two_tier_find_dom(order(i),bkey_c,idom)
+        c(i)=mod(idom-1,ncpu)+1
+      end if
+    end do
+  end if
+end subroutine two_tier_cpu_of_key
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine cmp_cpumap_lev(x,c,nn,ilevel)
+  use amr_parameters
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer ::nn,ilevel
+  integer ,dimension(1:nvector)::c
+  real(dp),dimension(1:nvector,1:ndim)::x
+  !----------------------------------------------------------------------
+  ! Owner cpu of the grids at level ilevel centred at x (user units, as in
+  ! cmp_cpumap; x is also the centre of the father cell whose cpu_map is
+  ! being set). Identical to cmp_cpumap unless two_tier_balance puts level
+  ! ilevel in the fine tier (ilevel > two_tier_ls).
+  !----------------------------------------------------------------------
+  real(qdp),dimension(1:nvector),save::order
+  if(.not.two_tier_balance.or.ordering=='bisection'.or.ilevel<=two_tier_ls)then
+    call cmp_cpumap(x,c,nn)
+    return
+  end if
+  call cmp_ordering(x,order,nn)
+  call two_tier_cpu_of_key(order,c,nn,ilevel,bound_key,bound_key_f,two_tier_ls, &
+  & two_tier_nfoot,foot_lo,foot_hi,foot_first)
+end subroutine cmp_cpumap_lev
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine cmp_cpumap_pos(x,c,nn)
+  use amr_parameters
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer ::nn
+  integer ,dimension(1:nvector)::c
+  real(dp),dimension(1:nvector,1:ndim)::x
+  !----------------------------------------------------------------------
+  ! Owner of the leaf cell that contains the point x (user units). Used as
+  ! "if(c==myid) then act on the local cell" (sinks, BH photons, debug).
+  ! Single partition: cmp_cpumap, as before. Two-tier: a Hilbert key does
+  ! not decide this (the tier depends on the leaf level), so the local tree
+  ! is walked down: the finest local grid containing x is the true leaf
+  ! grid if and only if it is active (all children of active grids are
+  ! held locally), so c==myid exactly for the owner; other cpus get the
+  ! owner of the deepest grid they hold (never myid).
+  !----------------------------------------------------------------------
+  integer::i,idim,nx_loc,nxny,ind,igrid,jind,jcell,jgrid
+  real(dp)::scale
+  real(dp),dimension(1:3)::xx,skip_loc
+  if(.not.two_tier_balance.or.ordering=='bisection')then
+    call cmp_cpumap(x,c,nn)
+    return
+  end if
+  nxny=nx*ny
+  nx_loc=icoarse_max-icoarse_min+1
+  scale=boxlen/dble(nx_loc)
+  skip_loc=(/0.0d0,0.0d0,0.0d0/)
+  if(ndim>0)skip_loc(1)=dble(icoarse_min)
+  if(ndim>1)skip_loc(2)=dble(jcoarse_min)
+  if(ndim>2)skip_loc(3)=dble(kcoarse_min)
+  do i=1,nn
+    xx=0d0
+    do idim=1,ndim
+      xx(idim)=x(i,idim)/scale+skip_loc(idim)
+    end do
+    if(xx(1)<0d0)xx(1)=xx(1)+dble(nx)
+    if(xx(1)>=dble(nx))xx(1)=xx(1)-dble(nx)
+    if(xx(2)<0d0)xx(2)=xx(2)+dble(ny)
+    if(xx(2)>=dble(ny))xx(2)=xx(2)-dble(ny)
+    if(xx(3)<0d0)xx(3)=xx(3)+dble(nz)
+    if(xx(3)>=dble(nz))xx(3)=xx(3)-dble(nz)
+    ind=1+int(xx(1))+int(xx(2))*nx+int(xx(3))*nxny
+    igrid=son(ind)
+    if(igrid==0)then
+      c(i)=cpu_map(ind)
+      cycle
+    end if
+    do
+      jind=1
+      do idim=1,ndim
+        if(xx(idim)>xg(igrid,idim))jind=jind+2**(idim-1)
+      end do
+      jcell=ncoarse+(jind-1)*ngridmax+igrid
+      jgrid=son(jcell)
+      if(jgrid==0)exit
+      igrid=jgrid
+    end do
+    c(i)=cpu_map(father(igrid))
+  end do
+end subroutine cmp_cpumap_pos
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine two_tier_cut(key,cost,n,bkey)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::n
+  real(qdp),dimension(1:n)::key
+  real(kind=8),dimension(1:n)::cost
+  real(qdp),dimension(0:ndomain)::bkey
+  !----------------------------------------------------------------------
+  ! Cut the Hilbert curve into ndomain intervals of equal total cost.
+  ! Items (key, cost) are distributed over the cpus in any way (no
+  ! contiguity assumed, unlike cmp_new_cpu_map): boundary i is found by
+  ! bisection in key space on the global cumulative cost C(b) = sum of
+  ! cost with key < b, one MPI_ALLREDUCE of ndomain-1 doubles per round
+  ! (about 3*(nlevelmax+1) rounds). On return key is sorted.
+  !----------------------------------------------------------------------
+  integer,allocatable,dimension(:)::perm
+  real(kind=8),allocatable,dimension(:)::csum,cloc,cglob
+  real(qdp),allocatable,dimension(:)::lo,hi,mid
+  real(kind=8)::tot_loc,tot,target
+  integer::i,idom,info,iround,j,jlo,jhi
+  logical::done
+
+  allocate(perm(1:max(n,1)),csum(0:max(n,1)))
+  if(n>1)call quick_sort(key,perm,n)
+  if(n==1)perm(1)=1
+  csum(0)=0d0
+  do i=1,n
+    csum(i)=csum(i-1)+cost(perm(i))
+  end do
+  tot_loc=csum(n)
+  tot=tot_loc
+#ifndef WITHOUTMPI
+  call MPI_ALLREDUCE(tot_loc,tot,1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+
+  allocate(lo(1:max(ndomain-1,1)),hi(1:max(ndomain-1,1)),mid(1:max(ndomain-1,1)))
+  allocate(cloc(1:max(ndomain-1,1)),cglob(1:max(ndomain-1,1)))
+  lo=order_all_min; hi=order_all_max
+  do iround=1,400
+    done=.true.
+    do idom=1,ndomain-1
+      if(hi(idom)>lo(idom))then
+        done=.false.
+        mid(idom)=lo(idom)+aint((hi(idom)-lo(idom))/2)
+      else
+        mid(idom)=lo(idom)
+      end if
+    end do
+    if(done)exit
+    do idom=1,ndomain-1
+      ! local cost of the items with key < mid
+      jlo=0; jhi=n
+      do while(jhi>jlo)
+        j=(jlo+jhi+1)/2
+        if(key(j)<mid(idom))then
+          jlo=j
+        else
+          jhi=j-1
+        end if
+      end do
+      cloc(idom)=csum(jlo)
+    end do
+    cglob=cloc
+#ifndef WITHOUTMPI
+    if(ndomain>1)call MPI_ALLREDUCE(cloc,cglob,ndomain-1,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+    do idom=1,ndomain-1
+      if(hi(idom)>lo(idom))then
+        target=tot*dble(idom)/dble(ndomain)
+        if(cglob(idom)>=target)then
+          hi(idom)=mid(idom)
+        else
+          lo(idom)=mid(idom)+1
+        end if
+      end if
+    end do
+  end do
+  if(.not.done.and.myid==1)write(*,*)'two_tier_cut: bisection did not converge'
+  bkey(0)=order_all_min
+  do idom=1,ndomain-1
+    bkey(idom)=lo(idom)
+  end do
+  bkey(ndomain)=order_all_max
+  deallocate(perm,csum,lo,hi,mid,cloc,cglob)
+end subroutine two_tier_cut
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine cmp_new_cpu_map_two_tier
+  use amr_commons
+  use mpi_mod
+  use pm_commons
+  implicit none
+  !----------------------------------------------------------------------
+  ! Two-tier version of cmp_new_cpu_map: computes two_tier_ls2, bound_key2
+  ! (coarse tier) and bound_key2_f (fine tier), then cpu_map2 for every
+  ! cell (coarse cells and cells of active grids, spread to virtual cells).
+  !----------------------------------------------------------------------
+  integer::ilevel,igrid,i,ind,iskip,idim,info,ls,nx_loc,nxny,ix,iy,iz,ngrid,ncache
+  integer::n_c,n_f,nmax
+  integer(kind=8)::ntot,nfine
+  integer(kind=8),dimension(1:MAXLEVEL)::nlev_loc,nlev_tot
+  real(dp)::scale,dx,wpart
+  real(kind=8),dimension(1:MAXLEVEL)::niter_cost
+  real(dp),dimension(1:twotondim,1:3)::xc
+  real(dp),dimension(1:3)::skip_loc
+  real(dp),dimension(1:nvector,1:ndim),save::xx
+  real(qdp),dimension(1:nvector),save::order
+  integer,dimension(1:nvector),save::ind_grid,ind_cell,cc
+  real(qdp),allocatable,dimension(:)::key_c,key_f
+  real(kind=8),allocatable,dimension(:)::cost_c,cost_f
+
+  nxny=nx*ny
+  nx_loc=icoarse_max-icoarse_min+1
+  scale=boxlen/dble(nx_loc)
+  skip_loc=(/0.0d0,0.0d0,0.0d0/)
+  if(ndim>0)skip_loc(1)=dble(icoarse_min)
+  if(ndim>1)skip_loc(2)=dble(jcoarse_min)
+  if(ndim>2)skip_loc(3)=dble(kcoarse_min)
+
+  ! Fine steps per coarse step (the cost_weighting=.true. weights, whatever
+  ! cost_weighting says: the fine tier is balanced by time, the coarse by memory)
+  niter_cost=1d0
+  do ilevel=levelmin+1,nlevelmax
+    niter_cost(ilevel)=dble(nsubcycle(ilevel-1))*niter_cost(ilevel-1)
+  end do
+
+  ! Global number of grids per level
+  nlev_loc=0; nlev_tot=0
+  do ilevel=1,nlevelmax
+    nlev_loc(ilevel)=active(ilevel)%ngrid
+  end do
+  nlev_tot=nlev_loc
+#ifndef WITHOUTMPI
+  call MPI_ALLREDUCE(nlev_loc,nlev_tot,nlevelmax,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+  ntot=sum(nlev_tot(1:nlevelmax))
+
+  ! Last level of the coarse tier
+  if(two_tier_level>0)then
+    ls=min(max(two_tier_level,1),nlevelmax)
+  else
+    ls=max(levelmin,1)
+    do while(ls<nlevelmax)
+      nfine=sum(nlev_tot(ls+1:nlevelmax))
+      if(dble(nfine)<=two_tier_fine_frac*dble(ntot))exit
+      ls=ls+1
+    end do
+  end if
+  nfine=0
+  if(ls<nlevelmax)nfine=sum(nlev_tot(ls+1:nlevelmax))
+  two_tier_ls2=ls
+
+  ! Items: my active grids, key = centre of the father cell
+  nmax=int(sum(nlev_loc(1:nlevelmax)))
+  allocate(key_c(1:max(nmax,1)),cost_c(1:max(nmax,1)))
+  allocate(key_f(1:max(nmax,1)),cost_f(1:max(nmax,1)))
+  n_c=0; n_f=0
+  wpart=0d0
+  if(pic.and.npartmax>0)wpart=dble(ngridmax)/dble(npartmax)
+  do ilevel=1,nlevelmax
+    ncache=active(ilevel)%ngrid
+    do igrid=1,ncache,nvector
+      ngrid=MIN(nvector,ncache-igrid+1)
+      do i=1,ngrid
+        ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
+      end do
+      do idim=1,ndim
+        do i=1,ngrid
+          xx(i,idim)=(xg(ind_grid(i),idim)-skip_loc(idim))*scale
+        end do
+      end do
+      call cmp_ordering(xx,order,ngrid)
+      if(ilevel<=ls)then
+        ! memory: one oct (1/ngridmax) plus its particles (1/npartmax), in oct units
+        do i=1,ngrid
+          n_c=n_c+1
+          key_c(n_c)=order(i)
+          cost_c(n_c)=1d0
+          if(pic)cost_c(n_c)=cost_c(n_c)+dble(numbp(ind_grid(i)))*wpart
+        end do
+      else
+        ! time: (cells x 80 + particles) x fine steps per coarse step (cf. cmp_new_cpu_map)
+        do i=1,ngrid
+          n_f=n_f+1
+          key_f(n_f)=order(i)
+          cost_f(n_f)=dble(twotondim*80)
+          if(pic)cost_f(n_f)=cost_f(n_f)+dble(numbp(ind_grid(i)))
+          cost_f(n_f)=cost_f(n_f)*niter_cost(ilevel)
+        end do
+      end if
+    end do
+  end do
+
+  ! New boundaries
+  call two_tier_cut(key_c,cost_c,n_c,bound_key2)
+  if(nfine>0)then
+    call two_tier_cut(key_f,cost_f,n_f,bound_key2_f)
+  else
+    bound_key2_f=bound_key2
+  end if
+  deallocate(key_c,cost_c,key_f,cost_f)
+  ! Footprints of the fine domains (TO ADDED 2026-11-06)
+  call two_tier_build_foot(ls,bound_key2_f)
+  if(myid==1)write(*,'(" Two-tier balance: Ls=",I3,"  octs <= Ls:",I12,"  octs > Ls:",I12,"  (",F6.2,"%)  footprints:",I9)') &
+  & ls,ntot-nfine,nfine,100d0*dble(nfine)/dble(max(ntot,1_8)),two_tier_nfoot2
+
+  ! New cpu map: coarse cells own level-1 grids
+  cpu_map2=0
+  do iz=0,nz-1
+    do iy=0,ny-1
+      do ix=0,nx-1
+        ind=1+ix+iy*nx+iz*nxny
+        xx(1,1)=(dble(ix)+0.5d0-dble(icoarse_min))*scale
+#if NDIM>1
+        xx(1,2)=(dble(iy)+0.5d0-dble(jcoarse_min))*scale
+#endif
+#if NDIM>2
+        xx(1,3)=(dble(iz)+0.5d0-dble(kcoarse_min))*scale
+#endif
+        call cmp_ordering(xx,order,1)
+        call two_tier_cpu_of_key(order,cc,1,1,bound_key2,bound_key2_f,ls,two_tier_nfoot2,foot_lo2,foot_hi2,foot_first2)
+        cpu_map2(ind)=cc(1)
+      end do
+    end do
+  end do
+  ! Cells of level ilevel grids own level ilevel+1 grids
+  do ilevel=1,nlevelmax
+    dx=0.5d0**ilevel
+    do ind=1,twotondim
+      iz=(ind-1)/4
+      iy=(ind-1-4*iz)/2
+      ix=(ind-1-2*iy-4*iz)
+      xc(ind,1)=(dble(ix)-0.5d0)*dx-dble(icoarse_min)
+#if NDIM>1
+      xc(ind,2)=(dble(iy)-0.5d0)*dx-dble(jcoarse_min)
+#endif
+#if NDIM>2
+      xc(ind,3)=(dble(iz)-0.5d0)*dx-dble(kcoarse_min)
+#endif
+    end do
+    ncache=active(ilevel)%ngrid
+    do igrid=1,ncache,nvector
+      ngrid=MIN(nvector,ncache-igrid+1)
+      do i=1,ngrid
+        ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
+      end do
+      do ind=1,twotondim
+        iskip=ncoarse+(ind-1)*ngridmax
+        do i=1,ngrid
+          ind_cell(i)=ind_grid(i)+iskip
+        end do
+        do idim=1,ndim
+          do i=1,ngrid
+            xx(i,idim)=(xg(ind_grid(i),idim)+xc(ind,idim))*scale
+          end do
+        end do
+        call cmp_ordering(xx,order,ngrid)
+        call two_tier_cpu_of_key(order,cc,ngrid,ilevel+1,bound_key2,bound_key2_f,ls, &
+        & two_tier_nfoot2,foot_lo2,foot_hi2,foot_first2)
+        do i=1,ngrid
+          cpu_map2(ind_cell(i))=cc(i)
+        end do
+      end do
+    end do
+  end do
+
+  ! Update virtual boundaries for new cpu map
+  call make_virtual_coarse_int(cpu_map2(1))
+  do ilevel=1,nlevelmax
+    call make_virtual_fine_int(cpu_map2(1),ilevel)
+  end do
+
+end subroutine cmp_new_cpu_map_two_tier
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine two_tier_build_foot(ls,bkey_f)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::ls
+  real(qdp),dimension(0:ndomain)::bkey_f
+  !----------------------------------------------------------------------
+  ! TO ADDED 2026-11-06: footprints of the fine domains of the new
+  ! partition (two_tier_nfoot2, foot_lo2, foot_hi2, foot_first2): the key
+  ! ranges of the level-ls cells that contain my grids of level > ls,
+  ! clipped to the fine domain of each grid, gathered from all cpus,
+  ! sorted and merged (see amr_commons).
+  !----------------------------------------------------------------------
+  integer::ilevel,igrid,i,idim,ngrid,ncache,nloc,n,info,idom,nx_loc,nb
+  integer,dimension(1:nvector),save::ind_grid
+  real(dp),dimension(1:nvector,1:ndim),save::xx,xa
+  real(qdp),dimension(1:nvector),save::order,omin,omax
+  real(dp)::dxl,scale
+  real(dp),dimension(1:3)::skip_loc
+  real(qdp),allocatable,dimension(:)::lo,hi,glo,ghi
+  integer,allocatable,dimension(:)::dom,gdom,cnt,disp,cntb,dispb,first
+  real(qdp)::oneqdp=1.0
+
+  nx_loc=icoarse_max-icoarse_min+1
+  scale=boxlen/dble(nx_loc)
+  skip_loc=(/0.0d0,0.0d0,0.0d0/)
+  if(ndim>0)skip_loc(1)=dble(icoarse_min)
+  if(ndim>1)skip_loc(2)=dble(jcoarse_min)
+  if(ndim>2)skip_loc(3)=dble(kcoarse_min)
+  dxl=0.5d0**ls
+
+  n=0
+  do ilevel=ls+1,nlevelmax
+    n=n+active(ilevel)%ngrid
+  end do
+  allocate(lo(1:max(n,1)),hi(1:max(n,1)),dom(1:max(n,1)))
+  nloc=0
+  do ilevel=ls+1,nlevelmax
+    ncache=active(ilevel)%ngrid
+    do igrid=1,ncache,nvector
+      ngrid=MIN(nvector,ncache-igrid+1)
+      do i=1,ngrid
+        ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
+      end do
+      do idim=1,ndim
+        do i=1,ngrid
+          xx(i,idim)=(xg(ind_grid(i),idim)-skip_loc(idim))*scale
+          ! centre of the level-ls ancestor cell of the grid
+          xa(i,idim)=((dble(int(xg(ind_grid(i),idim)/dxl))+0.5d0)*dxl-skip_loc(idim))*scale
+        end do
+      end do
+      call cmp_ordering(xx,order,ngrid)
+      call cmp_minmaxorder(xa,omin,omax,dxl*scale,ngrid)
+      do i=1,ngrid
+        call two_tier_find_dom(order(i),bkey_f,idom)
+        if(min(omax(i),bkey_f(idom))>max(omin(i),bkey_f(idom-1)))then
+          nloc=nloc+1
+          lo(nloc)=max(omin(i),bkey_f(idom-1))
+          hi(nloc)=min(omax(i),bkey_f(idom))
+          dom(nloc)=idom
+        end if
+      end do
+    end do
+  end do
+  call two_tier_merge_foot(nloc,lo,hi,dom)
+
+  ! Gather from all cpus
+  allocate(cnt(1:ncpu),disp(1:ncpu),cntb(1:ncpu),dispb(1:ncpu))
+  cnt=nloc
+#ifndef WITHOUTMPI
+  call MPI_ALLGATHER(nloc,1,MPI_INTEGER,cnt,1,MPI_INTEGER,MPI_COMM_WORLD,info)
+#endif
+  n=sum(cnt)
+  disp(1)=0
+  do i=2,ncpu
+    disp(i)=disp(i-1)+cnt(i-1)
+  end do
+  nb=storage_size(oneqdp)/8
+  cntb=cnt*nb; dispb=disp*nb
+  allocate(glo(1:max(n,1)),ghi(1:max(n,1)),gdom(1:max(n,1)))
+#ifndef WITHOUTMPI
+  call MPI_ALLGATHERV(lo,nloc*nb,MPI_BYTE,glo,cntb,dispb,MPI_BYTE,MPI_COMM_WORLD,info)
+  call MPI_ALLGATHERV(hi,nloc*nb,MPI_BYTE,ghi,cntb,dispb,MPI_BYTE,MPI_COMM_WORLD,info)
+  call MPI_ALLGATHERV(dom,nloc,MPI_INTEGER,gdom,cnt,disp,MPI_INTEGER,MPI_COMM_WORLD,info)
+#else
+  if(n>0)then
+    glo(1:n)=lo(1:n); ghi(1:n)=hi(1:n); gdom(1:n)=dom(1:n)
+  end if
+#endif
+  call two_tier_merge_foot(n,glo,ghi,gdom)
+  allocate(first(0:ndomain))
+  first=0
+  do i=1,n
+    first(gdom(i))=first(gdom(i))+1
+  end do
+  do idom=1,ndomain
+    first(idom)=first(idom)+first(idom-1)
+  end do
+  call two_tier_set_foot(2,n,glo,ghi,first)
+  deallocate(lo,hi,dom,glo,ghi,gdom,cnt,disp,cntb,dispb,first)
+end subroutine two_tier_build_foot
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine two_tier_merge_foot(n,lo,hi,dom)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::n
+  real(qdp),dimension(1:max(n,1))::lo,hi
+  integer,dimension(1:max(n,1))::dom
+  !----------------------------------------------------------------------
+  ! TO ADDED 2026-11-06: sort the intervals by lo and merge overlapping or
+  ! touching intervals of the same domain; n is updated. Intervals of
+  ! different domains never overlap (each lies inside its domain interval).
+  !----------------------------------------------------------------------
+  integer::i,k
+  integer,allocatable,dimension(:)::perm,tdom
+  real(qdp),allocatable,dimension(:)::thi
+  if(n<=1)return
+  allocate(perm(1:n),thi(1:n),tdom(1:n))
+  call quick_sort(lo,perm,n)
+  do i=1,n
+    thi(i)=hi(perm(i)); tdom(i)=dom(perm(i))
+  end do
+  hi(1:n)=thi(1:n); dom(1:n)=tdom(1:n)
+  k=1
+  do i=2,n
+    if(dom(i)==dom(k).and.lo(i)<=hi(k))then
+      hi(k)=max(hi(k),hi(i))
+    else
+      k=k+1
+      lo(k)=lo(i); hi(k)=hi(i); dom(k)=dom(i)
+    end if
+  end do
+  n=k
+  deallocate(perm,thi,tdom)
+end subroutine two_tier_merge_foot
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine two_tier_set_foot(which,n,lo,hi,first)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::which,n
+  real(qdp),dimension(1:max(n,1))::lo,hi
+  integer,dimension(0:ndomain)::first
+  !----------------------------------------------------------------------
+  ! TO ADDED 2026-11-06: store a footprint list as the current (which=1)
+  ! or the new (which=2) one.
+  !----------------------------------------------------------------------
+  if(which==1)then
+    if(allocated(foot_lo))deallocate(foot_lo,foot_hi,foot_first)
+    allocate(foot_lo(1:max(n,1)),foot_hi(1:max(n,1)),foot_first(0:ndomain))
+    two_tier_nfoot=n
+    foot_lo(1:max(n,1))=lo(1:max(n,1)); foot_hi(1:max(n,1))=hi(1:max(n,1)); foot_first=first
+  else
+    if(allocated(foot_lo2))deallocate(foot_lo2,foot_hi2,foot_first2)
+    allocate(foot_lo2(1:max(n,1)),foot_hi2(1:max(n,1)),foot_first2(0:ndomain))
+    two_tier_nfoot2=n
+    foot_lo2(1:max(n,1))=lo(1:max(n,1)); foot_hi2(1:max(n,1))=hi(1:max(n,1)); foot_first2=first
+  end if
+end subroutine two_tier_set_foot
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine two_tier_bcast_foot
+  use amr_commons
+  use mpi_mod
+  implicit none
+  !----------------------------------------------------------------------
+  ! TO ADDED 2026-11-06: after a restart, cpu 1 has read the footprint
+  ! list from its amr file (read_two_tier_record); give it to everybody
+  ! (outside the token-passing read loop) and make it the new list too.
+  !----------------------------------------------------------------------
+  integer::n,info,nb
+  real(qdp),allocatable,dimension(:)::lo,hi
+  integer,allocatable,dimension(:)::first
+  real(qdp)::oneqdp=1.0
+  n=two_tier_nfoot
+#ifndef WITHOUTMPI
+  call MPI_BCAST(n,1,MPI_INTEGER,0,MPI_COMM_WORLD,info)
+#endif
+  allocate(lo(1:max(n,1)),hi(1:max(n,1)),first(0:ndomain))
+  if(myid==1)then
+    lo(1:max(n,1))=foot_lo(1:max(n,1)); hi(1:max(n,1))=foot_hi(1:max(n,1)); first=foot_first
+  end if
+#ifndef WITHOUTMPI
+  nb=storage_size(oneqdp)/8
+  call MPI_BCAST(lo,max(n,1)*nb,MPI_BYTE,0,MPI_COMM_WORLD,info)
+  call MPI_BCAST(hi,max(n,1)*nb,MPI_BYTE,0,MPI_COMM_WORLD,info)
+  call MPI_BCAST(first,ndomain+1,MPI_INTEGER,0,MPI_COMM_WORLD,info)
+#endif
+  call two_tier_set_foot(1,n,lo,hi,first)
+  call two_tier_set_foot(2,n,lo,hi,first)
+  deallocate(lo,hi,first)
+  if(myid==1.and.n>0)write(*,*)'Two-tier fine footprints read from the restart files:',n
+end subroutine two_tier_bcast_foot
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine two_tier_cpu_hull(icpu,key_lo,key_hi)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::icpu
+  real(qdp)::key_lo,key_hi
+  !----------------------------------------------------------------------
+  ! Hull of all key intervals (both tiers, all overload sub-domains) of
+  ! cpu icpu, for the DOMAIN table of the info file.
+  !----------------------------------------------------------------------
+  integer::isub,idom,jdom
+  key_lo=order_all_max; key_hi=order_all_min
+  do isub=1,overload
+    idom=icpu+(isub-1)*ncpu
+    key_lo=min(key_lo,bound_key(idom-1)); key_hi=max(key_hi,bound_key(idom))
+    if(two_tier_balance)then
+      jdom=two_tier_fine_dom(icpu,isub)
+      if(foot_first(jdom)>foot_first(jdom-1))then ! TO MODIFIED 2026-11-06: footprints, not the whole interval
+        key_lo=min(key_lo,foot_lo(foot_first(jdom-1)+1)); key_hi=max(key_hi,foot_hi(foot_first(jdom)))
+      end if
+    end if
+  end do
+end subroutine two_tier_cpu_hull
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine two_tier_report
+  use amr_commons
+  use mpi_mod
+  implicit none
+  !----------------------------------------------------------------------
+  ! Grid statistics after a load balance: active and ghost (virtual) octs
+  ! per level, total and maximum over cpus (compare with
+  ! tools/lb_two_tier_estimate.py).
+  !----------------------------------------------------------------------
+  integer::ilevel,icpu,info,nfmax
+  integer(kind=8),dimension(1:MAXLEVEL,1:2)::nloc,nsum,nmax
+  integer(kind=8)::mloc,msum,mmax
+  nloc=0
+  do ilevel=1,nlevelmax
+    nloc(ilevel,1)=active(ilevel)%ngrid
+    do icpu=1,ncpu
+      nloc(ilevel,2)=nloc(ilevel,2)+reception(icpu,ilevel)%ngrid
+    end do
+  end do
+  mloc=sum(nloc(1:nlevelmax,1))+sum(nloc(1:nlevelmax,2))
+  nsum=nloc; nmax=nloc; msum=mloc; mmax=mloc
+#ifndef WITHOUTMPI
+  call MPI_ALLREDUCE(nloc,nsum,2*MAXLEVEL,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
+  call MPI_ALLREDUCE(nloc,nmax,2*MAXLEVEL,MPI_INTEGER8,MPI_MAX,MPI_COMM_WORLD,info)
+  call MPI_ALLREDUCE(mloc,msum,1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
+  call MPI_ALLREDUCE(mloc,mmax,1,MPI_INTEGER8,MPI_MAX,MPI_COMM_WORLD,info)
+#endif
+  if(myid==1)then
+    write(*,'(" Two-tier balance (Ls=",I3,"): level   active_tot   active_max    ghost_tot    ghost_max  ghost/active")')two_tier_ls
+    do ilevel=1,nlevelmax
+      if(nsum(ilevel,1)==0)cycle
+      write(*,'(31X,I3,4I13,F12.3)')ilevel,nsum(ilevel,1),nmax(ilevel,1),nsum(ilevel,2),nmax(ilevel,2), &
+      & dble(nsum(ilevel,2))/dble(nsum(ilevel,1))
+    end do
+    write(*,'("   octs per cpu (active+ghost): max",I12," (",F6.2,"% of ngridmax) avg",I12)') &
+    & mmax,100d0*dble(mmax)/dble(ngridmax),msum/ncpu
+    nfmax=0
+    do icpu=1,ndomain
+      nfmax=max(nfmax,foot_first(icpu)-foot_first(icpu-1))
+    end do
+    write(*,'("   fine footprints:",I10," intervals, max per domain",I8)')two_tier_nfoot,nfmax
+  end if
+end subroutine two_tier_report
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine check_particle_tree(tag)
+  use amr_commons
+  use mpi_mod
+  use pm_commons
+  implicit none
+  character(len=*)::tag
+  !----------------------------------------------------------------------
+  ! TO ADDED 2026-11-05 (two-tier verification, -DTWO_TIER_CHECK): called
+  ! after the particle sort that ends with merge_tree_fine down to levelmin
+  ! (end of load_balance, end of create_sink). At that point the lists of
+  ! the active levelmin grids are the authoritative ones (merge_tree_fine
+  ! leaves stale copies in the finer grids, so finer levels must not be
+  ! counted). Checks: every live particle (npart) is in exactly one
+  ! levelmin list (active or virtual), and inside that grid. Collective; aborts.
+  !----------------------------------------------------------------------
+  integer::i,igrid,ipart,jpart,next_part,idim,nbad,info,nx_loc,nprint,icpu,ncache
+  integer(kind=8)::npl,npt,nlist,nlist_tot,nbad_tot
+  real(dp)::dx,scale,xxx
+  real(dp),dimension(1:3)::skip_loc
+  logical::ok
+
+  nx_loc=icoarse_max-icoarse_min+1
+  scale=boxlen/dble(nx_loc)
+  skip_loc=(/0.0d0,0.0d0,0.0d0/)
+  if(ndim>0)skip_loc(1)=dble(icoarse_min)
+  if(ndim>1)skip_loc(2)=dble(jcoarse_min)
+  if(ndim>2)skip_loc(3)=dble(kcoarse_min)
+  ! Lists of levelmin grids, active and virtual (after merge_tree_fine a particle whose finest
+  ! grid is owned by me can sit in a virtual levelmin ancestor; the next step's kill_tree_fine /
+  ! virtual_tree_fine sort it out, as in the single partition).
+  nbad=0; nprint=0; nlist=0
+  dx=0.5d0**levelmin
+  do icpu=0,ncpu
+    if(icpu==0)then
+      ncache=active(levelmin)%ngrid
+    else
+      if(icpu==myid)cycle
+      ncache=reception(icpu,levelmin)%ngrid
+    end if
+    do i=1,ncache
+      if(icpu==0)then
+        igrid=active(levelmin)%igrid(i)
+      else
+#ifdef LIGHT_MPI_COMM
+        igrid=reception(icpu,levelmin)%pcomm%igrid(i)
+#else
+        igrid=reception(icpu,levelmin)%igrid(i)
+#endif
+      end if
+      ipart=headp(igrid)
+      do jpart=1,numbp(igrid)
+        next_part=nextp(ipart)
+        nlist=nlist+1
+        ok=.true.
+        do idim=1,ndim
+          xxx=(xp(ipart,idim)/scale+skip_loc(idim)-(xg(igrid,idim)-dx))/dx
+          if(xxx<0d0.or.xxx>=2d0)ok=.false.
+        end do
+        if(.not.ok)then
+          nbad=nbad+1
+          if(nprint<5)then
+            nprint=nprint+1
+            write(*,'(" TWO_TIER CHECK particle outside its grid: cpu",I6," list",I6," grid",I9," idp",I12," xp",3(1X,ES14.7)," xg",3(1X,ES14.7))') &
+            & myid,icpu,igrid,idp(ipart),xp(ipart,1:ndim),xg(igrid,1:ndim)
+          end if
+        end if
+        ipart=next_part
+      end do
+    end do
+  end do
+  npl=npart
+  nbad_tot=nbad; npt=npl; nlist_tot=nlist
+#ifndef WITHOUTMPI
+  call MPI_ALLREDUCE(npl,npt,1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
+  call MPI_ALLREDUCE(nlist,nlist_tot,1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
+  npl=nbad
+  call MPI_ALLREDUCE(npl,nbad_tot,1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+  if(myid==1)write(*,'(" TWO_TIER CHECK particles (",A,") step",I7,":",I13," live,",I13," in levelmin lists,",I9," outside their grid")') &
+  & trim(tag),nstep_coarse,npt,nlist_tot,nbad_tot
+  if(nbad_tot>0.or.nlist_tot/=npt)then
+    if(myid==1)write(*,*)'TWO_TIER CHECK FAILED (particles)'
+    flush(6)
+#ifndef WITHOUTMPI
+    call MPI_BARRIER(MPI_COMM_WORLD,info)
+    call MPI_ABORT(MPI_COMM_WORLD,1,info)
+#else
+    stop
+#endif
+  end if
+end subroutine check_particle_tree

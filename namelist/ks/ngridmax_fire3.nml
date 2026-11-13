@@ -19,8 +19,8 @@ nsubcycle=4*1,20*2
 ncontrol=1
 verbose=.false.
 cost_weighting=.true.
-!KS two_tier_balance=.true.    ! 2 層 domain decomposition (NOTES_handover_two_tier)
-!KS two_tier_level=13
+two_tier_balance=.true.        ! 2 層 domain decomposition (移植済み 2026-11-13; ks 本番と同じ)
+two_tier_level=13
 !KS clumpfind=.false.
 !KS fof_find=.false.           ! fof.f90 / fof_commons.f90
 /

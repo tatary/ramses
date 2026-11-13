@@ -88,6 +88,11 @@ module amr_parameters
   character(len=128)::ordering='hilbert'
   logical::cost_weighting=.true.           ! Activate load balancing according to cpu time
   real(dp)::cost_weight_power=1.0d0        ! Power applied to the per-level cost weights (cost_weighting only)
+  ! two-tier domain decomposition (ported from patch/ks 2026-11-13, docs/merge_ks.md; ks NOTES_handover_two_tier_2026-11-05.md)
+  logical::two_tier_balance=.false.        ! grids at level<=Ls: Hilbert partition balanced by memory; level>Ls: another one balanced by cost
+  integer::two_tier_level=0                ! Ls; 0: chosen at every load balance from two_tier_fine_frac
+  real(dp)::two_tier_fine_frac=0.02d0      ! auto Ls: coarsest level such that the octs at levels>Ls are at most this fraction of all octs
+  integer::two_tier_test_shift=0           ! test mode: fine-tier interval i goes to cpu mod(i-1+shift,ncpu)+1 (maximises the tier mismatch)
   logical::cost_time_weighting=.false.     ! Scale each rank's cell costs by its measured compute time per unit cost
   real(dp)::cost_time_relax=1.0d0          ! Relaxation of the time factor between load balances (1: use the latest measurement)
   integer::timer_ranks_every=0             ! Write timer_ranks_<job>_n<step>.dat every N coarse steps (0: only at outputs and the end)

@@ -178,6 +178,30 @@ subroutine test_flag(ilevel)
   integer::iskip_son,ind_grid_son,ind_cell_son
   logical::ok
 
+  ! two-tier (ported from patch/ks): "refined son" must mean refined ANYWHERE, not only
+  ! on my copy. The test below uses son(ind_cell_son)>0 of my (possibly virtual) copy of
+  ! the child grid, so a cell whose grandchildren are held by other cpus only (always the
+  ! case at the two-tier boundary, and in a single partition when the child's subtree lies
+  ! in a neighbour's interval beyond the one-cell halo) is not flagged, the child grid is
+  ! killed at refine_fine(ilevel) before refine_fine(ilevel+1) kills the grandchildren, and
+  ! these become orphans. The child's owner holds all its children, so it broadcasts son>0
+  ! of its cells in flag2 (workspace, overwritten later by authorize_fine/smooth_fine).
+  ! Always on, as in ks: the orphan case is reachable in a single partition too; the result
+  ! differs from the old code only in these marginal cases (docs/merge_ks.md).
+  if(ilevel<nlevelmax)then
+    do ind_son=1,twotondim
+      iskip_son=ncoarse+(ind_son-1)*ngridmax
+      do i=1,active(ilevel+1)%ngrid
+        if(son(active(ilevel+1)%igrid(i)+iskip_son)>0)then
+          flag2(active(ilevel+1)%igrid(i)+iskip_son)=1
+        else
+          flag2(active(ilevel+1)%igrid(i)+iskip_son)=0
+        end if
+      end do
+    end do
+    call make_virtual_fine_int(flag2(1),ilevel+1)
+  end if
+
   ! Loop over cells
   do ind=1,twotondim
      iskip=ncoarse+(ind-1)*ngridmax
@@ -194,6 +218,7 @@ subroutine test_flag(ilevel)
               ind_cell_son=iskip_son+ind_grid_son
               ok=(ok.or.(son  (ind_cell_son)> 0))
               ok=(ok.or.(flag1(ind_cell_son)==1))
+              ok=(ok.or.(flag2(ind_cell_son)==1))   ! refined on the owner
            end do
         end if
         ! If ok, then flag1 cells.

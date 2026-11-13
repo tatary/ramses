@@ -110,6 +110,7 @@ subroutine read_params
   namelist/run_params/clumpfind,cosmo,pic,sink,tracer,lightcone,poisson,hydro,rt,verbose,debug &
   & ,nrestart,ncontrol,nstepmax,nsubcycle,nremap,ordering &
   & ,bisec_tol,static,overload,cost_weighting,cost_weight_power,cost_time_weighting,cost_time_relax,timer_ranks_every,omp_hydro,omp_rt,omp_cooling,aton,nrestart_quad,restart_remap &
+  & ,two_tier_balance,two_tier_level,two_tier_fine_frac,two_tier_test_shift &
   & ,static_dm,static_gas,static_stars,convert_birth_times,use_proper_time,remap_pscalar &
   & ,unbind,make_mergertree,stellar,aexp_ini
   namelist/output_params/noutput,foutput,aout,tout &
@@ -248,6 +249,11 @@ subroutine read_params
   rewind(1)
   read(1,NML=run_params)
   rewind(1)
+  ! two-tier load balance needs a key ordering (ported from patch/ks)
+  if(two_tier_balance.and.ordering=='bisection')then
+    if(myid==1)write(*,*)'two_tier_balance is not compatible with ordering=bisection'
+    call clean_stop
+  end if
   read(1,NML=output_params)
   rewind(1)
   read(1,NML=amr_params)

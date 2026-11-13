@@ -21,6 +21,7 @@ subroutine init_amr
   logical::ok
   real(dp)::dx_loc,scale
   character(LEN=128)::ordering2
+  logical::two_tier_file        ! two-tier: restart file carries the '2t' mark
   character(LEN=80)::fileloc
   character(LEN=5)::nchar,ncharcpu
   character(LEN=80)::fileloc_star_src,fileloc_star_dst
@@ -105,6 +106,12 @@ subroutine init_amr
     ndomain=ncpu*overload
     allocate(bound_key (0:ndomain))
     allocate(bound_key2(0:ndomain))
+    ! two-tier (ported from patch/ks): fine-tier boundaries and footprints (empty: single partition)
+    allocate(bound_key_f(0:ndomain))
+    allocate(bound_key2_f(0:ndomain))
+    allocate(foot_lo(1:1),foot_hi(1:1),foot_first(0:ndomain))
+    allocate(foot_lo2(1:1),foot_hi2(1:1),foot_first2(0:ndomain))
+    foot_first=0; foot_first2=0; two_tier_nfoot=0; two_tier_nfoot2=0
 
     ! Compute minimum and maximum ordering key
     dx_loc=scale
@@ -147,6 +154,11 @@ subroutine init_amr
 #endif
     end do
     bound_key(ndomain)=order_all_max
+    ! two-tier: single partition until the first load balance
+    bound_key_f=bound_key
+    bound_key2_f=bound_key
+    two_tier_ls=nlevelmax
+    two_tier_ls2=nlevelmax
 
   else ! Init bisection balancing
 
@@ -166,7 +178,7 @@ subroutine init_amr
 #if NDIM>2
         x(1,3)=(dble(iz)+0.5d0-dble(kcoarse_min))*scale
 #endif
-        call cmp_cpumap(x,c,1)
+        call cmp_cpumap_lev(x,c,1,1)   ! owner of the level-1 grid (two-tier; = cmp_cpumap otherwise)
         cpu_map(ind)=c(1)
       end do
     end do
@@ -406,6 +418,16 @@ subroutine init_amr
     next(tailf)=0
     ! Read cpu boundaries
     read(ilun)ordering2
+    ! two-tier mark written by backup_amr (ordering//'2t'): binaries without it stop here
+    two_tier_file=.false.
+    if(ordering2==TRIM(ordering)//'2t')then
+      if(.not.two_tier_balance)then
+        if(myid==1)write(*,*)'Restart file has a two-tier decomposition: set two_tier_balance=.true.'
+        call clean_stop
+      end if
+      two_tier_file=.true.
+      ordering2=ordering
+    end if
     if(ordering2.ne.ordering)then
       if(myid==1)write(*,*)'Ordering is uncompatible'
       call clean_stop
@@ -527,6 +549,8 @@ subroutine init_amr
         end if
       end do
     end do
+    ! two-tier: trailing records (two_tier_ls, bound_key_f, footprints) written by backup_amr
+    call read_two_tier_record(ilun,two_tier_file)
     close(ilun)
 #ifdef QUADHILBERT
     if(nrestart_quad.eq.nrestart) deallocate(bound_key_restart)
@@ -550,6 +574,8 @@ subroutine init_amr
     call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
     if(verbose)write(*,*)'AMR backup files read completed'
+    ! two-tier footprints (read by cpu 1 only) to everybody
+    if(two_tier_balance.and.ordering/='bisection')call two_tier_bcast_foot
 
     ! Build communicators
     do ilevel=1,nlevelmax
@@ -739,6 +765,16 @@ subroutine init_amr
     next(tailf)=0
     ! Read cpu boundaries
     read(ilun)ordering2
+    ! two-tier mark written by backup_amr (ordering//'2t'): binaries without it stop here
+    two_tier_file=.false.
+    if(ordering2==TRIM(ordering)//'2t')then
+      if(.not.two_tier_balance)then
+        if(myid==1)write(*,*)'Restart file has a two-tier decomposition: set two_tier_balance=.true.'
+        call clean_stop
+      end if
+      two_tier_file=.true.
+      ordering2=ordering
+    end if
     if(ordering2.ne.ordering)then
       if(myid==1)write(*,*)'Ordering is uncompatible'
       call clean_stop
@@ -860,6 +896,8 @@ subroutine init_amr
         end if
       end do
     end do
+    ! two-tier: trailing records (two_tier_ls, bound_key_f, footprints) written by backup_amr
+    call read_two_tier_record(ilun,two_tier_file)
     close(ilun)
 #ifdef QUADHILBERT
     if(nrestart_quad.eq.nrestart) deallocate(bound_key_restart)
@@ -881,6 +919,8 @@ subroutine init_amr
     call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
     if(verbose)write(*,*)'AMR backup files read completed'
+    ! two-tier footprints (read by cpu 1 only) to everybody
+    if(two_tier_balance.and.ordering/='bisection')call two_tier_bcast_foot
 
     ! Build communicators
     do ilevel=1,nlevelmax
@@ -891,4 +931,47 @@ subroutine init_amr
 
 end subroutine init_amr
 
-
+!################################################################
+!################################################################
+subroutine read_two_tier_record(ilun,two_tier_file)
+  use amr_commons
+  implicit none
+  integer::ilun
+  logical::two_tier_file
+  !----------------------------------------------------------------------
+  ! two-tier (ported from patch/ks): read the records written at the end
+  ! of the amr files by backup_amr (two_tier_ls, bound_key_f(0:ndomain),
+  ! the number of fine footprint intervals, and the intervals themselves
+  ! in the file of cpu 1 only; two_tier_bcast_foot distributes them after
+  ! the read loop). Files written with a single partition (ordering record
+  ! without the '2t' mark) have no such records: single partition until
+  ! the next load balance.
+  !----------------------------------------------------------------------
+  integer::ios,n
+  real(qdp),allocatable,dimension(:)::tlo,thi
+  integer,allocatable,dimension(:)::tfirst
+  if(ordering=='bisection')return
+  if(.not.two_tier_file)then
+    bound_key_f=bound_key
+    two_tier_ls=nlevelmax
+  else
+    read(ilun,iostat=ios)two_tier_ls
+    if(ios==0)read(ilun,iostat=ios)bound_key_f(0:ndomain)
+    if(ios==0)read(ilun,iostat=ios)n
+    if(ios==0.and.myid==1.and.n>0)then
+      allocate(tlo(1:n),thi(1:n),tfirst(0:ndomain))
+      read(ilun,iostat=ios)tlo
+      if(ios==0)read(ilun,iostat=ios)thi
+      if(ios==0)read(ilun,iostat=ios)tfirst
+      if(ios==0)call two_tier_set_foot(1,n,tlo,thi,tfirst)
+      deallocate(tlo,thi,tfirst)
+    end if
+    if(ios/=0)then
+      if(myid==1)write(*,*)'Two-tier restart file without the trailing bound_key_f / footprint records'
+      call clean_stop
+    end if
+    if(myid==1)write(*,*)'Two-tier decomposition read from the restart files: Ls =',two_tier_ls
+  end if
+  bound_key2_f=bound_key_f
+  two_tier_ls2=two_tier_ls
+end subroutine read_two_tier_record

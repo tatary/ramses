@@ -59,6 +59,10 @@ subroutine dump_all
   if(myid==1)then
     filename=TRIM(filedir)//'info_'//TRIM(nchar)//'.txt'
     call output_info(filename)
+    if(two_tier_balance)then   ! two-tier key tables
+      filename=TRIM(filedir)//'info_twotier_'//TRIM(nchar)//'.txt'
+      call output_two_tier_info(filename)
+    end if
     filename=TRIM(filedir)//'makefile.txt'
     call output_makefile(filename)
     filename=TRIM(filedir)//'patches.txt'
@@ -308,6 +312,10 @@ subroutine dump_restart
   if(myid==1)then
     filename=TRIM(filedir)//'info_restart.txt'
     call output_info(filename)
+    if(two_tier_balance)then   ! two-tier key tables
+      filename=TRIM(filedir)//'info_twotier_restart.txt'
+      call output_two_tier_info(filename)
+    end if
     filename=TRIM(filedir)//'makefile.txt'
     call output_makefile(filename)
     filename=TRIM(filedir)//'patches.txt'
@@ -468,6 +476,7 @@ subroutine backup_amr(filename)
   integer::dummy_io,info2
 #endif
   character(LEN=80)::filename
+  character(LEN=128)::ordering_mark   ! two-tier
 
   integer::nx_loc,ny_loc,nz_loc,ilun
   integer::ilevel,ibound,ncache,istart,i,igrid,idim,ind,iskip
@@ -549,7 +558,13 @@ subroutine backup_amr(filename)
   ! Write free memory
   write(ilun)headf,tailf,numbf,used_mem,used_mem_tot
   ! Write cpu boundaries
-  write(ilun)ordering
+  ! two-tier: mark the file so that binaries without two_tier_balance stop at restart
+  if(two_tier_balance.and.ordering/='bisection')then
+    ordering_mark=TRIM(ordering)//'2t'
+  else
+    ordering_mark=ordering
+  end if
+  write(ilun)ordering_mark
   if(ordering=='bisection') then
     write(ilun)bisec_wall(1:nbinodes)
     write(ilun)bisec_next(1:nbinodes,1:2)
@@ -640,6 +655,17 @@ subroutine backup_amr(filename)
       end if
     end do
   end do
+  ! two-tier: trailing records, read by read_two_tier_record (init_amr.f90)
+  if(two_tier_balance.and.ordering/='bisection')then
+    write(ilun)two_tier_ls
+    write(ilun)bound_key_f(0:ndomain)
+    write(ilun)two_tier_nfoot   ! fine footprints, the intervals in the file of cpu 1 only
+    if(myid==1.and.two_tier_nfoot>0)then
+      write(ilun)foot_lo(1:two_tier_nfoot)
+      write(ilun)foot_hi(1:two_tier_nfoot)
+      write(ilun)foot_first(0:ndomain)
+    end if
+  end if
   close(ilun)
 
   ! Send the token
@@ -665,6 +691,7 @@ subroutine output_info(filename)
   use mpi_mod
   implicit none
   character(LEN=80)::filename
+  real(qdp)::key_lo,key_hi            ! two-tier hull
 
   integer::nx_loc,ny_loc,nz_loc,ilun,icpu,idom,ierr
   real(dp)::scale
@@ -732,7 +759,12 @@ subroutine output_info(filename)
   else
     write(ilun,'("   DOMAIN   ind_min                 ind_max")')
     do idom=1,ndomain
-      write(ilun,'(I8,1X,E23.15,1X,E23.15)')idom,bound_key(idom-1),bound_key(idom)
+      if(two_tier_balance)then   ! two-tier: hull of the coarse and fine intervals of the cpu owning domain idom
+        call two_tier_cpu_hull(mod(idom-1,ncpu)+1,key_lo,key_hi)
+        write(ilun,'(I8,1X,E23.15,1X,E23.15)')idom,key_lo,key_hi
+      else
+        write(ilun,'(I8,1X,E23.15,1X,E23.15)')idom,bound_key(idom-1),bound_key(idom)
+      end if
     end do
   endif
 
@@ -973,3 +1005,35 @@ subroutine create_output_dirs(filedir)
 
 
 end subroutine create_output_dirs
+
+!#########################################################################
+subroutine output_two_tier_info(filename)
+  use amr_commons
+  implicit none
+  character(LEN=80)::filename
+  !----------------------------------------------------------------------
+  ! two-tier decomposition (both key tables) in a text file next to
+  ! info_XXXXX.txt (ported from patch/ks; read by tools/lb_two_tier_estimate.py there)
+  !----------------------------------------------------------------------
+  integer::ilun,idom
+  character(LEN=80)::fileloc
+  if(verbose)write(*,*)'Entering output_two_tier_info'
+  ilun=11
+  fileloc=TRIM(filename)
+  open(unit=ilun,file=fileloc,form='formatted')
+  write(ilun,'("ncpu        =",I11)')ncpu
+  write(ilun,'("ndomain     =",I11)')ndomain
+  write(ilun,'("levelmin    =",I11)')levelmin
+  write(ilun,'("levelmax    =",I11)')nlevelmax
+  write(ilun,'("two_tier_ls =",I11)')two_tier_ls
+  write(ilun,'("test_shift  =",I11)')two_tier_test_shift
+  write(ilun,'("nfootprint  =",I11)')two_tier_nfoot
+  write(ilun,'("ordering type=",A80)')ordering
+  write(ilun,'("   DOMAIN   cpu_coarse   coarse_min              coarse_max              cpu_fine   fine_min                fine_max                nfoot")')
+  do idom=1,ndomain
+    write(ilun,'(I8,1X,I12,1X,E23.15,1X,E23.15,1X,I10,1X,E23.15,1X,E23.15,1X,I8)')idom,mod(idom-1,ncpu)+1, &
+    & bound_key(idom-1),bound_key(idom),two_tier_fine_cpu(idom),bound_key_f(idom-1),bound_key_f(idom), &
+    & foot_first(idom)-foot_first(idom-1)
+  end do
+  close(ilun)
+end subroutine output_two_tier_info
