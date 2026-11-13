@@ -636,7 +636,8 @@ subroutine coolfine1(ind_grid,ngrid,ilevel)
     if(neq_chem) then
       T2_new(1:nleaf) = T2(1:nleaf)
       call rt_solve_cooling(T2_new, xion, Np, Fp, p_gas, dNpdt, dFpdt  &
-        , nH, cooling_on, Zsolar, dtcool, aexp_loc,nleaf)
+        , nH, cooling_on, Zsolar, dtcool, aexp_loc,nleaf                   &
+        , dx_SS=scale_l*dx_loc)   ! shielding length [cm] = cell size (LW self-shielding)
       delta_T2(1:nleaf) = T2_new(1:nleaf) - T2(1:nleaf)
     endif
 #endif

@@ -160,6 +160,8 @@ SUBROUTINE read_rt_params(nml_ok)
   & ,cosmic_rays, rt_isIR_alt                                       &
   & ,cloudy_metal_cooling, cloudy_metal_file,attn_after_chem        &
   & ,rt_skip_convergence, relax_x_by_ne                             &
+  & ,isH2Katz, PEH_all_FUV, sec_ion, LWgroup, LW_ss_model, LW_ss_dust, LW_abs_thin, LW_abs_atom &
+  & ,LW_ss_from_incident_surface_yH2                                 &
   ! RT regions (for initialization)                                 &
   & ,rt_nregion, rt_region_type                                     &
   & ,rt_reg_x_center, rt_reg_y_center, rt_reg_z_center              &
@@ -215,6 +217,7 @@ SUBROUTINE read_rt_params(nml_ok)
     if(isH2) then
       iCount=iCount+1
       ixHI=iCount    ; ionEvs(ixHI)=ionEv_HI
+      if(isH2Katz) ionEvs(ixHI)=15.20d0   ! H2 ionisation potential (ks/Katz+2017)
     endif
     iCount=iCount+1    ; ixHII=iCount   ; ionEvs(ixHII)=ionEv_HII
     if(isHe) then
@@ -248,6 +251,39 @@ SUBROUTINE read_rt_params(nml_ok)
   if(rt_sink.and.(.not.stellar))then
     write(*,*) 'Enable stellar particles to use rt_sink'
     nml_ok=.false.
+  endif
+
+  if(sec_ion .and. myid==1)write(*,*)'Secondary ionisation by photo-electrons: on (Ricotti+2002 fits, all groups)'
+  if(PEH_all_FUV .and. iPEH_group.le.0)then
+    if(myid==1)write(*,*)'Error: PEH_all_FUV needs iPEH_group > 0 (photoelectric heating on)'
+    nml_ok=.false.
+  endif
+  if(isH2Katz .and. .not.isH2)then
+    if(myid==1)write(*,*)'Error: isH2Katz needs isH2=.true.'
+    nml_ok=.false.
+  endif
+  if(isH2Katz .and. myid==1)write(*,*)'H2 chemistry: ks/Katz+2017 model (isH2Katz)'
+  ! LW self-shielding options (ported from patch/ks)
+  if(trim(LW_ss_model).ne.'none' .and. trim(LW_ss_model).ne.'WGH19' .and. &
+    & trim(LW_ss_model).ne.'DB96' .and. trim(LW_ss_model).ne.'G09')then
+    if(myid==1)write(*,*)'Error: unknown LW_ss_model = '//trim(LW_ss_model)//' (none, WGH19, DB96, G09)'
+    nml_ok=.false.
+  endif
+  if(trim(LW_ss_model).ne.'none')then
+    if(.not.isH2)then
+      if(myid==1)write(*,*)'Error: LW_ss_model needs isH2=.true.'
+      nml_ok=.false.
+    endif
+    if(LWgroup.lt.1 .or. LWgroup.gt.nGroups)then
+      if(myid==1)write(*,*)'Error: LW_ss_model needs 1 <= LWgroup <= nGroups, LWgroup =',LWgroup
+      nml_ok=.false.
+    endif
+    if(LW_ss_from_incident_surface_yH2 .and. trim(LW_ss_model).ne.'WGH19')then
+      if(myid==1)write(*,*)'Error: LW_ss_from_incident_surface_yH2 needs LW_ss_model=WGH19 (as in patch/ks)'
+      nml_ok=.false.
+    endif
+    if(myid==1)write(*,'(" LW self-shielding: model ",A,", group ",I2,", dust ",L1,", thin absorption ",L1,", HI absorption ",L1,", incident-surface xH2 ",L1)') &
+      & trim(LW_ss_model), LWgroup, LW_ss_dust, LW_abs_thin, LW_abs_atom, LW_ss_from_incident_surface_yH2
   endif
 
   call read_rt_groups(nml_ok)

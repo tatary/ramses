@@ -204,6 +204,12 @@ module amr_parameters
   real(dp):: charge_slope=0.0         ! Determines how the grain charge scales with grain size (power law option)
 
   logical ::self_shielding=.false.
+  ! H2 cooling options (ported from patch/ks 2026-11-12; defaults = upstream RAMSES-RT)
+  character(len=10)::H2coolfunc=''   ! ''/'Hollenbach': HM79 tables (upstream); 'Galli': Galli & Palla 1998; 'Glover': Glover & Abel 2008 + Glover 2015 LTE
+  logical ::H2_fesc=.false.          ! H2 line cooling x escape fraction (Fukushima+2018) from the Jeans-length H2 column
+  logical ::H2_Hm_cool=.false.       ! H- radiative attachment cooling (H + e -> H- + hnu)
+  logical ::H2_chem_cool=.false.     ! chemical cooling/heating of H2 formation/dissociation (implies H2_Hm_cool)
+  real(dp)::fclump_H2dust=1d0        ! clumping factor of the dust-surface H2 formation rate (isH2Katz only)
   logical ::pressure_fix=.false.
   logical ::nordlund_fix=.true.
   logical ::cooling=.false.

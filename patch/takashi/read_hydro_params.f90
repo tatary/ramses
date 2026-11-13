@@ -95,7 +95,7 @@ subroutine read_hydro_params(nml_ok)
   namelist/cooling_params/cooling,metal,isothermal,haardt_madau,J21 &
   & ,barotropic_eos,barotropic_eos_form,polytrope_rho,polytrope_index,T_eos,mu_gas &
   & ,a_spec,self_shielding,z_ave,z_reion,ind_rsink,T2max,neq_chem &
-  & ,cooling_ism, Zsolar_Asplund
+  & ,cooling_ism, Zsolar_Asplund, H2coolfunc, H2_fesc, H2_Hm_cool, H2_chem_cool, fclump_H2dust
 
   ! Star formation parameters
   namelist/sf_params/m_star,n_star,T2_star,g_star,del_star &
@@ -274,6 +274,20 @@ subroutine read_hydro_params(nml_ok)
     if(myid==1)write(*,*)'Error: metals need nvar >= ndim+3'
     if(myid==1)write(*,*)'Modify hydro_parameters.f90 and recompile'
     nml_ok=.false.
+  endif
+
+  !--------------------------------------------------
+  ! Check H2 cooling options (ported from patch/ks)
+  !--------------------------------------------------
+  if(trim(H2coolfunc).ne.'' .and. trim(H2coolfunc).ne.'Hollenbach' .and. &
+    & trim(H2coolfunc).ne.'Galli' .and. trim(H2coolfunc).ne.'Glover')then
+    if(myid==1)write(*,*)'Error: unknown H2coolfunc = '//trim(H2coolfunc)
+    if(myid==1)write(*,*)'Choose one of: Hollenbach (default, tables), Galli, Glover'
+    nml_ok=.false.
+  endif
+  if(H2_chem_cool .and. .not. H2_Hm_cool)then
+    if(myid==1)write(*,*)'H2_chem_cool=.true. requires H- cooling: setting H2_Hm_cool=.true.'
+    H2_Hm_cool=.true.
   endif
 
   !--------------------------------------------------

@@ -175,7 +175,7 @@ CONTAINS
 ! species => ixHI (H2), ixHII (HI), ixHeII (HeI) or ixHeIII (HeII)
 ! returns :  photoionization or photodissociation cross-section in cm^2
 !------------------------------------------------------------------------
-    use rt_parameters,only:ionEvs, ixHI, ixHII, ixHeII, ixHeIII
+    use rt_parameters,only:ionEvs, ixHI, ixHII, ixHeII, ixHeIII, isH2Katz
     use constants,only:c_cgs, eV2erg, hplanck
     real(kind=8)      :: lambda, getCrosssection
     integer           :: species
@@ -185,6 +185,22 @@ CONTAINS
     E = hplanck * c_cgs/(lambda*1d-8) / eV2erg         ! photon energy in eV
     if ( E .lt. ionEvs(species) ) then            ! below ionization energy
       getCrosssection=0.
+      RETURN
+    endif
+    if(species .eq. ixHI .and. isH2Katz) then ! ks: Baczynski, Glover & Klessen 2015, Table 1
+      getCrosssection = 0.
+      if (E .gt. 11.20 .and. E .lt. 13.60) getCrosssection = 2.47d-18   ! LW: Dlw/Flw of Katz+2017
+      if (E .gt. 15.20 .and. E .le. 15.45) getCrosssection = 0.09d-18
+      if (E .gt. 15.70 .and. E .le. 15.95) getCrosssection = 1.15d-18
+      if (E .gt. 15.95 .and. E .le. 16.20) getCrosssection = 3.00d-18
+      if (E .gt. 16.20 .and. E .le. 16.40) getCrosssection = 5.00d-18
+      if (E .gt. 16.40 .and. E .le. 16.65) getCrosssection = 6.75d-18
+      if (E .gt. 16.65 .and. E .le. 16.85) getCrosssection = 8.00d-18
+      if (E .gt. 16.85 .and. E .le. 17.00) getCrosssection = 9.00d-18
+      if (E .gt. 17.00 .and. E .le. 17.20) getCrosssection = 9.50d-18
+      if (E .gt. 17.20 .and. E .le. 17.65) getCrosssection = 9.80d-18
+      if (E .gt. 17.65 .and. E .le. 18.10) getCrosssection = 10.10d-18
+      if (E .gt. 18.10) getCrosssection = (10.10d-18) * ((18.10d0/E)**3.0d0)
       RETURN
     endif
     if(species .eq. ixHI) then ! H2 ionization cs, Abel1997 eqn A24
