@@ -37,6 +37,11 @@ module pm_commons
   logical,allocatable,dimension(:)     ::direct_force_sink
   logical,allocatable,dimension(:)     ::new_born,new_born_all,new_born_new
   integer,allocatable,dimension(:)     ::idsink_sort
+  ! FG sink (sf_fg, sink_particle_fg.f90; merge_ks): seed mass, accretion rate / luminosity over the
+  ! coarse step, accretion time step, levels overlapping each sink
+  real(dp),allocatable,dimension(:)    ::mseed,mseed_new,mseed_all
+  real(dp),allocatable,dimension(:)    ::acc_rate,acc_lum,dt_acc
+  logical,allocatable,dimension(:,:)   ::level_sink,level_sink_new
   integer::ncloud_sink,ncloud_sink_massive
   integer::nindsink=0
   integer::sinkint_level=0         ! maximum level currently active is where the global sink variables are updated
@@ -79,12 +84,12 @@ module pm_commons
   !   sf_fg=.false. (upstream): 1 DM, 2 star, 3 sink cloud, 4 debris (f_w>0), 5 other (DICE star_as_nbody)
   !   sf_fg=.true.  (patch/ks): 1 DM, 2 Pop II star, 3 Pop III, 4 SN (just exploded), 5 dead Pop II,
   !                             6 BH (Pop III remnant), 7 SFC (active star-forming cloud, zp=-radius),
-  !                             8 PSC (SFC past SFC_t_life)
+  !                             8 PSC (SFC past SFC_t_life), 9 sink cloud (sink_particle_fg)
   ! The numbers 3-5 coincide on purpose (ks outputs can be restarted); is_cloud/is_debris and
   ! is_pop3/is_SN/... must therefore only be used in the matching mode (docs/merge_ks.md).
-  integer, parameter   :: NFAMILIES=8
+  integer, parameter   :: NFAMILIES=9
   integer(1),parameter :: FAM_DM=1, FAM_STAR=2, FAM_CLOUD=3, FAM_DEBRIS=4, FAM_OTHER=5, FAM_UNDEF=127
-  integer(1),parameter :: FAM_POP3=3, FAM_SN=4, FAM_DEAD=5, FAM_BH=6, FAM_SFC=7, FAM_PSC=8   ! sf_fg=.true.
+  integer(1),parameter :: FAM_POP3=3, FAM_SN=4, FAM_DEAD=5, FAM_BH=6, FAM_SFC=7, FAM_PSC=8, FAM_CLOUD_FG=9   ! sf_fg=.true.
   integer(1),parameter :: FAM_TRACER_GAS=0
   integer(1),parameter :: FAM_TRACER_DM=-1, FAM_TRACER_STAR=-2, FAM_TRACER_CLOUD=-3, FAM_TRACER_DEBRIS=-4, FAM_TRACER_OTHER=-5
 
@@ -109,19 +114,19 @@ module pm_commons
 
   ! Particle keys for outputing. They should match the above particle
   ! types, except for 'under' family
-  ! (-8..-6 and 6..8 are unused in the upstream mode; particle_family_keys_fg is the sf_fg table)
+  ! (-9..-6 and 6..9 are unused in the upstream mode; particle_family_keys_fg is the sf_fg table)
   character(len=13), dimension(-NFAMILIES:NFAMILIES), parameter :: particle_family_keys = (/ &
-    '       unused', '       unused', '       unused', &
+    '       unused', '       unused', '       unused', '       unused', &
     ' other_tracer', 'debris_tracer', ' cloud_tracer', '  star_tracer', ' other_tracer', &
     '   gas_tracer', &
     '           DM', '         star', '        cloud', '       debris', '        other', &
-    '       unused', '       unused', '       unused'/)
+    '       unused', '       unused', '       unused', '       unused'/)
   character(len=13), dimension(-NFAMILIES:NFAMILIES), parameter :: particle_family_keys_fg = (/ &
-    '       unused', '       unused', '       unused', &
+    '       unused', '       unused', '       unused', '       unused', &
     ' other_tracer', 'debris_tracer', ' cloud_tracer', '  star_tracer', ' other_tracer', &
     '   gas_tracer', &
     '           DM', '         star', '         pop3', '    supernova', '    dead_pop2', &
-    '      bh_pop3', '          SFC', '          PSC'/)   ! no blanks in a key (Mera/yt parse the header table)
+    '      bh_pop3', '          SFC', '          PSC', '   sink_cloud'/)   ! no blanks in a key (Mera/yt parse the header table)
 
   type(part_t), allocatable, dimension(:) :: typep  ! Particle type array
 
@@ -178,8 +183,14 @@ contains
   end function is_PSC
 
   elemental logical pure function is_cloud(typep)
+    ! sink cloud particle: FAM_CLOUD (upstream sink) or FAM_CLOUD_FG (sink_particle_fg, sf_fg);
+    ! family 3 is Pop III when sf_fg, hence the run-time switch (merge_ks)
     type(part_t), intent(in) :: typep
-    is_cloud = typep%family == FAM_CLOUD
+    if(sf_fg)then
+      is_cloud = typep%family == FAM_CLOUD_FG
+    else
+      is_cloud = typep%family == FAM_CLOUD
+    end if
   end function is_cloud
 
   elemental logical pure function is_debris(typep)

@@ -11,8 +11,7 @@ pic=.true.
 poisson=.true.
 hydro=.true.
 rt=.true.
-sink=.false.                   !TO ks は .true. (bhpop3: Pop III 残骸から BH sink)。上流の sink 生成 (clump ベース) は別物なので移植までオフ
-!KS sink=.true.
+sink=.true.                    ! bhpop3: Pop III 残骸から BH sink (sf_fg なので sink_particle_fg.f90)
 nrestart=0
 nremap=1
 nsubcycle=4*1,20*2
@@ -164,9 +163,7 @@ pop3_ESN=3d52                  ! pop3_model 1/2 の Pop III SN エネルギー [
 SN_reservoir=.true.            ! SN 熱を冷却半径の球に体積比例で分配し refine 前に反映 (sn_energy_reservoir)
 Ncell_SN_max=8.0d0
 fcool_stop=8d0                 ! 冷却停止タイマー (NVAR の最後の passive scalar = ivar_coolstop; NPSCAL=3)
-!KS sink_mass_min_pop3BH=1d1
-!KS sink_mass_min_pop2BH=-1d1
-!KS smbh=.true.                !TO takashi では &SINK_PARAMS の smbh
+! sink_mass_min_pop3BH / sink_mass_min_pop2BH / smbh / bhpop3 は takashi では &SINK_PARAMS (下)
 !KS halo_ref_level=13
 !KS addrho_min=10
 !KS nprof=100
@@ -178,8 +175,7 @@ fcool_stop=8d0                 ! 冷却停止タイマー (NVAR の最後の pas
 !KS f_rho_add=-2d0
 /
 &SINK_PARAMS
-create_sinks=.false.           !TO ks は .true. (上の sink と同じ理由でオフ)
-!KS create_sinks=.true.
+create_sinks=.true.
 accretion_scheme='bondi'
 eddington_limit=.false.
 nsinkmax=500
@@ -187,7 +183,10 @@ acc_sink_boost=1.0
 ir_cloud=4
 mass_sink_direct_force=3d2
 smbh=.true.
-!KS bhpop3=.true.              ! Pop III 残骸からの BH sink
+bhpop3=.true.                  ! Pop III 残骸 (FAM_BH) からの BH sink (sink_particle_fg.f90)
+BH_model=2                     ! SR20 降着 + RIAF/標準/slim の光度 (BHL にフォールバック)
+sink_mass_min_pop3BH=1d1       ! [Msun]
+sink_mass_min_pop2BH=-1d1      ! 負: Pop II 残骸 (FAM_DEAD) は sink にしない
 /
 &CLUMPFIND_PARAMS
 ivar_clump=0

@@ -463,7 +463,13 @@ subroutine read_params
   call read_rt_params(nml_ok)
 #endif
 #if NDIM==3
-  if (sink)call read_sink_params
+  if (sink)then
+    if(sf_fg)then
+      call read_sink_params_fg ! FG sink (sink_particle_fg.f90): ks &SINK_PARAMS entries
+    else
+      call read_sink_params
+    end if
+  end if
   if (clumpfind .or. sink)call read_clumpfind_params
   if (stellar)call read_stellar_params
   if (unbind)call read_unbinding_params

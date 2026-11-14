@@ -130,7 +130,13 @@ recursive subroutine amr_step(ilevel,icount)
   !-----------------
 #if NDIM==3
   call timer('sinks','start')
-  if(sink)call update_cloud(ilevel)
+  if(sink)then
+    if(sf_fg)then
+      call update_cloud_fg(ilevel) ! FG sink (sink_particle_fg.f90)
+    else
+      call update_cloud(ilevel)
+    end if
+  end if
 #endif
   !-----------------
   ! Particle leakage
@@ -186,6 +192,10 @@ recursive subroutine amr_step(ilevel,icount)
 
     ! Dump lightcone
     if(lightcone .and. ndim==3) call output_cone()
+
+    ! FG sink: acc_rate accumulates the mass accreted over the coarse step (grow_sink_fg) and is
+    ! normalised in create_sink_fg; reset after the outputs (patch/ks: must be done after dump_all)
+    if(sink.and.sf_fg)acc_rate=0d0
 
   endif
 
@@ -292,7 +302,13 @@ recursive subroutine amr_step(ilevel,icount)
       ! Compute Bondi-Hoyle accretion parameters
 #if NDIM==3
       call timer('sinks','start')
-      if(sink.and.hydro)call collect_acczone_avg(ilevel)
+      if(sink.and.hydro)then
+        if(sf_fg)then
+          call collect_acczone_avg_fg(ilevel)
+        else
+          call collect_acczone_avg(ilevel)
+        end if
+      end if
 #endif
     end if
   end if
@@ -352,13 +368,25 @@ recursive subroutine amr_step(ilevel,icount)
       dtnew(ilevel+1)=dtnew(ilevel)/dble(nsubcycle(ilevel))
       call update_time(ilevel)
 #if NDIM==3
-      if(sink)call update_sink(ilevel)
+      if(sink)then
+        if(sf_fg)then
+          call update_sink_fg(ilevel)
+        else
+          call update_sink(ilevel)
+        end if
+      end if
 #endif
     end if
   else
     call update_time(ilevel)
 #if NDIM==3
-    if(sink)call update_sink(ilevel)
+    if(sink)then
+      if(sf_fg)then
+        call update_sink_fg(ilevel)
+      else
+        call update_sink(ilevel)
+      end if
+    end if
 #endif
   end if
 
@@ -431,7 +459,11 @@ recursive subroutine amr_step(ilevel,icount)
 #if NDIM==3
   if(sink.and.hydro)then
     call timer('sinks','start')
-    call grow_sink(ilevel,.false.)
+    if(sf_fg)then
+      call grow_sink_fg(ilevel,.false.)
+    else
+      call grow_sink(ilevel,.false.)
+    end if
   end if
 #endif
   !-----------
@@ -643,7 +675,13 @@ recursive subroutine amr_step(ilevel,icount)
     ! Sink production
     !---------------
 #if NDIM==3
-    if(ilevel==levelmin)call create_sink
+    if(ilevel==levelmin)then
+      if(sf_fg)then
+        call create_sink_fg
+      else
+        call create_sink
+      end if
+    end if
 #endif
   end if
 

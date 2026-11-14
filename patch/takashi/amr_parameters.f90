@@ -285,6 +285,14 @@ module amr_parameters
   real(dp) :: Ncell_SN_max = 4d0   ! radius search cap: r_max = Ncell_SN_max * host dx
   real(dp) :: fcool_stop = -1d0    ! >0: cooling is disabled for fcool_stop x sound-crossing time after a SN (needs a free passive scalar: ivar_coolstop=nvar)
   integer  :: ivar_coolstop = -1   ! index of the cooling-stop timer scalar (set in read_hydro_params when fcool_stop>0)
+  ! FG sink / BH (sink_particle_fg.f90, &SINK_PARAMS, only with sf_fg; merge_ks 2026-11-13)
+  logical  :: bhpop3 = .false.              ! sinks from Pop III remnant BHs (FAM_BH) / dead Pop II (FAM_DEAD) particles
+  integer  :: BH_model = 2                  ! 0 test particle, 1 BHL + 0.1 efficiency, 2 SR20 + RIAF/std/slim (fiducial), 3 BHL + thermal feedback, 4 BHL without radiation
+  real(dp) :: sink_mass_min_pop3BH = 0d0    ! minimum FAM_BH mass [Msun] converted to a sink (negative: never)
+  real(dp) :: sink_mass_min_pop2BH = -1d0   ! minimum FAM_DEAD mass [Msun] converted to a sink (negative: never)
+  logical  :: no_sinkcloud_refine = .false. ! sink cloud particles do not count for the particle refinement criterion (rho_fine)
+  real(dp) :: sgagn_T2max = 1d9             ! BH_model=3: maximum T/mu [K] reached by the thermal feedback
+  logical  :: sink_check_vars = .false.     ! check that msink/xsink/vsink agree on all ranks (ALLREDUCEs per sink and call)
   logical ::cooling_ism = .false.      ! Use cooling module from Audit & Hennebelle 2005 (non-RT)
   ! instead of ramses classical cooling
   integer :: pressure_fix_cond = 1

@@ -612,10 +612,6 @@ subroutine read_hydro_params(nml_ok)
       if(myid==1)write(*,*)'sf_fg=.true. needs metal=.true. (Zpop3 selects Pop II / Pop III)'
       nml_ok=.false.
     endif
-    if(sink)then
-      if(myid==1)write(*,*)'sf_fg=.true. is not yet compatible with sink=.true. (family 3 is Pop III; the ks sink is not ported)'
-      nml_ok=.false.
-    endif
     if(f_w>0d0)then
       if(myid==1)write(*,*)'sf_fg=.true. does not support f_w>0 (no debris family)'
       nml_ok=.false.

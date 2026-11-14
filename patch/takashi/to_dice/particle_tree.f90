@@ -154,8 +154,13 @@ subroutine init_tree
 
 #if NDIM==3
   if(sink)then
-    call kill_entire_cloud(1)
-    call create_cloud_from_sink
+    if(sf_fg)then ! FG sink (sink_particle_fg.f90)
+      call kill_entire_cloud_fg(1)
+      call create_cloud_from_sink_fg
+    else
+      call kill_entire_cloud(1)
+      call create_cloud_from_sink
+    end if
   endif
 #endif
 

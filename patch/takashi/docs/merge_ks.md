@@ -412,3 +412,54 @@ ks 本番 (`ngridmax_fire3.nml`) は `thermal_feedback` + FIRE-3 yields + **SN r
 | restart (output_00002 から) | 同じ 846 SN と放出量 (トレーラ読み込み経路) |
 | RT=0 ビルド (sedov) | ビルド・実行 OK |
 | ks 設定 (QUADHILBERT, NPSCAL=3) | ビルド OK |
+
+## sink/BH の移植 (2026-11-13): `sink_particle_fg.f90`
+
+### 方式
+
+- ks の sink は上流より古い系統 (cloud 粒子を `idp=-isink` で識別、family なし、`mseed/acc_rate/acc_lum/dt_acc/level_sink`、
+  Pop III 残骸 (`FAM_BH`) から sink を作る `make_sink_from_pop3_new`、BH_model 0-4 の降着・光度、ks 形式の `sink_XXXXX.out`)
+  で、takashi が使う上流の `pm/sink_particle.f90` (clump ベースの生成、`FAM_CLOUD`、msmbh、stellar object) と同名ルーチンが
+  中身違いで並ぶ。星形成と同じく **別ファイル + `sf_fg` で振り分け**: ks の `sink_particle.f90`/`init_sink.f90`/`output_sink.f90`
+  (+ `load_balance.f90` の `check_cloud_count`) を scratchpad の `make_sink_fg.py` で変換して `sink_particle_fg.f90` (約 4000 行)
+  にした。全ルーチンに `_fg` を付け (`create_sink_fg`, `init_sink_fg`, `backup_sink_fg`, ...)、`mpif.h` → `use mpi_mod`、
+  `is_test`/clump/sgagn/`weightp`/`p3idpsink`/`restart_files` を削除。上流版はそのままリンクされ `sf_fg=.false.` で使われる。
+- 振り分け箇所: `amr_step` (update_cloud, collect_acczone_avg, update_sink ×2, grow_sink, create_sink と出力後の
+  `acc_rate=0`)、`init_part` (`init_sink_fg`)、`particle_tree` (`kill_entire_cloud_fg`/`create_cloud_from_sink_fg`)、
+  `output_amr` (rank 1 が ks 形式のバイナリ `sink_XXXXX.out00001` / `sink_restart.out00001` と yt 用の
+  `sink_file_descriptor.txt`、上流形式の csv を書く; ks は全ランクが同じバイナリを書いていたが、yt の RAMSES フロントエンド
+  (`SinkParticleFileHandler`) はドメイン 1 だけ読み、他ドメインのファイルが無ければ 0 個として流すので 1 本にした。
+  yt には上流 csv を読む `SinkParticleFileHandlerCsv` (ptype `sink_csv`) もある)、`read_params`
+  (`read_sink_params_fg`)、新たに patch に置いた `newdt_fine.f90` (降着 dt: `c_acc × min(M_gas, M_sink)/Mdot`、最高 level で
+  `compute_accretion_rate_fg`) と `force_fine.f90` (`f_gas_sink_fg`: 共動の softening)、`to_dice/rho_fine.f90`
+  (`no_sinkcloud_refine`)。
+- **cloud 粒子の family**: sf_fg では 3 が Pop III なので、FG の cloud には `FAM_CLOUD_FG=9` (NFAMILIES=9、header の FG
+  ブロックに `sink_cloud`) を与え、`is_cloud` が `sf_fg` を見て 3/9 を切り替える (pure 関数からモジュール変数の参照は可)。
+  共有カーネル (`move_fine` の vsnew 上書き、`synchro_fine` の fsink 集計、`rho_fine` の `sink_refine`) はこれで動く。
+  ks 側のルーチンは `idp<0` のまま (両方成り立つ)。
+- `&SINK_PARAMS` (`read_sink_params_fg`): 上流の項目のうちこの `pm_parameters` にあるもの + FG の `bhpop3`, `BH_model`,
+  `sink_mass_min_pop3BH`, `sink_mass_min_pop2BH`, `no_sinkcloud_refine`, `sgagn_T2max` (BH_model=3 の熱注入上限),
+  `sink_check_vars` (`check_sink_vars_among_cpus_fg`; 既定 off)。`amr_parameters` に宣言。`nol_accretion`/`sink_drag`/
+  `feedback_scheme`/`v_AGN` は落とした (旧 accrete_sink 専用)。
+- BH の放射 (`rt_spectra`): `set_BH_SED` (α=-1.5 のべき、11.2 eV-10 keV; この版の積分器は帯が重ならないと止まるので
+  `L_to_Ndot_BH=0` の群は飛ばす)、`update_SED_group_props` に acc_lum で重み付けた群特性の寄与、`star_RT_feedback` 末尾の
+  `BH_RT_feedback` (sink の位置の leaf セルが ilevel のとき光子を入れる; 担当は `cmp_cpumap_lev` で求めた ilevel grid の
+  所有者 = my_utils の `get_cpu_of_pos` と同じ)。`rt_star` の起動条件に `nsink>0 .and. BH_model 1/2` を追加。
+- `init_sink_fg` は ks の配列に加えて共有コードが触る `msmbh/dmfsink/graddescent_over_dt` (0) も確保し、全部 0 初期化。
+  `compute_ncloud_sink` は上流のものを呼ぶ。`get_BHL_accretion_rate_fg` は非 cosmo でも G=1 で動く (ks は停止)。
+  `d_sink` が決まらなくても止めない (clump 生成でしか使わない)。
+
+### 検証 (4 ランク)
+
+sink 試験は `tests/dice_rt_fg.nml` の Pop III SN 設定 (Zpop3=10, pop3_model=1, 3e52 erg, 18 step) に `sink=.true.` と
+`&SINK_PARAMS` (bhpop3, BH_model=2, sink_mass_min_pop3BH=10 Msun, bondi, ir_cloud=4, smbh) を足したもの。
+
+| テスト | 結果 |
+|---|---|
+| 既定 (`sf_fg=.false.`, dice_rt_amr 6 step) | 変更前バイナリ (worktree) と 44 ファイル bit 一致 |
+| FG 星形成のみ (dice_rt_fg, sink なし) | 同 bit 一致 (header に `sink_cloud 0` の行が増えるだけ) |
+| sink 試験 (heavy) | step 13 の 846 SN → 粗い step 6 で 846 sink、合体 833 → 13 → 11; step 15 の 61 SN も sink 化して合体; cloud 粒子 11×2109=23199、cloud 数チェック 0 件不一致; Bondi 降着で 100 Msun 種が 1e4 Msun 級に (level 8 の粗い試験箱なので物理的な意味はない); `logsink<id>` 13 本、`sink_XXXXX.out00001`/csv |
+| LIGHT_MPI_COMM | heavy と 44 ファイル bit 一致 (sink ファイル含む) |
+| 二層分割 (`-DTWO_TIER_CHECK`, two_tier_level=7) | 完走、STATUS ok、cloud 数チェック ok; 総和は 1e-6 程度の丸め差、sink の質量・位置は合体順の違いで 2 個が僅差 |
+| restart (output_00003, `sink_00003.out00001` から) | 完走、sink 11 個の質量・位置は 1e-9 で一致、星形成/SN イベント (stars ログ) は同一; hydro は丸め差 (FG/フィードバック段階の restart と同じで bit 一致ではない; 乱数状態と `acc_lum` などの派生量は保存されない) |
+| ks 設定ビルド (QUADHILBERT, NPSCAL=3, DICE なし) | ビルド OK (`patch/takashi/rho_fine.f90` 経由) |

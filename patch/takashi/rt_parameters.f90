@@ -95,6 +95,11 @@ module rt_parameters
   integer::LWgroup=-1                  ! photon group of the Lyman-Werner band (<=0: no shielding)
   logical::p3_noFUV=.false.            ! FG (sf_fg) Pop III stars: no LW/FUV photons (group LWgroup)
   logical::p3_noEUV=.false.            ! FG (sf_fg) Pop III stars: no photons above the LW group (groups LWgroup+1:)
+  ! FG sink BH radiation (sf_fg, BH_model 1/2; set_BH_SED in rt_spectra): power law alpha=-1.5, 11.2 eV - 10 keV
+  real(dp),dimension(1:nGroups)::L_to_Ndot_BH=0d0        ! bolometric L [erg/s] -> photon emissivity per group [1/s]
+  real(dp),dimension(1:nGroups)::egy_BH=0d0              ! mean photon energy per group [eV]
+  real(dp),dimension(1:nGroups,1:nIons)::csn_BH=0d0      ! mean cross-section [cm^2]
+  real(dp),dimension(1:nGroups,1:nIons)::cse_BH=0d0      ! energy-weighted cross-section [cm^2]
   character(LEN=8)::LW_ss_model='none' ! 'WGH19' Wolcott-Green & Haiman 2019 (ks default), 'DB96' Draine & Bertoldi 1996, 'G09' Gnedin+2009 form
   logical::LW_ss_dust=.true.           ! also multiply by the dust shielding exp(-sigma_d Z N_H) (Gnedin+2009)
   logical::LW_abs_thin=.true.          ! .true.: shielding only reduces the dissociation rate; .false.: also the LW photon absorption

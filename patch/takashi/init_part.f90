@@ -471,7 +471,13 @@ subroutine init_part
 
   end if
 
-  if(sink)call init_sink
+  if(sink)then
+    if(sf_fg)then
+      call init_sink_fg ! FG sink (sink_particle_fg.f90)
+    else
+      call init_sink
+    end if
+  end if
   if(stellar)call init_stellar
 
 contains

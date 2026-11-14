@@ -112,6 +112,10 @@ nonlocal_depletion=.false.     ! .true. で球からの枯渇 (ufront を確保)
 ! フィードバックの試験 (2026-11-13): nstepmax=14 にすると Pop III (Zpop3=1d1, pop3_model=1, 寿命 4 Myr) の SN が step 13 で起きる。
 ! &FEEDBACK_PARAMS に SN_reservoir=.true., Ncell_SN_max=8d0, pop3_ESN=3d52 で半径探索と球注入、
 ! fcool_stop=8d0 は NPSCAL を 1 つ増やしたビルドで (ivar_coolstop=nvar)。
+! sink/BH の試験 (2026-11-13): 上の Pop III SN 設定 (nstepmax=18) に &RUN_PARAMS sink=.true. と
+! &SINK_PARAMS create_sinks=.true., accretion_scheme='bondi', nsinkmax=1000, ir_cloud=4, mass_sink_direct_force=3d2,
+! smbh=.true., bhpop3=.true., BH_model=2, sink_mass_min_pop3BH=1d1 (npartmax=6000000: cloud 粒子は sink 1 個に 2109 個)。
+! step 13 の 846 SN → 次の粗い step で 846 sink → 合体で 13 → 11、以後 Bondi 降着と logsink<id>、sink_XXXXX.out<rank>。
 
 /
 

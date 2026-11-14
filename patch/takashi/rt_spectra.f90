@@ -485,6 +485,10 @@ CONTAINS
     real(dp),save,allocatable,dimension(:,:)::sum_cse_cpu,sum_cse_all
     real(dp),save,allocatable,dimension(:)::sum_egy_cpu,sum_egy_all
     real(dp):: mass, age, Z, t_sne_Gyr
+    ! FG sink BHs (sf_fg)
+    real(dp),dimension(nSEDgroups):: L_sink
+    integer:: isink
+    real(dp):: scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,scale_lum
 !-------------------------------------------------------------------------
     if(.not. allocated(L_star)) then
       allocate(L_star(nSEDgroups))
@@ -577,6 +581,23 @@ CONTAINS
       MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, info)
 #endif
 
+    ! FG sink BHs (sf_fg, BH_model 1/2; merge_ks): power-law spectrum of set_BH_SED weighted by the
+    ! bolometric luminosity acc_lum of every sink (identical on all ranks, so no reduction)
+    if(sf_fg.and.sink.and.(BH_model==1.or.BH_model==2))then
+      call set_BH_SED
+      call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+      scale_lum=scale_d*scale_l**3*scale_v**2/scale_t
+      do isink=1,nsink
+        L_sink(:)=acc_lum(isink)*scale_lum*L_to_Ndot_BH(:)   ! photon emissivity per group [s^-1]
+        do ip=1,nSEDgroups
+          sum_L_all(ip)    = sum_L_all(ip)     + L_sink(ip)
+          sum_egy_all(ip)  = sum_egy_all(ip)   + L_sink(ip)*egy_BH(ip)
+          sum_csn_all(ip,:)= sum_csn_all(ip,:) + L_sink(ip)*csn_BH(ip,:)
+          sum_cse_all(ip,:)= sum_cse_all(ip,:) + L_sink(ip)*cse_BH(ip,:)
+        end do
+      end do
+    end if
+
     ! ...and take averages weighted by luminosities
     do ip=1,nSEDgroups
       ! No update for non-SED groups (L0>L1):
@@ -614,7 +635,8 @@ CONTAINS
     integer::ilevel
     logical,save::groupProps_init=.false.
 !-------------------------------------------------------------------------
-    if(rt_star.and. nstar_tot .gt. 0) then
+    if(rt_star.and.(nstar_tot .gt. 0 .or. &
+      (sf_fg.and.sink.and.nsink.gt.0.and.(BH_model==1.or.BH_model==2)))) then ! FG sink BHs radiate too
       if(.not.rt_advect) then ! Turn on RT advection due to newborn stars:
         if(myid==1) write(*,*) '*****************************************'
         if(myid==1) write(*,*) 'Stellar RT turned on at a=',aexp
@@ -652,7 +674,7 @@ CONTAINS
 !-------------------------------------------------------------------------
 #if NGROUPS > 0
     if(.not.rt_advect)RETURN
-    if(nstar_tot .le. 0 ) return
+    if(nstar_tot .le. 0 .and. .not.(sf_fg.and.sink.and.nsink.gt.0)) return
     if(numbtot(1,ilevel)==0)return ! number of grids in the level
     if(verbose)write(*,111)ilevel
     ! Gather star particles only.
@@ -722,6 +744,9 @@ CONTAINS
 
     if(heat_unresolved_HII.gt.0) &
       call heat_unresolved_HII_regions(ilevel,dtnew(ilevel))
+
+    ! FG sink BHs (sf_fg, BH_model 1/2)
+    if(sf_fg.and.sink.and.(BH_model==1.or.BH_model==2)) call BH_RT_feedback(ilevel,dt)
 
 111 format('   Entering star_rt_feedback for level ',I2)
 #endif
@@ -1478,6 +1503,126 @@ CONTAINS
 
   end subroutine star_RT_vsweep
 #endif
+
+!*************************************************************************
+  SUBROUTINE BH_RT_feedback(ilevel, dt)
+
+! FG sink BHs (sf_fg, BH_model 1/2; patch/ks, merge_ks): inject the photons of every sink
+! (bolometric acc_lum x L_to_Ndot_BH of the power-law spectrum) into the leaf cell holding
+! the sink when that cell is at ilevel. The owner of the ilevel grid at xsink does it
+! (cmp_cpumap_lev as get_cpu_of_pos of my_utils; works with two_tier_balance).
+!-------------------------------------------------------------------------
+    use rt_parameters, only : L_to_Ndot_BH, nGroups, iGroups
+    use rt_hydro_commons
+    use pm_commons
+    use amr_commons
+    use hydro_commons
+    implicit none
+    integer, intent(IN):: ilevel
+    real(dp), intent(IN):: dt
+    integer,dimension(1:nvector)::cell_index,cell_levl,cc
+    integer :: isink, ip, ix, iy, iz
+    real(dp),dimension(nGroups):: BH_NpInp
+    real(dp),dimension(1:nvector,1:3)::pos
+    real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,scale_lum
+    real(dp)::scale_Np,scale_Fp,dx,dx_grid,vol_loc,coef_inp
+#if NGROUPS > 0
+    if(nsink<=0)return
+    call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+    scale_lum=scale_d*scale_l**3*scale_v**2/scale_t
+    call rt_units(scale_Np,scale_Fp)
+    dx=0.5D0**ilevel
+    dx_grid=2d0*dx
+    vol_loc=dx**ndim ! boxlen=1 (ks)
+    coef_inp=1d0/(vol_loc*scale_l**3)/scale_Np
+    call BH_luminosity_from_acc_rate_fg
+    call set_BH_SED
+    do isink=1,nsink
+      ! owner of the level-ilevel grid containing the sink
+      ix=int(xsink(isink,1)/dx_grid); iy=int(xsink(isink,2)/dx_grid); iz=int(xsink(isink,3)/dx_grid)
+      pos(1,1:3)=(/(ix+0.5d0)*dx_grid,(iy+0.5d0)*dx_grid,(iz+0.5d0)*dx_grid/)
+      call cmp_cpumap_lev(pos,cc,1,ilevel)
+      if(cc(1)/=myid)cycle
+      pos(1,1:3)=xsink(isink,1:3)
+      call get_cell_index(cell_index,cell_levl,pos,nlevelmax,1)
+      if(cell_levl(1)/=ilevel)cycle ! injected at the level of the leaf cell only
+      BH_NpInp(:)=acc_lum(isink)*scale_lum*L_to_Ndot_BH(:)*dt*scale_t ! photons
+      BH_NpInp(:)=coef_inp*BH_NpInp(:)                                ! photon number density [code]
+      do ip=1,nSEDgroups
+        rtunew(cell_index(1),iGroups(ip))=rtunew(cell_index(1),iGroups(ip))+BH_NpInp(ip)
+      end do
+    end do
+#endif
+  END SUBROUTINE BH_RT_feedback
+
+!*************************************************************************
+  SUBROUTINE set_BH_SED
+
+! FG sink BHs (patch/ks): group properties of a power-law spectrum L_nu ~ nu^alpha
+! (alpha=-1.5) between 11.2 eV_erg and 10 keV: L_to_Ndot_BH (bolometric L -> photons/s per
+! group), egy_BH, csn_BH, cse_BH. Computed once; needs nGroups == nSEDgroups.
+!-------------------------------------------------------------------------
+    use rt_parameters
+    use amr_commons, only:dp,myid
+    implicit none
+    real(dp), parameter :: alpha_pow = -1.5d0 ! power-law index of the BH radiation
+    real(dp), parameter :: hnu_min = 11.2d0   ! lower cutoff [eV_erg]
+    real(dp), parameter :: hnu_max = 1d4      ! upper cutoff [eV_erg]
+    real(dp) :: pL0,pL1
+    integer :: i,ip,ii
+    integer,parameter :: nLs=2000             ! wavelength bins of the tabulated SED
+    real(dp),dimension(1:nLs) :: Ls,SED
+    real(dp), parameter:: h_pl=6.6260755d-27, c_li=2.999d10, eV_erg=1.602176463158d-12 ! local names (constants has hplanck)
+    real(dp) :: L0, Ndot0, hnu_low, hnu_up, hnu, lambda, L_lambda
+    logical,save :: Initialized = .false.
+    if (Initialized) return
+    if (nGroups /=  nSEDgroups)then
+      if(myid==1)write(*,*)'set_BH_SED: nGroups == nSEDgroups is assumed; got ',nGroups,nSEDgroups
+      call clean_stop
+    end if
+    ! normalisation for a bolometric luminosity of 1 erg/s
+    L0 = h_pl**(alpha_pow+1) / (((hnu_max*eV_erg)**(alpha_pow+1) - (hnu_min*eV_erg)**(alpha_pow+1))/(alpha_pow+1))
+    Ndot0 = L0 / h_pl
+    do ip=1,nSEDgroups
+      hnu_low = max(groupL0(ip),hnu_min)
+      hnu_up = groupL1(ip)              ! groupL1 = 0: no upper limit
+      if (hnu_up == 0) then
+        hnu_up = hnu_max
+      else
+        hnu_up = min(hnu_up,hnu_max)
+      end if
+      if (hnu_low >= hnu_up) then
+        L_to_Ndot_BH(ip) = 0d0
+      else
+        L_to_Ndot_BH(ip) = Ndot0/h_pl**alpha_pow * ((hnu_up*eV_erg)**alpha_pow - (hnu_low*eV_erg)**alpha_pow)/alpha_pow
+      end if
+    end do
+    ! tabulated SED [erg/s/A] for the group averages
+    do i=1,nLs
+      hnu = hnu_max * (hnu_min/hnu_max) ** (dble(i)/nLs) ! from high to low frequency
+      lambda = c_li / (hnu*eV_erg/h_pl)                  ! [cm]
+      Ls(i) = lambda * 1d8                                ! [A]
+      L_lambda = L0 * (c_li/lambda)**alpha_pow * c_li/lambda**2 ! [erg/s/cm]
+      SED(i) = L_lambda * 1d-8                            ! [erg/s/A]
+    end do
+    do ip=1,nGroups
+      pL0 = groupL0(ip)
+      pL1 = groupL1(ip)
+      if (L_to_Ndot_BH(ip) == 0d0) then ! group outside the power law: no BH photons, and the
+        egy_BH(ip) = 0.5d0*(pL0+max(pL1,pL0)) ! integrator of this version stops without overlap
+        csn_BH(ip,:) = 0d0; cse_BH(ip,:) = 0d0
+        cycle
+      end if
+      egy_BH(ip) = getSEDEgy(Ls,SED,nLs,pL0,pL1)
+      do ii=1,nIons
+        csn_BH(ip,ii) = getSEDcsn(Ls,SED,nLs,pL0,pL1,ii)
+        cse_BH(ip,ii) = getSEDcse(Ls,SED,nLs,pL0,pL1,ii)
+      end do
+    end do
+    if(myid==1)write(*,'(A,99ES11.3)')' set_BH_SED: L_to_Ndot_BH [1/erg] =',L_to_Ndot_BH(1:nGroups)
+    Initialized = .true.
+  END SUBROUTINE set_BH_SED
+
 end module SED_module
 
 

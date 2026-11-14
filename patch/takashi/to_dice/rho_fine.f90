@@ -836,6 +836,14 @@ subroutine cic_amr(ind_cell,ind_part,ind_grid_part,x0,ng,np,ilevel)
       end do
     endif
 
+    ! FG sink (sf_fg, no_sinkcloud_refine): sink cloud particles do not count for the
+    ! particle refinement criterion (patch/ks)
+    if(star.and.no_sinkcloud_refine)then
+      do j=1,np
+        if(is_cloud(fam(j)))vol2(j)=0d0
+      end do
+    endif
+
     ! Rescale the mass by mass_sph for baryon particles
     if(star)then
       do j=1,np

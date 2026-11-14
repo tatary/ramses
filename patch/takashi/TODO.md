@@ -728,7 +728,7 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   - Pop III (family 3) と SFC は takashi の feedback/RT では `is_star` でないので放射も SN も出ない → フィードバック段階。
   - ks の part ファイルからの restart: `mp0` の有無 (ks は star_by_star/fire3_yields のときだけ) と `msp0` (takashi のみ)。
   - FG の stdout (星 1 個ごとの print) の抑制。`random_value_0to1` の乱数状態は restart で保存されない (ks と同じ)。
-  - `sf_fg` では sink (cloud=family 3) と `f_w>0` を禁止している。sink は ks の `sink_particle.f90` (cloud は `idp<0`) を移植する段階で解除。
+  - `sf_fg` では `f_w>0` を禁止している (debris family なし)。sink は移植済み (下)。
   - 非局所枯渇の一括版 `deplete_gas_from_spheres_batch` (`nonlocal_depletion_batch`, 既定 .true.) を入れた
     (2026-11-13; merge_ks.md「非局所枯渇の一括処理」)。`nH_postSF>0` の `deplete_gas_with_fixed_postSF_density` と
     Pop III の `deplete_gas_around_pos` は ks の逐次版のまま (個数が少ない)。SN reservoir も同じ octree 走査
@@ -738,7 +738,16 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   - 未移植: mechanical/spread/nonlocal_SN、star-by-star の SN (Inoue+2011, FAM_DEAD)、`pop2_SN_model`、hypernova X 線 (`isXray`)。
   - reservoir の pending エネルギーを含む checkpoint からの restart は経路のみ確認 (pending が 0 の output からの restart は一致)。
   - 一括非局所枯渇と SN reservoir は別の octree 走査 (`sphere_walk` と `get_sn_sphere_stats_events`)。統合の余地。
-- 残りの段階: sink/BH (bhpop3、ks の `sink_particle.f90`)、ugvtk 出力。ks 用の回帰ラン (FG 初期条件で FG バイナリと比較) は未実施。
+- sink/BH は移植済み (2026-11-13; merge_ks.md「sink/BH の移植」、`sink_particle_fg.f90`)。残り:
+  - 未移植: clump ベースの sink 生成 (`make_sink_from_clump`; ks 本番も bhpop3 のみ)、sub-grid AGN の種入れ
+    (`sgagn_seed='mhalo_based'`, halo finder が要る)、旧 `accrete_sink` (AGN blast/`sink_drag`)、`output_sink` (ks の
+    テキスト表 `sink_XXXXX.info`)、`check_particle_consistency`。yt が読む `sink_file_descriptor.txt` は出す (yt での読み込みは未確認)。
+  - sink の csv は上流の `output_sink_csv` (msmbh/dmfsink は 0; ks の 13 列は年齢が tsink になる以外すべて含む)。
+    restart は ks 形式の `sink_XXXXX.out<rank>` (全ランク同じ内容)。
+  - `check_sink_vars_among_cpus_fg` は `sink_check_vars=.true.` のときだけ (sink 1 個・呼び出し 1 回あたり ALLREDUCE 7 本)。
+  - `get_BHL_accretion_rate_fg` は非 cosmo でも G=1 で動くようにした (ks は停止)。`d_sink` 未指定でも止めない。
+  - DICE の `star_as_nbody` 粒子は family 5 = `FAM_DEAD` になるので `sink_mass_min_pop2BH>=0` にすると全部 sink 化される。
+- 残りの段階: ugvtk 出力。ks 用の回帰ラン (FG 初期条件で FG バイナリと比較) は未実施。
 
 ## 4. 運用上のメモ
 

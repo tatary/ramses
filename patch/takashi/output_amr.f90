@@ -150,6 +150,12 @@ subroutine dump_all
     filename=trim(filedir)//'part_'//trim(nchar)//'.out'
     filename_desc=TRIM(filedir)//'part_file_descriptor.txt'
     call backup_part(filename, filename_desc)
+    if(sink.and.sf_fg.and.myid==1)then ! FG sink (ks layout): binary sink_XXXXX.out00001 (all ranks hold the same
+      filename=TRIM(filedir)//'sink_'//TRIM(nchar)//'.out' ! sinks; init_sink_fg reads this file) + the descriptor yt uses
+      call backup_sink_fg(filename)
+      filename=TRIM(filedir)//'sink_file_descriptor.txt'
+      call file_descriptor_sink_fg(filename)
+    end if
 #ifndef WITHOUTMPI
     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
@@ -403,6 +409,12 @@ subroutine dump_restart
     filename=trim(filedir)//'part_restart.out'
     filename_desc=TRIM(filedir)//'part_file_descriptor.txt'
     call backup_part(filename, filename_desc)
+    if(sink.and.sf_fg.and.myid==1)then ! FG sink: binary sink_restart.out00001 + descriptor
+      filename=TRIM(filedir)//'sink_restart.out'
+      call backup_sink_fg(filename)
+      filename=TRIM(filedir)//'sink_file_descriptor.txt'
+      call file_descriptor_sink_fg(filename)
+    end if
 #ifndef WITHOUTMPI
     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
