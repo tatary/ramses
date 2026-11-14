@@ -232,7 +232,7 @@ endif
 MODOBJ += poisson_commons.o hydro_parameters.o hydro_commons.o \
           cooling_module.o bisection.o sparse_mat.o clfind_commons.o \
           gadgetreadfile.o write_makefile.o write_patch.o write_gitinfo.o \
-          sink_sn_feedback.o my_utils.o sbs_imf.o output_analysis.o sf_log.o
+          sink_sn_feedback.o my_utils.o sbs_imf.o sf_log.o
 ifeq ($(RT),1)
    MODOBJ += rt_parameters.o rt_hydro_commons.o coolrates_module.o \
              rt_spectra.o rt_cooling_module.o rt_flux_module.o
@@ -242,6 +242,8 @@ ifeq ($(USE_TURB),1)
 endif
 # FG feedback (merge_ks): SN radius search / energy reservoir modules (after hydro/rt modules)
 MODOBJ += sn_sphere_stats.o sn_feedback_radius.o sn_energy_reservoir.o
+# ugvtk output (merge_ks): uses my_utils, poisson/hydro/rt modules
+MODOBJ += output_analysis.o
 
 AMROBJ = read_params.o init_amr.o init_time.o init_refine.o tracer_utils.o adaptive_loop.o \
          amr_step.o update_time.o output_amr.o flag_utils.o \

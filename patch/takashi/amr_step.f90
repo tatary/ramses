@@ -1,5 +1,6 @@
 recursive subroutine amr_step(ilevel,icount)
   use sn_energy_reservoir, only: prepare_sn_reservoir !FG feedback (merge_ks)
+  use output_analysis, only: output_analysis_data, save_phi_sync_for_output !ugvtk (merge_ks)
   use amr_commons
   use pm_commons
   use hydro_commons
@@ -33,10 +34,18 @@ recursive subroutine amr_step(ilevel,icount)
 #endif
   logical::ok_defrag,output_now_all
   logical,save::first_step=.true.
+  logical,save::flg_phi_sync_for_output=.false. !ugvtk (merge_ks)
 
   if(numbtot(1,ilevel)==0)return
 
   if(verbose)write(*,999)icount,ilevel
+
+  !ugvtk (merge_ks, patch/ks): save phi_sync_for_output only in the first cycle
+  if(ilevel==levelmin) then
+    flg_phi_sync_for_output = .true. ! reset flag
+  else if (icount == 2) then
+    flg_phi_sync_for_output = .false. ! not store until flag is reset
+  end if
 
   !-------------------------------------------
   ! Make new refinements and update boundaries
@@ -199,6 +208,9 @@ recursive subroutine amr_step(ilevel,icount)
 
   endif
 
+  !ugvtk (merge_ks, patch/ks): output around the star idp_ugvtk / SFCs at given ages (acts at the finest level only)
+  if(ugvtk) call output_analysis_data(ilevel)
+
   !----------------------------
   ! Output frame to movie dump (without synced levels)
   !----------------------------
@@ -271,6 +283,9 @@ recursive subroutine amr_step(ilevel,icount)
     call poisson_solve_level(ilevel,icount)
     !when there is no old potential...
     if (nstep==0)call save_phi_old(ilevel)
+
+    !ugvtk (merge_ks, patch/ks): save phi at the first cycle of all levels
+    if (ugvtk .and. flg_phi_sync_for_output) call save_phi_sync_for_output(ilevel)
 
     ! Compute gravitational acceleration
     call force_fine(ilevel,icount)

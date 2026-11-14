@@ -335,8 +335,10 @@ CONTAINS
     real(dp) :: dx_cell, dx_grid
     integer :: ix_cell,iy_cell,iz_cell,ix_grid,iy_grid,iz_grid
 
-
-    dx_cell = 0.5D0**ilevel
+    ! TO MODIFIED (merge_ks, 2026-11-14): pos and cmp_cpumap_lev are in user units ([0,boxlen)), so the grid
+    ! size must be scaled by boxlen/nx_loc (ks has boxlen=1; with boxlen=100 the old snapping moved the point
+    ! by up to one code-unit grid, i.e. into a neighbouring real grid when pos was within 1/boxlen of its edge)
+    dx_cell = 0.5D0**ilevel*boxlen/dble(icoarse_max-icoarse_min+1)
     dx_grid = 2*dx_cell
 
     !integer position of cell containing the pos

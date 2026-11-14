@@ -260,6 +260,11 @@ module amr_parameters
   real(dp) :: pop3_dist_min_pc = 1d2 !minimum stellar distance for pop3 formation (pc)
   real(dp) :: pop3_tMyr_suppress_newstar = 2d0 !time for suppressing successive pop3 formation (Myr)
   real(dp) :: p3_output_minmass = -1d0 !ugvtk output around a new Pop III only above this mass [Msun] (<0: all)
+  ! ugvtk (nested uniform-grid VTK output, output_analysis.f90; &OUTPUT_PARAMS): TO ADDED master switch, rest as in ks
+  logical  :: ugvtk = .false.          !master switch of the ugvtk output (ks has none: there the output is always on)
+  integer  :: idp_ugvtk = -1           !idp of the star followed by the ugvtk output at formation and at given ages (no output if negative)
+  integer  :: NI_ugvtk = 64            !cells on a side of each ugvtk level
+  logical  :: SFC_output_at_given_age = .false. !ugvtk output around every SFC at 0.1, 1, 3, 5, 10 Myr (expensive)
   ! SFC (star-forming cloud) model, pop2_model = 4/5
   real(dp) :: SFC_dist_min_pc = 1d2 !minimum distance for simulataneous SFC formation (pc)
   real(dp) :: SFC_nH_min = -1d3 !minimum (outer-boundary) density for SFC (cm-3)

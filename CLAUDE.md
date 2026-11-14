@@ -93,7 +93,7 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
 - ks (杉村さん版) からの移植 (`merge_ks` ブランチ、`docs/merge_ks.md`): 星形成は `&SF_PARAMS` の `sf_fg=.true.` で
   `star_formation_fg.f90` (Pop II 局所/SFC、Pop III、非局所枯渇) に切り替わる。このとき粒子 family 3-8 は
   `FAM_POP3/SN/DEAD/BH/SFC/PSC` の意味になる (`pm_commons`; 既定では上流の cloud/debris/other)。補助: `my_utils.f90`
-  (ufront)、`sbs_imf.f90`、`output_analysis.f90` (ugvtk の stub)、`sf_log.f90` (星形成/SN ログの共通 writer)。
+  (ufront)、`sbs_imf.f90`、`output_analysis.f90` (ugvtk: SFC/Pop III/指定星の周りの入れ子 VTK、`&OUTPUT_PARAMS` の `ugvtk=.true.` で有効)、`sf_log.f90` (星形成/SN ログの共通 writer)。
   テストは `tests/dice_rt_fg.nml`。フィードバック側: `feedback.f90` に Pop III SN と SFC 寿命、`&FEEDBACK_PARAMS` の
   `SN_reservoir` (SN 熱を冷却半径の球へ、`sn_*.f90` 3 本 + amr_step/refine_utils/load_balance/init_hydro/output_hydro のフック)、
   `fcool_stop` (冷却停止タイマー、NPSCAL を 1 つ余計に取る)。sink/BH: `sf_fg` のとき `sink_particle_fg.f90` (ks の

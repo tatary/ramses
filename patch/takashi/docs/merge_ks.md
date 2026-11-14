@@ -465,3 +465,63 @@ sink 試験は `tests/dice_rt_fg.nml` の Pop III SN 設定 (Zpop3=10, pop3_mode
 | 二層分割 (`-DTWO_TIER_CHECK`, two_tier_level=7) | 完走、STATUS ok、cloud 数チェック ok; 総和は 1e-6 程度の丸め差、sink の質量・位置は合体順の違いで 2 個が僅差 |
 | restart (output_00003, `sink_00003.out<rank>` から) | 完走、sink 11 個の質量・位置は 1e-9 で一致、星形成/SN イベント (stars ログ) は同一; hydro は丸め差 (FG/フィードバック段階の restart と同じで bit 一致ではない; 乱数状態と `acc_lum` などの派生量は保存されない) |
 | ks 設定ビルド (QUADHILBERT, NPSCAL=3, DICE なし) | ビルド OK (`patch/takashi/rho_fine.f90` 経由) |
+
+## ugvtk 出力の移植 (2026-11-14): `output_analysis.f90`
+
+ks の `output_analysis.f90` (3600 行) のうち本番で使う部分を、生成スクリプト (scratchpad `make_output_analysis.py`、
+ks のブロックを切り出して変換) で `patch/takashi/output_analysis.f90` (2300 行、以前は stub) にした。
+
+### 方式
+
+- 出すもの: `ugvtk/<prefix>.<nstep>.<level>.vtk` (legacy VTK binary、STRUCTURED_POINTS、各 level で `NI_ugvtk`^3 セル、
+  `l_range` level 分の入れ子、rank 1 が `.tmp` に書いて rename)。フィールドは nH, T, vx/vy/vz, Z, yHI/yH2/yHII/yHeI/yHeII/yHeIII,
+  Np_bin1..nGroups (RT)、phi_grav、rhoDM/rhostar。中身は `output_uniform_data` (ks のまま: `set_ufront(lev,2)` と
+  無条件の `set_ufront(lev,3)`、`set_particle_density` の粒子密度、level ごとの ALLREDUCE で rank 1 に集約)。
+- 経路: (1) SFC 形成時 `output_around_SFC` (`star_formation_fg`、`SFC_output_minmass`)、(2) Pop III 形成時 `output_around_star`
+  (`p3_output_minmass`)、(3) `idp_ugvtk` の星の形成時と年齢ごと (1 kyr … 300 Myr の 33 点、`output_around_star_at_given_age`)、
+  (4) 全 SFC の 0.1/1/3/5/10 Myr (`SFC_output_at_given_age`、重い)。(3)(4) は `amr_step` から毎 level 呼ぶ
+  `output_analysis_data` が最も細かい level でだけ動かす (ks と同じ位置: levelmin の出力ブロックの直後)。
+- **主スイッチ `ugvtk` (`&OUTPUT_PARAMS`、既定 .false.、TO ADDED)**: ks には無く常に有効だったが、既定だと Pop III 1 個ごとに
+  数十 MB 書くので takashi では明示的に on にする。`idp_ugvtk`, `NI_ugvtk`, `SFC_output_at_given_age`, `p3_output_minmass`,
+  `SFC_output_minmass` も `&OUTPUT_PARAMS` で読む (後の 2 つは `&SF_PARAMS` にもある; 同じ変数を 2 つの namelist 群に入れるのは可)。
+- `phi_sync_for_output` (ks: poisson_commons + interpol_phi + amr_step + refine_utils): 各 level の最初の subcycle で phi を保存し、
+  出力の重力ポテンシャルを level 間で同じ時刻に揃える。この module の配列にして `ugvtk` のときだけ確保、`amr_step`
+  (フラグ `flg_phi_sync_for_output` と `save_phi_sync_for_output`) と `refine_utils` (新 grid は父の値、消す grid は 0) にフック。
+- `rhoprt` (ks: amr_commons、常に ncell×2) も module の配列で初回使用時に確保。`nstep_restart` を `amr_commons` に足し
+  `init_amr` の restart で設定 (restart 後、捨てた枝の nstep 以降の vtk を `ugvtk/orphan_<nstep>/` に退避する ks の処理)。
+- Pop III 形成時の出力 (pop3_model 1-3) と `idp_ugvtk` の星の形成時出力は、ks では `write_log_star_formation` の末尾
+  (全ランクに集めた新星リストのループ) でやっていた。takashi は星ログを生成箇所で直接書く方式にしたのでリストが無い。
+  代わりに `ugvtk_note_new_star(ipart)` (生成箇所 8 か所、rank 内で Pop III と idp_ugvtk の星だけ控える) と
+  `ugvtk_flush_new_stars(ufront_updated, pop3_output)` (ks が write_log を呼んでいた 4 か所の集団点: 局所生成の後、
+  `add_pop3_particles` の後、SFC 印と SFC 星の後; ALLREDUCE で集めて全ランクが `output_around_star`) に分けた。
+- Makefile: `output_analysis.o` は my_utils/poisson/hydro/rt の module を使うので RT の module 群の後 (sn_* の後) に移した。
+- **単位**: ks は boxlen=1 (code 単位 = user 単位) 前提で、星の位置 (user 単位、DICE では ~50 kpc) を 0-1 の箱に当てはめて
+  `Ni` が負になった。領域と標本点を user 単位 ([0,boxlen)) に統一し (`get_cell_index`/`cmp_cpumap` は user 単位)、level 幅だけ
+  `scale_u=boxlen/nx_loc` で換算 (`output_around_SFC/star`, `output_uniform_data` の `bscale`)。ORIGIN/SPACING は user 単位 × scale_l で pc。
+- **`my_utils` の `get_cpu_of_pos` のバグ修正** (同じ原因): 点を grid 中心に丸めるときの grid 幅が code 単位だったので、boxlen≠1 では
+  点から 1/boxlen 以内の別 grid に落ちることがあり (cmp_cpumap は user 単位)、`get_active_cell_index_*` (SFC/Pop III 4-6 の配置、
+  ugvtk の標本) が所有者を誤る可能性があった。boxlen=1 (ks) では変化なし。pop2_model=2 / pop3_model=1 の試験は bit 一致。
+
+### ks からの変更点
+
+- `ugvtk` スイッチ (上)。`fout_*` 系 (x 軸の線データ、中心箱、sink/halo 周り、密度最大・ポテンシャル最小) と `output_line_data`
+  等は未移植 (ks 本番で全部 -1)。namelist に `fout_*` が残っていると読めないので `namelist/ks/ngridmax_fire3.nml` ではコメントのまま。
+- `rt_c_fraction` はこの版ではスカラー (ks は level ごとの VSLA)。非 cosmo では `texp=t`, `texp_ini=0` (ks は Friedmann 表を無条件に引く)。
+  RT なしビルドでは放射場を出さず、電離度は中性 (`#ifdef RT`)。
+- Pop III 形成時の出力に `p3_output_minmass` を pop3_model 1-3 にも適用する (ks は 4-6 だけで、1-3 は `write_log` 経路で全 Pop III を出していた。
+  ks 本番の `p3_output_minmass=1d4` と pop3_model=1 の 120 Msun だと、ks は全部出し takashi は出さない)。
+- ks の `output_around_SFC` は star_formation 内の呼び出しを前提に nlevelmax の uold を原始変数とみなして保存量に戻して出力し、
+  終わったら戻す。`output_around_SFC_at_given_age` (amr_step から、uold は保存量) もこれを通るので、出力の nlevelmax セルは
+  `set_ufront(lev,2)` 経由なら誤変換になるが、無条件の `set_ufront(lev,3)` (unew) が後で上書きするので実害は出力には無く、
+  uold には往復の丸め差だけ残る。ks と同じ挙動のまま (TODO)。
+- 年齢ごとの出力は 1 step に最初に該当した年齢 1 つだけ (`exit`) なので、fine step (試験では ~0.3 Myr) より短い 10 kyr, 100 kyr は飛ぶ (ks と同じ)。
+
+### 検証 (4 ランク、sink 試験の namelist `tests/dice_rt_fg.nml` 相当、levelmin 6 / levelmax 8)
+
+| 試験 | 結果 |
+|---|---|
+| `ugvtk=.false.` (既定、18 step) | 完走、変更前 (fs2) と 112 ファイル bit 一致 |
+| `ugvtk=.true., idp_ugvtk=425, NI_ugvtk=16, p3_output_minmass=1d9` (18 step) | 完走 (186 s、off と同じ)、`ugvtk/idp425.<nstep>.{6,7,8}.vtk` (形成時) + `idp425_1kyr/_1Myr/…/_10Myr` 各 3 本 = 36 本 13 MB; 寸法 16³、原点 = 星の位置 − 8Δx、22 フィールド NaN なし (HII 領域で yHII→1、光子密度は星の周りで非零、phi_grav は phi_sync 経由、rhostar=0 は FAM_STAR 無し)。hydro/part/grav/rt の出力は off と bit 一致 (出力が物理を変えない) |
+| `ugvtk=.true., NI_ugvtk=4, p3_output_minmass=-1` (7 step、Pop III 846 個の形成時出力) | 完走 (158 s)、`Pop3_<k>` 846 個 × 3 level = 2538 本 20 MB、`.tmp` 残りなし |
+| RT=0 ビルド | コンパイル OK (放射場なし、電離度は中性) |
+

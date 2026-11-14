@@ -723,7 +723,10 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   境界例で孤児 grid を作るバグなので)。既定テストは bit 一致。本番では境界例で buffer oct が少し増える方向。
 - Mera.jl の two-tier 出力 (`hilbert2t`) と QUADHILBERT 対応は後回し (merge_ks.md 末尾)。
 - 星形成は移植済み (2026-11-13, `sf_fg`, `star_formation_fg.f90`; merge_ks.md「星形成の移植」)。残り:
-  - ugvtk 出力 (`output_analysis.f90` は stub)。SFC/Pop III 形成時と年齢ごとの入れ子 VTK を出すかどうか。
+  - ugvtk 出力は移植済み (2026-11-14; merge_ks.md「ugvtk 出力の移植」、主スイッチ `ugvtk`)。未移植: `fout_*` 系の付録出力。
+    ks と同じ要確認点: `output_around_SFC_at_given_age` 経由の uold 往復変換 (丸め差)、`set_ufront(lev,3)` の無条件上書き。
+    `my_utils` の `get_cpu_of_pos` は boxlen≠1 で grid 幅の単位が違っていたのを修正 (2026-11-14; ks は boxlen=1 で無影響)。
+    年齢出力は 1 step に 1 つ (fine step より短い 10/100 kyr は飛ぶ、ks と同じ)。
   - `SFC_flg_thin` / `flg_thin_star_cell` の cooling 側、`fJeans_cool`。
   - Pop III (family 3) と SFC は takashi の feedback/RT では `is_star` でないので放射も SN も出ない → フィードバック段階。
   - ks の part ファイルからの restart: `mp0` の有無 (ks は star_by_star/fire3_yields のときだけ) と `msp0` (takashi のみ)。
@@ -748,7 +751,7 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   - `check_sink_vars_among_cpus_fg` は `sink_check_vars=.true.` のときだけ (sink 1 個・呼び出し 1 回あたり ALLREDUCE 7 本)。
   - `get_BHL_accretion_rate_fg` は非 cosmo でも G=1 で動くようにした (ks は停止)。`d_sink` 未指定でも止めない。
   - DICE の `star_as_nbody` 粒子は family 5 = `FAM_DEAD` になるので `sink_mass_min_pop2BH>=0` にすると全部 sink 化される。
-- 残りの段階: ugvtk 出力。ks 用の回帰ラン (FG 初期条件で FG バイナリと比較) は未実施。
+- 残りの段階: ks 用の回帰ラン (FG 初期条件で FG バイナリと比較) は未実施。
 
 ## 4. 運用上のメモ
 

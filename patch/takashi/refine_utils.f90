@@ -603,6 +603,7 @@ end subroutine refine_fine
 !###############################################################
 subroutine make_grid_fine(ind_grid,ind_cell,ind,ilevel,nn,ibound,boundary_region)
   use amr_commons
+  use output_analysis, only: phi_sync_for_output !ugvtk (merge_ks)
   use sn_energy_reservoir, only: refine_sn_reservoir !FG feedback (merge_ks)
   use hydro_commons
   use poisson_commons, ONLY:f, phi,phi_old
@@ -943,6 +944,11 @@ subroutine make_grid_fine(ind_grid,ind_cell,ind,ilevel,nn,ibound,boundary_region
               phi(iskip+ind_grid_son(i))=phi(ind_fathers(i,0))
               phi_old(iskip+ind_grid_son(i))=phi_old(ind_fathers(i,0))
            end do
+           if(allocated(phi_sync_for_output))then !ugvtk (merge_ks, patch/ks)
+              do i=1,nn
+                 phi_sync_for_output(iskip+ind_grid_son(i))=phi_sync_for_output(ind_fathers(i,0))
+              end do
+           end if
         end do
      end if
      !===========================
@@ -968,6 +974,7 @@ end subroutine make_grid_fine
 !###############################################################
 subroutine kill_grid(ind_cell,ilevel,nn,ibound,boundary_region)
   use amr_commons
+  use output_analysis, only: phi_sync_for_output !ugvtk (merge_ks)
   use sn_energy_reservoir, only: coarsen_sn_reservoir !FG feedback (merge_ks)
   use pm_commons
   use hydro_commons
@@ -1109,6 +1116,11 @@ subroutine kill_grid(ind_cell,ilevel,nn,ibound,boundary_region)
            phi(ind_cell_son(i))=0.0D0
            phi_old(ind_cell_son(i))=0.0D0
         end do
+        if(allocated(phi_sync_for_output))then !ugvtk (merge_ks, patch/ks)
+           do i=1,nn
+              phi_sync_for_output(ind_cell_son(i))=0.0D0
+           end do
+        end if
         do idim=1,ndim
            do i=1,nn
               f(ind_cell_son(i),idim)=0.0D0

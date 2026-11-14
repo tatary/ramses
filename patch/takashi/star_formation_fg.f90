@@ -24,7 +24,7 @@ subroutine star_formation_fg(ilevel)
   use mpi_mod
   use sf_log
 #ifdef RT
-  use output_analysis, only: output_around_SFC,output_around_star
+  use output_analysis, only: output_around_SFC,output_around_star,ugvtk_note_new_star,ugvtk_flush_new_stars
   use poisson_commons, only : phi
   use rt_parameters, ONLY: iIons,ixHI,ixHII,ixHeII,ixHeIII
   use sbs_imf
@@ -1610,6 +1610,9 @@ subroutine star_formation_fg(ilevel)
   end do
   nstar_tot=nstar_tot+ntot_all
 
+  ! ugvtk (merge_ks): formation output around new Pop III (pop3_model 1-3) and the star idp_ugvtk (ks: write_log_star_formation)
+  call ugvtk_flush_new_stars(ufront_updated, .not.(pop3_model==4 .or. pop3_model==5 .or. pop3_model==6))
+
 
 
   if(myid==1)then
@@ -1723,6 +1726,7 @@ subroutine star_formation_fg(ilevel)
         msp0(ind_part(i))=mp(ind_part(i))
 #endif
         if(sf_log_properties) call sf_log_write_star(ilun_sf,ind_part(i),ind_cell_new(i),ilevel,.true.)
+        call ugvtk_note_new_star(ind_part(i))  ! ugvtk (merge_ks)
 
         !------------------------- KS DEBUG ----------------------------!
         ! write(*,'(A,1PE9.2,A,I9,A,I3,A,1PE9.2)') &
@@ -2215,6 +2219,7 @@ contains
     ! add Pop III particles
     !-------------------------------------------------------------
     call add_pop3_particles
+    call ugvtk_flush_new_stars(ufront_updated, .false.)  ! ugvtk (merge_ks): the star idp_ugvtk (Pop III already output above)
 
     !--------------------------------------------------------------
     ! take a log for formed stars
@@ -2679,6 +2684,7 @@ contains
             msp0(ind_part(1))=mp(ind_part(1))
 #endif
             if(sf_log_properties) call sf_log_write_star(ilun_sf,ind_part(1),cell_index1,ilevel,(cell_levl1==nlevelmax))
+            call ugvtk_note_new_star(ind_part(1))  ! ugvtk (merge_ks)
 
             write(*,'(A,2I4,I10,A,I8,A,I2,A,1PE8.1,A,1P3E9.1, A,1P3E16.8)') &
               "** New Pop3 particle added **  myid, lev, ind_cell: ", myid, cell_levl1, cell_index1,&
@@ -2733,6 +2739,7 @@ contains
             msp0(ind_part(1))=mp(ind_part(1))
 #endif
             if(sf_log_properties) call sf_log_write_star(ilun_sf,ind_part(1),cell_index1,ilevel,(cell_levl1==nlevelmax))
+            call ugvtk_note_new_star(ind_part(1))  ! ugvtk (merge_ks)
 
             write(*,'(A,2I4,I10,A,I8,A,I2,A,1PE9.2,A,1PE8.1,A,1P3E9.1, A,1P3E16.8)') &
               "** New Pop3 particle added (one of binary with m1 = 2/3 mtot) **  myid, lev, ind_cell: ", myid, cell_levl1, cell_index1,&
@@ -2771,6 +2778,7 @@ contains
             msp0(ind_part(2))=mp(ind_part(2))
 #endif
             if(sf_log_properties) call sf_log_write_star(ilun_sf,ind_part(2),cell_index1,ilevel,(cell_levl1==nlevelmax))
+            call ugvtk_note_new_star(ind_part(2))  ! ugvtk (merge_ks)
 
             write(*,'(A,2I4,I10,A,I8,A,I2,A,1PE9.2,A,1PE8.1,A,1P3E9.1, A,1P3E16.8)') &
               "** New Pop3 particle added (one of binary with m2 = 1/3 mtot) **  myid, lev, ind_cell: ", myid, cell_levl1, cell_index1,&
@@ -2829,6 +2837,7 @@ contains
               msp0(ind_part(1))=mp(ind_part(1))
 #endif
               if(sf_log_properties) call sf_log_write_star(ilun_sf,ind_part(1),cell_index1,ilevel,(cell_levl1==nlevelmax))
+              call ugvtk_note_new_star(ind_part(1))  ! ugvtk (merge_ks)
 
               write(*,'(2(A,I4),A,2I4,I10,A,I8,A,I2,A,1PE8.1,/,A,1P3E9.1, A,1P3E16.8)') &
                 "** New Pop3 particle added (", i_multi, "th star in the ", &
@@ -4582,6 +4591,7 @@ contains
         msp0(ind_part1(1))=mp(ind_part1(1))
 #endif
         if(sf_log_properties) call sf_log_write_star(ilun_sf,ind_part1(1),cell_index1,ilevel,(cell_levl1==nlevelmax))
+        call ugvtk_note_new_star(ind_part1(1))  ! ugvtk (merge_ks)
         write(*,'(A,2I4,I10,A,I8,A,I2,A,1P3E9.1,A,1P3E16.8)') &
           "** New SFC marker particle added **  myid, lev, ind_cell: ", myid, cell_levl1, cell_index1, &
           ", idp:", idp(ind_part1(1)), ", fm:", typep(ind_part1(1))%family, &
@@ -4592,6 +4602,7 @@ contains
           ', idp = ', nstar_tot, ', pos = ', SFC_pos_glob(1:3,iSFC)
       end if
     end do
+    call ugvtk_flush_new_stars(ufront_updated, .false.)  ! ugvtk (merge_ks): the star idp_ugvtk
   end subroutine create_SFC_markers
 
   !------------------------------------------------------------------------------------------------
@@ -4907,6 +4918,7 @@ contains
         msp0(ind_part(1))=mp(ind_part(1))
 #endif
         if(sf_log_properties) call sf_log_write_star(ilun_sf,ind_part(1),cell_index1,ilevel,(cell_levl1==nlevelmax))
+        call ugvtk_note_new_star(ind_part(1))  ! ugvtk (merge_ks)
         !--------------------------------------------------------------------------
         !** WARNING **  WARNING **  WARNING **  WARNING **  WARNING **  WARNING ** !
         !--------------------------------------------------------------------------
@@ -5011,6 +5023,7 @@ contains
     !    end do
     ! end do
 
+    call ugvtk_flush_new_stars(ufront_updated, .false.)  ! ugvtk (merge_ks): the star idp_ugvtk (ks: write_log_star_formation(isSFC))
   end subroutine star_formation_in_SFC
 
 
@@ -5345,6 +5358,7 @@ contains
         msp0(ind_part(i))=mp(ind_part(i))
 #endif
         if(sf_log_properties) call sf_log_write_star(ilun_sf,ind_part(i),ind_cell_new2(inew),ilevel,(level_new(inew)==nlevelmax))
+        call ugvtk_note_new_star(ind_part(i))  ! ugvtk (merge_ks)
 
 
         ! !used only for writing star-formation log (the part of No adding star in the original code)

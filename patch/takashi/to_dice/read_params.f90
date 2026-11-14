@@ -115,7 +115,8 @@ subroutine read_params
   & ,unbind,make_mergertree,stellar,aexp_ini
   namelist/output_params/noutput,foutput,aout,tout &
   & ,tend,delta_tout,aend,delta_aout,gadget_output,walltime_hrs &
-  & ,minutes_dump,restart_hrs
+  & ,minutes_dump,restart_hrs &
+  & ,ugvtk,idp_ugvtk,NI_ugvtk,SFC_output_at_given_age,p3_output_minmass,SFC_output_minmass ! ugvtk (merge_ks; the last two also in &SF_PARAMS)
   namelist/amr_params/levelmin,levelmax,ngridmax,ngridtot &
   & ,npartmax,nparttot,nexpand,boxlen,nlevel_collapse
   namelist/poisson_params/epsilon,gravity_type,gravity_params &

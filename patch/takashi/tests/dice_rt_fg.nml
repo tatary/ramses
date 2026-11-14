@@ -112,6 +112,8 @@ nonlocal_depletion=.false.     ! .true. で球からの枯渇 (ufront を確保)
 ! フィードバックの試験 (2026-11-13): nstepmax=14 にすると Pop III (Zpop3=1d1, pop3_model=1, 寿命 4 Myr) の SN が step 13 で起きる。
 ! &FEEDBACK_PARAMS に SN_reservoir=.true., Ncell_SN_max=8d0, pop3_ESN=3d52 で半径探索と球注入、
 ! fcool_stop=8d0 は NPSCAL を 1 つ増やしたビルドで (ivar_coolstop=nvar)。
+! ugvtk の試験 (2026-11-14): 上の sink 試験の &OUTPUT_PARAMS に ugvtk=.true., idp_ugvtk=425 (step 7 の Pop III), NI_ugvtk=16,
+! p3_output_minmass=1d9 → ugvtk/idp425*.vtk (形成時 + 年齢ごと、level 6-8 の 3 本ずつ)。p3_output_minmass=-1 だと Pop III 846 個分出る。
 ! sink/BH の試験 (2026-11-13): 上の Pop III SN 設定 (nstepmax=18) に &RUN_PARAMS sink=.true. と
 ! &SINK_PARAMS create_sinks=.true., accretion_scheme='bondi', nsinkmax=1000, ir_cloud=4, mass_sink_direct_force=3d2,
 ! smbh=.true., bhpop3=.true., BH_model=2, sink_mass_min_pop3BH=1d1 (npartmax=6000000: cloud 粒子は sink 1 個に 2109 個)。

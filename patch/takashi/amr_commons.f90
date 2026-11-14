@@ -8,6 +8,7 @@ module amr_commons
   integer::nstep=0                              ! Time step
   integer::nstep_coarse=0                       ! Coarse step
   integer::nstep_coarse_old=0                   ! Old coarse step
+  integer::nstep_restart=-1                     ! nstep restored from the restart dump (-1: fresh run); ugvtk files with nstep >= this were written by an abandoned branch (output_analysis)
   integer::nflag,ncreate,nkill                  ! Refinements
   integer::ncoarse                              ! nx.ny.nz
   integer::ngrid_current                        ! Actual number of octs

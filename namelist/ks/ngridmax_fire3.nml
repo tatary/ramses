@@ -45,10 +45,11 @@ restart_hrs=1.0
 !KS fout_hl=-1
 !KS fout_rhmx=-1
 !KS fout_phmn=-1
-!KS idp_ugvtk=-1
-!KS NI_ugvtk=64
-!KS p3_output_minmass=1d4
-!KS SFC_output_minmass=1d5
+ugvtk=.true.                   ! ugvtk 出力の主スイッチ (takashi で追加; ks では常に on)。fout_* 系は未移植
+idp_ugvtk=-1
+NI_ugvtk=64
+p3_output_minmass=1d4
+SFC_output_minmass=1d5
 /
 &INIT_PARAMS
 filetype='grafic'
