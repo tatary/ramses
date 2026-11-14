@@ -754,7 +754,10 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
 - ks との比較ラン (2026-11-14; merge_ks.md「ks との比較ラン」): MUSIC zoom (haloD_l5_14_z9) 6 step で ks 版と初期状態が全桁一致、
   以後は密度 1e-6・運動量 3e-5 の相対差、grid 数一致。合わせるのに `omega_b` (ks は omega_b0 を無条件代入) と
   初期電離度 (Peebles の残留電離を `init_flow_fine` に移植、`rt_is_init_xion=.false.`) が必要だった。残り:
-  - 星形成・SN・sink が起きる長さのラン (数十 step 以上) での比較は未実施。
+  - 長いラン (12 ランク、z=21 まで): 最初の Pop III 形成 (pop3_model=6、8 連星 2413 Msun) は同じ fine step・同じセル・同じ
+    質量で一致 (merge_ks.md「長いラン」)。その際 takashi の FIRE-3 feedback の年齢換算 (cosmo で a² 倍小さい) を修正。
+  - FIRE-3 の年齢の評価点を ks 式 (step 中央、最初の step は年齢 0 からの積分) に揃えた (2026-11-14)。DICE の結果は
+    変わる (SN 率の評価点が半 step ずれる) ので、以後の回帰の基準はこの版の出力。
   - 初期温度 0.5% (`rt_evol_single_cell` の冷却率・定数)、`x_MIN` (ks 1e-12 / takashi 1e-20) の差は残したまま。
   - 未移植で ks 側を off にして比べたもの: `flg_voffset_ini` (初速オフセット)、`fof_find`、`flg_thin_star_cell`、`pop2_SN_model`。
 

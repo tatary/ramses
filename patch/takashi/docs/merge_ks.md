@@ -569,3 +569,29 @@ ks 版バイナリと移植後のバイナリを同じ cosmological 初期条件
 星形成・sink は 6 step では起きない (z~105 まで)。残る既知の差: cloudy テーブル (方針 1)、`x_MIN`、初期温度の 0.5%、
 未移植の `flg_thin_star_cell` / `pop2_SN_model` / `fof_find` / `flg_voffset_ini`。星形成が起きる段階 (もっと長いラン) の比較は未実施。
 
+### 長いラン (2026-11-14、`ksref_long` / `kstest_long`、12 ランク、nstepmax=400、出力 z=30/25/20/14)
+
+同じ設定で星形成が起きるまで走らせた (ks は -O2 + 境界チェックのバイナリなので 1 step あたり約 2 倍遅い)。
+
+- z=30 (output_00002): セル数 2,332,672 vs 2,332,808、密度の総和 1e-4、運動量 1.5e-4、内部エネルギー 3e-4、xHII の総和 1e-3 (最大値 5%) の相対差。
+  log のエネルギーは step 98 まで 1e-3 以内 (takashi の log の桁数)。初期の丸め差と温度 0.5% が構造形成とともにゆっくり広がる。
+- **最初の Pop III 形成 (pop3_model=6) は両者で同じイベント**: 同じ fine step 377 (coarse step 134、a=0.04562 / 0.04563、z≈21)、
+  同じ候補セル (位置 (0.47503, 0.49184, 0.49693)、nH=11.1 cm⁻³、T=1030 K、yHI 0.999、yHII 1.2e-4、yH₂ 4.0e-4、Z=0、
+  rank 8 / level 16)。雲スケールの量: ir_cloud=56、R_cloud 20294 vs 20295 pc、M_cloud 2.5689e9 Msun、
+  Ṁ_cloud 7.1405e-2 vs 7.1411e-2 Msun/yr、M_pop3 2412.9 vs 2413.0 Msun (5e-5)。8 連星の質量 (1210, 605, 302, 151, 76, 38, 19, 9.5 Msun)
+  も同一。takashi 側は ugvtk (level 6-16 の 11 本) と `SFdata/pop3prof.378.1.dat` も出た。
+- Pop III の寿命末 (303 Msun → 2.15 Myr、1211/606 Msun → 2.4 Myr; M>260 なので直接崩壊、E_SN=0) と残骸 BH の sink 化
+  (303, 1211, 606 Msun の sink → 合体で 1 個 2120 Msun、Bondi 降着 2.4e-9 Msun/yr、L=1.3e37 erg/s) が takashi 側で起きた
+  (fine step 449-471)。ks 側は到達待ち (下に追記)。
+- **見つけたバグ (takashi の FIRE-3 feedback、merge 前から)**: `feedback.f90` の `t_age_Gyr` と `dt_Gyr` が `scale_t` で換算されて
+  いたが、`use_proper_time` のとき (cosmo + rt_star) は texp と `dteff*aexp**2` の単位が `scale_t/aexp**2` (= 1/H0) なので
+  年齢と dt が a² 倍小さくなる (z=20 で 2e-3 倍) → cosmo では Pop II の SN が永久に起きない。DICE (aexp=1) では無害。
+  `tsec` (= scale_t または scale_t/aexp**2) に統一して修正 (2026-11-14)。Pop III の寿命判定 (`t0_3`) は元から正しく、
+  log の `t_age[Myr]` だけが a² 倍小さく表示されていた。- **FIRE-3 の年齢の評価点を ks 式に変更** (2026-11-14、ユーザー判断): ks の `fire3_yields` 経路は SN 率・質量放出率を step 中央の年齢
+  (`t_age - 0.5*dteff`、midpoint 則) で評価し、step の途中で生まれた星は年齢 0 からその時点までを積分する。takashi は step 終端の
+  年齢で dteff 全体に掛けていた (端点則、生まれる前の時間も数える)。`feedback.f90` を ks 式にした。非 cosmo (DICE) でも
+  結果が変わる (bit 不一致、SN の立ち上がりが半 step 遅く・少なくなる) ので、DICE の回帰 (fs3) の差を下に記録。  DICE での効き方 (フィードバック段階の試験 fb5 → fb6、`dice_rt_amr` 系 14 step、sf_fg、Pop II 約 5500 個、SN_reservoir):
+  92 ファイル中 72 が変わり、SN 放出 9 件 1.92e54 erg → 8 件 1.76e54 erg (-8%)、新星 5483 → 5534、output_00004 の
+  内部エネルギー総和 -2.8%、密度・金属の総和 1e-4。sink 試験 (fs2/fs3: Pop II 粒子なし) は bit 一致のまま。
+  a² の修正だけでは DICE は bit 一致 (fs3 で確認)。
+

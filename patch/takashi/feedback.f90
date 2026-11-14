@@ -250,6 +250,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel,ok3)
   ! Particle based arrays
   logical,dimension(1:nvector),save::ok
   real(dp),dimension(1:nvector),save::mloss,mzloss,ethermal,ekinetic,dteff
+  real(dp)::tsec   ! seconds per code time unit for ages (see below)
   real(dp),dimension(1:nvector),save::vol_loc
   real(dp),dimension(1:nvector,1:ndim),save::x
   integer ,dimension(1:nvector,1:ndim),save::id,igd,icd
@@ -423,6 +424,11 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel,ok3)
         dteff(j)=dteff(j)*aexp**2
      end do
   endif
+  ! seconds per code time unit for ages and dteff: proper time (texp, dteff*aexp**2) has the unit scale_t/aexp**2
+  ! (= 1/H0), conformal/non-cosmo time has scale_t (2026-11-14: was scale_t in both cases -> ages and dt of the
+  ! FIRE-3 rates a factor aexp**2 too small in cosmological runs; harmless for DICE where aexp=1)
+  tsec=scale_t
+  if(use_proper_time)tsec=scale_t/aexp**2
 
   ! Reset ejected mass, metallicity, thermal energy
   do j=1,np
@@ -442,7 +448,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel,ok3)
         ! its life (ks feedbk); nothing before that
         !-----------------------------------------------------------------
         birth_time=tp(ind_part(j))
-        t_age_Gyr=(current_time-birth_time)*scale_t/Gyr2sec
+        t_age_Gyr=(current_time-birth_time)*tsec/Gyr2sec
         mprog=mp(ind_part(j))*scale_Msol
         if(pop3_model==3 .and. mpop3_SNprog>=0d0) mprog=mpop3_SNprog
         t_hne=cal_tpop3(mprog)   ! lifetime [Myr]
@@ -488,10 +494,16 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel,ok3)
            endif
         endif
         else
-        dt_Gyr = dteff(j)*scale_t/Gyr2sec
+        dt_Gyr = dteff(j)*tsec/Gyr2sec
         m_in_sol = mp(ind_part(j))*scale_Msol
         birth_time=tp(ind_part(j))
-        t_age_Gyr=(current_time-birth_time)*scale_t/Gyr2sec
+        ! FIRE-3 rates evaluated at the mid-step age (midpoint rule), as in patch/ks (fire3_yields); a star born
+        ! during this step is integrated from age 0 (2026-11-14; before: end-of-step age over the whole dteff)
+        t_age_Gyr=(current_time-birth_time-0.5d0*dteff(j))*tsec/Gyr2sec
+        if(birth_time>current_time-dteff(j))then
+           dt_Gyr=(current_time-birth_time)*tsec/Gyr2sec
+           t_age_Gyr=0.5d0*dt_Gyr
+        endif
         ! Metallicity
         metallicities = solar_abundances
         if (metal) then
