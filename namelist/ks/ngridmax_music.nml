@@ -1,0 +1,261 @@
+! ngridmax_fire3.nml の omega_b を 0.0494 にした版 (2026-11-14、MUSIC 初期条件用)。他は同一。
+! ks (Ramses-FG, patch/ks) の本番 namelist `namelist/test_problem/smbh/ngridmax_fire3.nml` に
+! `jobfiles/xd/smbh/ngridmax_intel.sh` の sed 上書きを当てたものを、patch/takashi の namelist 群に
+! 翻訳したもの (2026-11-12, docs/merge_ks.md 方針 5)。ビルドは bin/Makefile.xd_ks_intel
+! (NGROUPS=5, NPSCAL=3 → NVAR=12, QUADHILBERT, DICE 空)、job script は jobfiles/xd/ks/ngridmax_intel.sh。
+! `!KS` で始まる行は ks の値のままだが patch/takashi にまだ無い (移植したら先頭の !KS を外す)。
+! `!TO` は takashi 側で意味が違う・別名の項目の注記。
+! 以下は job script が sed で埋める: nrestart, initfile(1-4), sed_dir, cloudy_metal_file, walltime_hrs, restart_hrs。
+&RUN_PARAMS
+cosmo=.true.
+pic=.true.
+poisson=.true.
+hydro=.true.
+rt=.true.
+sink=.true.                    ! bhpop3: Pop III 残骸から BH sink (sf_fg なので sink_particle_fg.f90)
+nrestart=0
+nremap=1
+nsubcycle=4*1,20*2
+ncontrol=1
+verbose=.false.
+cost_weighting=.true.
+two_tier_balance=.true.        ! 2 層 domain decomposition (移植済み 2026-11-13; ks 本番と同じ)
+two_tier_level=13
+!KS clumpfind=.false.
+!KS fof_find=.false.           ! fof.f90 / fof_commons.f90
+/
+!KS &FOF_PARAMS
+!KS fof_level=8
+!KS npmin=20
+!KS f_fof=0.25
+!KS /
+&POISSON_PARAMS
+cic_levelmax=100
+/
+&OUTPUT_PARAMS
+aend=0.167
+aout=0.1428                    ! z=6
+noutput=1
+foutput=1000000
+walltime_hrs=23.5              !TO ks の maxruntime=23.5
+restart_hrs=1.0
+!KS dtexpout_Myr=5             ! Myr 間隔の dump (dump_data); takashi は delta_aout/delta_tout のみ
+!KS fout_xa=-1
+!KS fout_cb=-1
+!KS fout_sp=-1
+!KS fout_hl=-1
+!KS fout_rhmx=-1
+!KS fout_phmn=-1
+ugvtk=.true.                   ! ugvtk 出力の主スイッチ (takashi で追加; ks では常に on)。fout_* 系は未移植
+idp_ugvtk=-1
+NI_ugvtk=64
+p3_output_minmass=1d4
+SFC_output_minmass=1d5
+/
+&INIT_PARAMS
+filetype='grafic'
+initfile(1)='ICS/r4sigma.grafic_128'
+initfile(2)='ICS/r4sigma.grafic_256'
+initfile(3)='ICS/r4sigma.grafic_512'
+initfile(4)='ICS/r4sigma.grafic_1024'
+omega_b=0.0494                 ! MUSIC 初期条件用 (ngridmax_fire3.nml は ks の omega_b0 既定 0.0493)
+/
+&AMR_PARAMS
+levelmin=7
+levelmax=21
+nexpand=50*1
+ngridmax=400000
+npartmax=3200000
+/
+&REFINE_PARAMS
+m_refine=21*8
+jeans_refine=22*8
+mass_cut_refine=7.d-10
+interpol_var=1
+interpol_type=0
+ivar_refine=11                 ! zoom-in scalar (NVAR=12: 6 metal, 7-10 ions, 11 zoom, 12 ks cooling flag)
+var_cut_refine=0.3
+!KS jeans_refine_nH=1.0        ! Jeans refinement only above this nH
+!KS strict_Npart_refine=.true.
+!KS Mmin_strict_Npart_refine=1d-30
+!KS no_sinkcloud_refine=.true.
+!KS f_mass_sph=1d0
+/
+&HYDRO_PARAMS
+gamma=1.666667
+courant_factor=0.8
+slope_type=1
+scheme='muscl'
+riemann='hllc'
+pressure_fix=.true.
+beta_fix=5.0
+pressure_fix_cond=1            !TO ks は 3 (mode 1 + thermal-fraction gate, pressure_fix_eta=0.05); takashi は 0-2 のみ
+!KS pressure_fix_cond=3
+!KS pressure_fix_eta=0.05
+!KS pressure_fix_maxMach=1d1
+/
+&COOLING_PARAMS
+cooling=.true.
+neq_chem=.true.
+metal=.true.
+haardt_madau=.false.           ! UV background なし (ks と同じ)
+z_reion=40
+self_shielding=.true.
+H2coolfunc='Glover'            ! ks の既定 (方針 2 で移植済み)
+H2_fesc=.true.                 ! ks では常時オン
+H2_Hm_cool=.true.              ! ks の no_H2Hm_cool=.false.
+H2_chem_cool=.false.           ! job script で .false. に上書きされている
+!KS met_switch=.false.
+fclump_H2dust=1d0              ! isH2Katz の dust 生成率の clumping (ks と同じ 1)
+/
+&SF_PARAMS
+sf_fg=.true.                   ! patch/ks の星形成 (star_formation_fg): Pop II (SFC) / Pop III、family は ks と同じ番号
+eps_star=0.10d0
+g_star=1.3333333
+T2_star=0.0d0
+n_star=-1                      ! sf_fg では pop2_njeans>0 のとき未使用 (ks と同じ -1)
+m_star=1d2                     ! sf_fg では Pop II 粒子の質量 [Msun] (ks と同じ)
+loc_vir=1d0
+pop2_peak_only=.true.
+pop2_njeans=4d0
+Tpop2=1d4
+pop2_model=4                   ! SFC 星形成
+pop3_model=6
+!KS BH_model=2                 ! sink (bhpop3) の段階
+Zpop3=1d-5
+dpop3=-1
+mpop3max=100
+mpop3_SNprog=-1d0
+pop3_dist_min_pc=0.1
+!KS pop2_SN_model='fixed'      ! フィードバックの段階
+!KS pop2_no_delay_stochastic_SN=.false.
+nonlocal_depletion=.true.
+!KS flg_thin_star_cell=.false. ! RT/cooling の段階
+!KS tage_thin_star_cell=-1d1
+pop2_H2depSF=.false.
+!KS pop2_sESN=1d50             ! フィードバックの段階
+!KS pop2_SN_prob=-1d0
+SFC_dist_min_pc=1d2
+SFC_nH_min=1d2
+SFC_f_nH_min=1d-2
+SFC_fate='crop'
+SFC_f_star=-1d0
+SFC_f_star_Zdep=2
+SFC_f_rhocrop=2d0
+SFC_f_rhoSF=3d-2
+SFC_distribution='mass_weight'
+SFC_rsize_min_pc=1d0
+SFC_flg_thin=.false.           ! 値は読むが cooling 側 (collect_active_SFC の遮蔽解除) は未移植
+SFC_t_life=1d1
+nH_postSF=-1d2
+!KS nHmax_preSN=-1             ! フィードバックの段階
+star_by_star=.false.
+sbs_imf_name='Chabrier'
+sbs_Mmin=1d0
+!KS fJeans_cool=-1d0           ! cooling の段階
+/
+&FEEDBACK_PARAMS
+eta_sn=0.1
+yield=0.05
+f_w=0
+delayed_cooling=.false.
+! fire3_yields=.true.         ! takashi の feedbk は常に FIRE-3 yields (msp0 方式)
+! spread_feedback=.false.     ! 未移植 (ks 本番でも off)
+! nonlocal_SN=.false.         ! 未移植 (ks 本番でも off)
+pop3_ESN=3d52                  ! pop3_model 1/2 の Pop III SN エネルギー [erg]
+SN_reservoir=.true.            ! SN 熱を冷却半径の球に体積比例で分配し refine 前に反映 (sn_energy_reservoir)
+Ncell_SN_max=8.0d0
+fcool_stop=8d0                 ! 冷却停止タイマー (NVAR の最後の passive scalar = ivar_coolstop; NPSCAL=3)
+! sink_mass_min_pop3BH / sink_mass_min_pop2BH / smbh / bhpop3 は takashi では &SINK_PARAMS (下)
+!KS halo_ref_level=13
+!KS addrho_min=10
+!KS nprof=100
+!KS rfraction=0.01
+!KS cind=5
+!KS prt_cell=.false.
+!KS flg_voffset_ini=.false.
+!KS sgagn_seed='no'
+!KS f_rho_add=-2d0
+/
+&SINK_PARAMS
+create_sinks=.true.
+accretion_scheme='bondi'
+eddington_limit=.false.
+nsinkmax=500
+acc_sink_boost=1.0
+ir_cloud=4
+mass_sink_direct_force=3d2
+smbh=.true.
+bhpop3=.true.                  ! Pop III 残骸 (FAM_BH) からの BH sink (sink_particle_fg.f90)
+BH_model=2                     ! SR20 降着 + RIAF/標準/slim の光度 (BHL にフォールバック)
+sink_mass_min_pop3BH=1d1       ! [Msun]
+sink_mass_min_pop2BH=-1d1      ! 負: Pop II 残骸 (FAM_DEAD) は sink にしない
+/
+&CLUMPFIND_PARAMS
+ivar_clump=0
+density_threshold=200
+saddle_threshold=100
+mass_threshold=10.
+/
+&RT_PARAMS
+isHe=.true.
+isH2=.true.
+X=7.6d-1
+Y=2.4d-1
+rt_output_coolstats=.true.
+rt_flux_scheme='glf'
+rt_smooth=.true.
+rt_courant_factor=0.8
+rt_c_fraction=0.01            !TO ks は level ごと (VSLA、30*0.01); takashi はスカラー。値は同じ
+rt_otsa=.true.
+rt_is_init_xion=.false.        ! ks の既定: grafic 読み込みの既定値 (Peebles の残留電離 1.2e-5 sqrt(Om)/(h Ob)) を平衡電離度で上書きしない
+rt_star=.true.
+rt_esc_frac=1.0d0
+sed_dir='SED'
+sedprops_update=1
+rt_nsubcycle=10
+uv_file=''                     ! haardt_madau=.false. なので未使用 (ks は spec_LW ファイルを指すが同じく未使用)
+cloudy_metal_cooling=.true.    ! 方針 1: takashi の cloudy テーブル (ks の cloudy_metal_HM12_z.bin ではない)
+cloudy_metal_file='cloudy/cloudy_excess_metal_cooling.bin'
+attn_after_chem=.true.
+isH2Katz=.true.                ! ks の H2 化学 (H- 経路の生成、GA08 の衝突解離、15.2 eV、Baczynski の断面積; 移植済み)
+relax_x_by_ne=.true.           ! ks の xHI 10% 則の MIN 形 (修正 F) に相当; こちらは H/He の全種に適用
+! LW 群の自己遮蔽 (方針 3 で移植済み; ks の isH2Katz + LW_ss_wgh + LW_abs_thin + LW_abs_atom + LW_ss_from_incident_surface_yH2 に対応)
+LWgroup=1                      ! ks では isH2Katz で ixHI(=1) に固定されていた
+LW_ss_model='WGH19'            ! ks の LW_ss_wgh=.true.
+LW_ss_dust=.true.              ! ks では常時
+LW_abs_thin=.true.
+LW_abs_atom=.true.
+LW_ss_from_incident_surface_yH2=.true.
+!KS SS_LVG=.false.             ! 柱密度の長さは常にセル幅 (LVG は未移植)
+!KS isFUVbin=.true.            ! 群 5 = FUV 5.6-11.2 eV (ここでは群の定義で表現)
+iPEH_group=5                   ! 光電加熱 (ks の PEH=.true.); こちらは Bakes & Tielens の効率、吸収を放射場から除く、(1-xHII) で dust なし
+PEH_all_FUV=.true.             ! G0 は group_egy が 5.4-13.6 eV に入る全群の和 (添字は決め打ちしない; この 5 群構成では群 5 と群 1)
+!KS T_sputter=1d6              ! こちらは (1-xHII) の因子が代替
+sec_ion=.false.                ! 2 次電離 (Ricotti+2002 のフィット; 移植済み、全群に適用)。ks 本番でもオフ
+!KS isXray=.false.
+!KS Xgroup=6
+!KS p3_noFUV=.false.
+!KS p3_noEUV=.false.
+!KS p2_noFUV=.false.
+!KS p2_noEUV=.false.
+/
+&RT_GROUPS
+! ks の 5 群: 1 LW 11.2-13.6, 2 HI 13.6-24.59, 3 HeI 24.59-54.42, 4 HeII 54.42-200, 5 FUV 5.6-11.2 eV
+groupL0       = 11.20, 13.60, 24.59, 54.42, 5.60
+groupL1       = 13.60, 24.59, 54.42, 200.00, 11.20
+group_egy     = 12.44, 18.85, 35.079, 65.666, 8.4
+spec2group    = 1,2,3,4
+group_on      = 1, 1, 1, 1, 1
+! 断面積は xd_rt.nml の同じ帯の値 (群 1 の H2 光解離 2.1e-19 を含む); sedprops_update=1 で SED から更新される
+group_csn(1,:) = 2.1d-19, 0.0, 0.0, 0.0
+group_csn(2,:) = 5.0d-18, 3.007d-18, 0.0, 0.0
+group_csn(3,:) = 2.9d-18, 5.687d-19, 4.478d-18, 0.0
+group_csn(4,:) = 4.1d-19, 7.889d-20, 1.197d-18, 1.055d-18
+group_csn(5,:) = 0.0, 0.0, 0.0, 0.0
+group_cse(1,:) = 2.1d-19, 0.0, 0.0, 0.0
+group_cse(2,:) = 5.3d-18, 2.781d-18, 0.0, 0.0
+group_cse(3,:) = 2.8d-18, 5.042d-19, 4.130d-18, 0.0
+group_cse(4,:) = 4.1d-19, 7.456d-20, 1.142d-18, 1.001d-18
+group_cse(5,:) = 0.0, 0.0, 0.0, 0.0
+/
