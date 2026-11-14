@@ -593,5 +593,8 @@ ks 版バイナリと移植後のバイナリを同じ cosmological 初期条件
   結果が変わる (bit 不一致、SN の立ち上がりが半 step 遅く・少なくなる) ので、DICE の回帰 (fs3) の差を下に記録。  DICE での効き方 (フィードバック段階の試験 fb5 → fb6、`dice_rt_amr` 系 14 step、sf_fg、Pop II 約 5500 個、SN_reservoir):
   92 ファイル中 72 が変わり、SN 放出 9 件 1.92e54 erg → 8 件 1.76e54 erg (-8%)、新星 5483 → 5534、output_00004 の
   内部エネルギー総和 -2.8%、密度・金属の総和 1e-4。sink 試験 (fs2/fs3: Pop II 粒子なし) は bit 一致のまま。
-  a² の修正だけでは DICE は bit 一致 (fs3 で確認)。
+  a² の修正だけでは DICE は bit 一致 (fs3 で確認)。- **ks 側も同じ fine step 449 で同じ星 (idp 3、302.81 Msun) が直接崩壊し、同じ位置・速度の sink 1 (303 Msun) ができた**
+  (ks の log は t_age=2.14 Myr; takashi の表示は上の a² の件で 4.6e-3 と出ていた、修正済み)。sink の質量は 302.8118 vs 302.8277
+  (5e-5; 形成時の M_pop3 の差)、降着の周辺量 ninf 0.658 vs 0.666 cm⁻³、Ṁ_now 4.9e-11 vs 5.1e-11 Msun/yr (4%、局所の
+  ガス状態の差)、logsink1 の 1-2 行目も同程度で一致。
 

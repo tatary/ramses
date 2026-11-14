@@ -29,8 +29,8 @@ CoresPerNode=112
 CoresPerSocket=56
 ThreadsPerCore=2                                 # hardware threads per core: Slurm counts --cpus-per-task in these
                                                  # (339635: --cpus-per-task=4 gave 2 cores + their HT siblings per task)
-CoresPerTask=4                                   # physical cores reserved per MPI task
-NumThreadsPerProc=4                              # OpenMP threads per MPI task (<= CoresPerTask; 1 = flat run with the same placement)
+CoresPerTask=7                                   # physical cores reserved per MPI task (7: 2 tasks per 14-core NUMA node, 16 tasks/node = 512 ranks on 32 nodes; 4: 28 tasks/node)
+NumThreadsPerProc=7                              # OpenMP threads per MPI task (<= CoresPerTask; 1 = flat run with the same placement)
 UseNoMultithread = true                          # true: --hint=nomultithread, Slurm then counts cores and leaves
                                                  #       the HT siblings unused (cpus-per-task = CoresPerTask)
                                                  # false: cpus-per-task = CoresPerTask*ThreadsPerCore (whole cores incl. HT)
