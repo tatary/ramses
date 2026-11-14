@@ -426,10 +426,12 @@ ks 本番 (`ngridmax_fire3.nml`) は `thermal_feedback` + FIRE-3 yields + **SN r
   `is_test`/clump/sgagn/`weightp`/`p3idpsink`/`restart_files` を削除。上流版はそのままリンクされ `sf_fg=.false.` で使われる。
 - 振り分け箇所: `amr_step` (update_cloud, collect_acczone_avg, update_sink ×2, grow_sink, create_sink と出力後の
   `acc_rate=0`)、`init_part` (`init_sink_fg`)、`particle_tree` (`kill_entire_cloud_fg`/`create_cloud_from_sink_fg`)、
-  `output_amr` (rank 1 が ks 形式のバイナリ `sink_XXXXX.out00001` / `sink_restart.out00001` と yt 用の
-  `sink_file_descriptor.txt`、上流形式の csv を書く; ks は全ランクが同じバイナリを書いていたが、yt の RAMSES フロントエンド
-  (`SinkParticleFileHandler`) はドメイン 1 だけ読み、他ドメインのファイルが無ければ 0 個として流すので 1 本にした。
-  yt には上流 csv を読む `SinkParticleFileHandlerCsv` (ptype `sink_csv`) もある)、`read_params`
+  `output_amr` (ks と同じく全ランクが同じ内容の ks 形式バイナリ `sink_XXXXX.out<rank>` / `sink_restart.out<rank>` を書き
+  (restart では各ランクが自分のを読む)、rank 1 が yt 用の `sink_file_descriptor.txt` と ks のテキスト表 `sink_XXXXX.info`
+  (`output_sink_fg`)、上流形式の csv を書く。一度 rank 1 だけが書く形にしたが、yt の RAMSES フロントエンド
+  (`SinkParticleFileHandler`) は `setup_handler` で全ドメインのファイルの存在を要求する (中身はドメイン 1 しか読まない) ので
+  戻した (2026-11-14、base 4.3.1 / main / `/mnt/synology2/takashi/smbh/ana/yt` の dev 版とも同じ)。yt には上流 csv を読む
+  `SinkParticleFileHandlerCsv` (ptype `sink_csv`) もある)、`read_params`
   (`read_sink_params_fg`)、新たに patch に置いた `newdt_fine.f90` (降着 dt: `c_acc × min(M_gas, M_sink)/Mdot`、最高 level で
   `compute_accretion_rate_fg`) と `force_fine.f90` (`f_gas_sink_fg`: 共動の softening)、`to_dice/rho_fine.f90`
   (`no_sinkcloud_refine`)。
@@ -458,8 +460,8 @@ sink 試験は `tests/dice_rt_fg.nml` の Pop III SN 設定 (Zpop3=10, pop3_mode
 |---|---|
 | 既定 (`sf_fg=.false.`, dice_rt_amr 6 step) | 変更前バイナリ (worktree) と 44 ファイル bit 一致 |
 | FG 星形成のみ (dice_rt_fg, sink なし) | 同 bit 一致 (header に `sink_cloud 0` の行が増えるだけ) |
-| sink 試験 (heavy) | step 13 の 846 SN → 粗い step 6 で 846 sink、合体 833 → 13 → 11; step 15 の 61 SN も sink 化して合体; cloud 粒子 11×2109=23199、cloud 数チェック 0 件不一致; Bondi 降着で 100 Msun 種が 1e4 Msun 級に (level 8 の粗い試験箱なので物理的な意味はない); `logsink<id>` 13 本、`sink_XXXXX.out00001`/csv |
+| sink 試験 (heavy) | step 13 の 846 SN → 粗い step 6 で 846 sink、合体 833 → 13 → 11; step 15 の 61 SN も sink 化して合体; cloud 粒子 11×2109=23199、cloud 数チェック 0 件不一致; Bondi 降着で 100 Msun 種が 1e4 Msun 級に (level 8 の粗い試験箱なので物理的な意味はない); `logsink<id>` 13 本、`sink_XXXXX.out<rank>`/csv/info |
 | LIGHT_MPI_COMM | heavy と 44 ファイル bit 一致 (sink ファイル含む) |
 | 二層分割 (`-DTWO_TIER_CHECK`, two_tier_level=7) | 完走、STATUS ok、cloud 数チェック ok; 総和は 1e-6 程度の丸め差、sink の質量・位置は合体順の違いで 2 個が僅差 |
-| restart (output_00003, `sink_00003.out00001` から) | 完走、sink 11 個の質量・位置は 1e-9 で一致、星形成/SN イベント (stars ログ) は同一; hydro は丸め差 (FG/フィードバック段階の restart と同じで bit 一致ではない; 乱数状態と `acc_lum` などの派生量は保存されない) |
+| restart (output_00003, `sink_00003.out<rank>` から) | 完走、sink 11 個の質量・位置は 1e-9 で一致、星形成/SN イベント (stars ログ) は同一; hydro は丸め差 (FG/フィードバック段階の restart と同じで bit 一致ではない; 乱数状態と `acc_lum` などの派生量は保存されない) |
 | ks 設定ビルド (QUADHILBERT, NPSCAL=3, DICE なし) | ビルド OK (`patch/takashi/rho_fine.f90` 経由) |

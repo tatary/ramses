@@ -82,6 +82,10 @@ subroutine dump_all
     if(sink)then
       filename=TRIM(filedir)//'sink_'//TRIM(nchar)//'.csv'
       call output_sink_csv(filename)
+      if(sf_fg)then ! ks text table (sink_XXXXX.info)
+        filename=TRIM(filedir)//'sink_'//TRIM(nchar)//'.info'
+        call output_sink_fg(filename)
+      end if
     endif
     if(stellar)then
       filename=TRIM(filedir)//'stellar_'//TRIM(nchar)//'.csv'
@@ -150,11 +154,13 @@ subroutine dump_all
     filename=trim(filedir)//'part_'//trim(nchar)//'.out'
     filename_desc=TRIM(filedir)//'part_file_descriptor.txt'
     call backup_part(filename, filename_desc)
-    if(sink.and.sf_fg.and.myid==1)then ! FG sink (ks layout): binary sink_XXXXX.out00001 (all ranks hold the same
-      filename=TRIM(filedir)//'sink_'//TRIM(nchar)//'.out' ! sinks; init_sink_fg reads this file) + the descriptor yt uses
+    if(sink.and.sf_fg)then ! FG sink (ks layout): every rank writes sink_XXXXX.out<rank> (identical; yt needs
+      filename=TRIM(filedir)//'sink_'//TRIM(nchar)//'.out' ! every domain's file, reads domain 1) + descriptor
       call backup_sink_fg(filename)
-      filename=TRIM(filedir)//'sink_file_descriptor.txt'
-      call file_descriptor_sink_fg(filename)
+      if(myid==1)then
+        filename=TRIM(filedir)//'sink_file_descriptor.txt'
+        call file_descriptor_sink_fg(filename)
+      end if
     end if
 #ifndef WITHOUTMPI
     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
@@ -341,6 +347,10 @@ subroutine dump_restart
     if(sink)then
       filename=TRIM(filedir)//'sink_restart.csv'
       call output_sink_csv(filename)
+      if(sf_fg)then ! ks text table
+        filename=TRIM(filedir)//'sink_restart.info'
+        call output_sink_fg(filename)
+      end if
     endif
     if(stellar)then
       filename=TRIM(filedir)//'stellar_restart.csv'
@@ -409,11 +419,13 @@ subroutine dump_restart
     filename=trim(filedir)//'part_restart.out'
     filename_desc=TRIM(filedir)//'part_file_descriptor.txt'
     call backup_part(filename, filename_desc)
-    if(sink.and.sf_fg.and.myid==1)then ! FG sink: binary sink_restart.out00001 + descriptor
+    if(sink.and.sf_fg)then ! FG sink: sink_restart.out<rank> from every rank + descriptor (rank 1)
       filename=TRIM(filedir)//'sink_restart.out'
       call backup_sink_fg(filename)
-      filename=TRIM(filedir)//'sink_file_descriptor.txt'
-      call file_descriptor_sink_fg(filename)
+      if(myid==1)then
+        filename=TRIM(filedir)//'sink_file_descriptor.txt'
+        call file_descriptor_sink_fg(filename)
+      end if
     end if
 #ifndef WITHOUTMPI
     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
@@ -822,7 +834,7 @@ subroutine output_header(filename)
     if (levelp(ipart) > 0) then
       npart_all_loc = npart_all_loc + 1
       ifam = typep(ipart)%family
-      ! FAM_UNDEF (127, e.g. sink cloud particles of the ks sink) is counted as 'undefined' below
+      ! families outside 1..NFAMILIES (e.g. FAM_UNDEF=127) are counted as 'undefined' below
       if(abs(ifam)<=NFAMILIES) npart_family_loc(ifam) = npart_family_loc(ifam) + 1
     end if
   end do

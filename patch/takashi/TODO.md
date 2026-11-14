@@ -740,10 +740,11 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   - 一括非局所枯渇と SN reservoir は別の octree 走査 (`sphere_walk` と `get_sn_sphere_stats_events`)。統合の余地。
 - sink/BH は移植済み (2026-11-13; merge_ks.md「sink/BH の移植」、`sink_particle_fg.f90`)。残り:
   - 未移植: clump ベースの sink 生成 (`make_sink_from_clump`; ks 本番も bhpop3 のみ)、sub-grid AGN の種入れ
-    (`sgagn_seed='mhalo_based'`, halo finder が要る)、旧 `accrete_sink` (AGN blast/`sink_drag`)、`output_sink` (ks の
-    テキスト表 `sink_XXXXX.info`)、`check_particle_consistency`。yt が読む `sink_file_descriptor.txt` は出す (yt での読み込みは未確認)。
+    (`sgagn_seed='mhalo_based'`, halo finder が要る)、旧 `accrete_sink` (AGN blast/`sink_drag`)、`check_particle_consistency` (ks でも呼び出しはコメントアウト)。yt が読む `sink_file_descriptor.txt` は出す。
   - sink の csv は上流の `output_sink_csv` (msmbh/dmfsink は 0; ks の 13 列は年齢が tsink になる以外すべて含む)。
-    restart は ks 形式の `sink_XXXXX.out<rank>` (全ランク同じ内容)。
+    ks 形式の binary `sink_XXXXX.out<rank>` (全ランク同じ内容; yt は全ドメインのファイルの存在を要求するので rank 1 だけにはできない)
+    と yt 用 descriptor、ks のテキスト表 `sink_XXXXX.info` (`output_sink_fg`) も出す。yt (dev 4.5 / 4.3.1) で `sink` と
+    `sink_csv` の両方が読めることは確認済み (2026-11-14)。
   - `check_sink_vars_among_cpus_fg` は `sink_check_vars=.true.` のときだけ (sink 1 個・呼び出し 1 回あたり ALLREDUCE 7 本)。
   - `get_BHL_accretion_rate_fg` は非 cosmo でも G=1 で動くようにした (ks は停止)。`d_sink` 未指定でも止めない。
   - DICE の `star_as_nbody` 粒子は family 5 = `FAM_DEAD` になるので `sink_mass_min_pop2BH>=0` にすると全部 sink 化される。

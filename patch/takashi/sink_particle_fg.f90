@@ -23,8 +23,9 @@
 ! Removed from ks: clump-based creation (make_sink_from_clump, true_max), the old accrete_sink
 ! (weightp / count_clouds / sink_drag / AGN blast), test problems (is_test), sub-grid AGN seeding
 ! (sgagn_*, needs the halo finder), p3idpsink, nol_accretion/flux_accretion; restart_files -> output_restart.
-! Files: rank 1 writes sink_XXXXX.out00001 (ks: every rank, identical) + sink_file_descriptor.txt; every rank
-! reads that file on restart. yt's RAMSES frontend reads domain 1 only and tolerates the missing others.
+! Files: every rank writes sink_XXXXX.out<rank> (identical content, as ks) and reads its own on restart; rank 1
+! also writes sink_file_descriptor.txt. yt's RAMSES frontend (SinkParticleFileHandler) needs the file of every
+! domain to exist (setup_handler raises otherwise) and reads the content of domain 1 only.
 ! check_sink_vars_among_cpus_fg (consistency ALLREDUCEs) only runs with sink_check_vars=.true.
 !################################################################
 subroutine create_sink_fg
@@ -3588,7 +3589,7 @@ subroutine init_sink_fg
     endif
 
 
-    call title(1,nchar) ! TO MODIFIED: written by rank 1 only (output_amr); the sink data are identical on all ranks
+    call title(myid,nchar)
     fileloc=TRIM(fileloc)//TRIM(nchar)
 
     ! Wait for the token
@@ -3672,7 +3673,7 @@ subroutine init_sink_fg
     endif
 
 
-    call title(1,nchar) ! TO MODIFIED: written by rank 1 only (output_amr); the sink data are identical on all ranks
+    call title(myid,nchar)
     fileloc=TRIM(fileloc)//TRIM(nchar)
 
     ! Wait for the token
@@ -3956,6 +3957,56 @@ end subroutine backup_sink_fg
 
 
 
+!################################################################
+subroutine output_sink_fg(filename)
+  use amr_commons
+  use pm_commons
+  use mpi_mod
+  implicit none
+  character(LEN=80)::filename
+
+  integer::i,idim,ipart,isink
+  integer::nx_loc,ny_loc,nz_loc,ilun,icpu,idom
+  real(dp)::scale,l_abs,rot_period,dx_min
+  real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,scale_m
+  character(LEN=80)::fileloc
+  character(LEN=5)::nchar
+
+  if(verbose)write(*,*)'Entering output_sink_fg'
+
+  ilun=myid+10
+
+  ! Conversion factor from user units to cgs units
+  call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+  scale_m=scale_d*scale_l**3d0
+  nx_loc=(icoarse_max-icoarse_min+1)
+  scale=boxlen/dble(nx_loc)
+  dx_min=scale*0.5D0**nlevelmax/aexp
+
+  if(verbose)write(*,*)'Entering output_sink_fg'
+
+  ilun=2*ncpu+myid+10
+
+  fileloc=TRIM(filename)
+  open(unit=ilun,file=TRIM(fileloc),form='formatted',status='replace')
+  !======================
+  ! Write sink properties
+  !======================
+  write(ilun,*)'Number of sink = ',nsink
+
+  write(ilun,'(" ================================================================================================================================== ")')
+  write(ilun,'("        Id       Mass(Msol)             x                y                z               vx               vy               vz      ")')
+  write(ilun,'(" ================================================================================================================================== ")')
+
+  do isink=1,nsink
+    l_abs=max((lsink(isink,1)**2+lsink(isink,2)**2+lsink(isink,3)**2)**0.5,1.d-50)
+    rot_period=32*3.1415*msink(isink)*(dx_min)**2/(5*l_abs+tiny(0.d0))
+    write(ilun,'(I10,7(2X,E15.7))')idsink(isink),msink(isink)*scale_m/2d33,xsink(isink,1:ndim),vsink(isink,1:ndim)
+  end do
+  write(ilun,'(" ================================================================================================================================== ")')
+  close(ilun)
+
+end subroutine output_sink_fg
 !################################################################
 subroutine file_descriptor_sink_fg(filename)
   use amr_commons
