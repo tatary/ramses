@@ -57,6 +57,7 @@ initfile(1)='ICS/r4sigma.grafic_128'
 initfile(2)='ICS/r4sigma.grafic_256'
 initfile(3)='ICS/r4sigma.grafic_512'
 initfile(4)='ICS/r4sigma.grafic_1024'
+omega_b=0.0493                 ! ks は read_params で omega_b=omega_b0 (既定 0.0493; 本番 namelist は未設定)
 /
 &AMR_PARAMS
 levelmin=7
@@ -206,6 +207,7 @@ rt_smooth=.true.
 rt_courant_factor=0.8
 rt_c_fraction=0.01            !TO ks は level ごと (VSLA、30*0.01); takashi はスカラー。値は同じ
 rt_otsa=.true.
+rt_is_init_xion=.false.        ! ks の既定: grafic 読み込みの既定値 (Peebles の残留電離 1.2e-5 sqrt(Om)/(h Ob)) を平衡電離度で上書きしない
 rt_star=.true.
 rt_esc_frac=1.0d0
 sed_dir='SED'

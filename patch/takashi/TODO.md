@@ -751,7 +751,12 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   - `check_sink_vars_among_cpus_fg` は `sink_check_vars=.true.` のときだけ (sink 1 個・呼び出し 1 回あたり ALLREDUCE 7 本)。
   - `get_BHL_accretion_rate_fg` は非 cosmo でも G=1 で動くようにした (ks は停止)。`d_sink` 未指定でも止めない。
   - DICE の `star_as_nbody` 粒子は family 5 = `FAM_DEAD` になるので `sink_mass_min_pop2BH>=0` にすると全部 sink 化される。
-- 残りの段階: ks 用の回帰ラン (FG 初期条件で FG バイナリと比較) は未実施。
+- ks との比較ラン (2026-11-14; merge_ks.md「ks との比較ラン」): MUSIC zoom (haloD_l5_14_z9) 6 step で ks 版と初期状態が全桁一致、
+  以後は密度 1e-6・運動量 3e-5 の相対差、grid 数一致。合わせるのに `omega_b` (ks は omega_b0 を無条件代入) と
+  初期電離度 (Peebles の残留電離を `init_flow_fine` に移植、`rt_is_init_xion=.false.`) が必要だった。残り:
+  - 星形成・SN・sink が起きる長さのラン (数十 step 以上) での比較は未実施。
+  - 初期温度 0.5% (`rt_evol_single_cell` の冷却率・定数)、`x_MIN` (ks 1e-12 / takashi 1e-20) の差は残したまま。
+  - 未移植で ks 側を off にして比べたもの: `flg_voffset_ini` (初速オフセット)、`fof_find`、`flg_thin_star_cell`、`pop2_SN_model`。
 
 ## 4. 運用上のメモ
 

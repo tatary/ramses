@@ -56,6 +56,9 @@ subroutine init_flow_fine(ilevel)
   use amr_commons
   use hydro_commons
   use cooling_module
+#ifdef RT
+  use rt_parameters, only: iIons, ixHI, ixHII   ! merge_ks: residual ionization default
+#endif
   use mpi_mod
 #if USE_TURB==1
   use turb_commons
@@ -296,6 +299,11 @@ subroutine init_flow_fine(ilevel)
           ! Default value for ionization fraction
           if(cosmo)xval=sqrt(omega_m)/(h0/100*omega_b) ! From the book of Peebles p. 173
           if(cosmo.and.ivar==ixion.and.aton)init_array=1.2d-5*xval
+#ifdef RT
+          ! merge_ks: residual ionization (Peebles) as the default of the RT ion fractions (see patch/takashi/init_flow_fine.f90)
+          if(cosmo.and.ixHII>0.and.ivar==iIons-1+ixHII)init_array=1.2d-5*xval
+          if(cosmo.and.ixHI >0.and.ivar==iIons-1+ixHI )init_array=1d0-1.2d-5*xval
+#endif
         endif
       endif
 

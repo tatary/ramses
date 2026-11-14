@@ -525,3 +525,47 @@ ks のブロックを切り出して変換) で `patch/takashi/output_analysis.f
 | `ugvtk=.true., NI_ugvtk=4, p3_output_minmass=-1` (7 step、Pop III 846 個の形成時出力) | 完走 (158 s)、`Pop3_<k>` 846 個 × 3 level = 2538 本 20 MB、`.tmp` 残りなし |
 | RT=0 ビルド | コンパイル OK (放射場なし、電離度は中性) |
 
+## ks との比較ラン (2026-11-14): `namelist/ks/l5_14_test.nml`
+
+ks 版バイナリと移植後のバイナリを同じ cosmological 初期条件で走らせて比べた (方針 5 の「FG 初期条件での比較ラン」)。
+
+### 設定
+
+- 初期条件: ks の two-tier 試験に使った MUSIC zoom `work7/ramses_test/data/music/haloD_l5_14_z9` (level 5-14、Ωm=0.27、h=0.7)。
+  ks 側の run は `work7/ramses_test/runs/base_np16` (ks `jobfiles/ws/two_tier/run_l5.sh` が `namelist/first_galaxy/l5_14.nml` に
+  当てたもの: levelmin 5 / levelmax 16、16 ランク、6 coarse step、foutput=2、pop2_model=5 (SFC)、pop3_model=6、sink bhpop3)。
+- ks 側: `Ramses-FG/bin/ramses0X3d` (dev_to、2026-11-11、-O2 -fcheck=bounds)、`runs/base_np16/namelist.nml` に
+  `flg_voffset_ini=.false.` (初速オフセットは未移植) と `fof_find=.false.` (この設定では物理に効かない) を当てたもの。
+  実行: `work7/ramses_test/claude_scratch/run/ksref`。
+- takashi 側: `build_ks` (NGROUPS=5, NPSCAL=3, QUADHILBERT, DICE 空, -O3) + `namelist/ks/l5_14_test.nml`
+  (`ngridmax_fire3.nml` と同じ翻訳規則で `base_np16/namelist.nml` を翻訳)。実行: `.../run/kstest`。
+- 比較: 各 coarse step のエネルギー (log)、level ごとの grid 数 (log)、`tests/hydro_stats.py` (全セルの総和/min/max)、
+  粒子数 (header)。スクリプトは scratchpad `cmp_ksreg.py`。
+
+### 合わせるのに必要だった 2 点 (どちらも ks の挙動を移植)
+
+1. **`omega_b`**: ks は `&RUN_PARAMS` の `omega_b0` (既定 0.0493) を `read_params` で無条件に `omega_b` に代入する。
+   takashi は上流の `omega_b` (`&INIT_PARAMS`、既定 0.045)。試験 (0.044) では密度が一律 2.3% ずれていた。
+   namelist で `omega_b` を合わせる (本番の翻訳 `ngridmax_fire3.nml` にも `omega_b=0.0493` を追加)。
+2. **初期電離度**: ks の `init_flow_fine` は grafic に電離度ファイルが無いとき、cosmo なら Peebles の残留電離
+   x_e = 1.2e-5 √Ωm/(h Ωb) (= 2.02e-4) を RT の電離度の既定値にする (上流は ATON のときだけ)。さらに ks は `rt_is_init_xion` の
+   既定が .false. (上流は .true. で、`init_refine` が T_start の衝突平衡 x_e ~ 1e-20 で上書きする)。
+   `patch/takashi/init_flow_fine.f90` (hydro からの新しいコピー) と `to_dice/init_flow_fine.f90` に同じ既定値を入れ、
+   namelist で `rt_is_init_xion=.false.` を指定する (両 ks namelist に追加)。H⁻ 経路の H2 生成は残留電子で決まるので
+   初代銀河の計算では本質的。非 cosmo (DICE) には影響しない (fs3 の回帰で確認)。
+
+### 結果 (6 step、16 ランク)
+
+| 量 | ks vs takashi |
+|---|---|
+| 初期状態 (output_00001) の密度・運動量・xHI・xHII | 全桁一致 (1.79M DM 粒子も同数) |
+| 初期温度 T/μ | 128.58 vs 127.90 K (0.5%; `rt_evol_single_cell` の冷却率テーブル・定数の差) → 内部エネルギーの差 0.5% が以後も残る |
+| grid 数 (level 1-14) | 全 step で一致 (level 14 が step 2, 5 で 5 個・2 個違うだけ、22 万個中) |
+| epot / ekin / eint (step 1-6) | takashi の log の 3 桁の範囲で一致 |
+| 密度の総和 / 運動量の総和 (output 2-4) | 1e-6 / 3e-5 の相対差 |
+| xHII | 3e-4 の相対差; xHeII/xHeIII は下限値の差 (ks `x_MIN=1e-12`、takashi 1e-20) |
+| 実行時間 | 65 s vs 58-63 s |
+
+星形成・sink は 6 step では起きない (z~105 まで)。残る既知の差: cloudy テーブル (方針 1)、`x_MIN`、初期温度の 0.5%、
+未移植の `flg_thin_star_cell` / `pop2_SN_model` / `fof_find` / `flg_voffset_ini`。星形成が起きる段階 (もっと長いラン) の比較は未実施。
+

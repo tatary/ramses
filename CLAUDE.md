@@ -54,6 +54,7 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
 | `stromgren_amr.nml` | Stromgren RT (7 群) を AMR にしたもの | RT=1, DICE 空 |
 | `dice_amr.nml` | DICE 矮小銀河 (粒子 194 万), levelmax 8, 星形成あり, RT なし | 本番設定 |
 | `dice_rt_amr.nml` | 本番 `xd_rt.nml` の短縮版 (RT, 星の放射, cloudy 冷却, nremap=1) | 本番設定 |
+| `namelist/ks/l5_14_test.nml` | ks 版との比較ラン (MUSIC zoom haloD_l5_14_z9、levelmin 5 / levelmax 16、16 ランク 6 step; docs/merge_ks.md「ks との比較ラン」) | `Makefile.xd_ks_intel` 相当 (NGROUPS=5, NPSCAL=3, QUADHILBERT, DICE 空) |
 
 - 回帰確認は「変更前バイナリとの出力バイナリ比較」で行う:
   `git worktree add <tmp> HEAD` で変更前をビルドし、`hydro_*.out`, `part_*.out`,

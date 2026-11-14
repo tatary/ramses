@@ -1,0 +1,228 @@
+! ks (Ramses-FG, patch/ks) の試験ラン (jobfiles/ws/two_tier/run_l5.sh が namelist/first_galaxy/l5_14.nml に
+! 当てたもの = work7/ramses_test/runs/base_np16/namelist.nml: MUSIC zoom haloD_l5_14_z9、levelmin 5 / levelmax 16、
+! 16 ランク、6 coarse step、foutput=2) を patch/takashi の namelist 群に翻訳したもの (2026-11-14, docs/merge_ks.md
+! 「ks との比較ラン」)。ビルドは bin/Makefile.xd_ks_intel 相当 (NGROUPS=5, NPSCAL=3 → NVAR=12, QUADHILBERT, DICE 空)。
+! ks 側は flg_voffset_ini=.false. (初速オフセットは未移植) と fof_find=.false. (この設定では物理に効かない) にして比較する。
+! 翻訳規則は namelist/ks/ngridmax_fire3.nml と同じ。ks と違う点: cloudy テーブル (方針 1)、群 5 (FUV) は ks では
+! エネルギー 0 の死んだ群なので group_on(5)=0 と iPEH_group=0 で光子を入れない、flg_thin_star_cell (未移植)。
+! 実行ディレクトリには ics/level_005..014 (MUSIC)、SED (bc03_Chabrier)、cloudy へのリンクを置く。
+&RUN_PARAMS
+cosmo=.true.
+pic=.true.
+poisson=.true.
+hydro=.true.
+rt=.true.
+sink=.true.
+nrestart=0
+nstepmax=6
+nremap=1
+nsubcycle=1,1,1,1,1,1,1,1,1,2,2,2
+ncontrol=1
+verbose=.false.
+cost_weighting=.true.
+two_tier_balance=.false.       ! ks の base_np16 も単一分割
+/
+&POISSON_PARAMS
+cic_levelmax=25
+/
+&OUTPUT_PARAMS
+aout=0.01960784,0.02439024,0.02777778,0.03225806,0.03448276,0.03703704,0.03846154,0.04,0.04166667,0.04347826,0.04545455,0.04761905,0.05,0.05263158,0.05555556,0.05882353,0.0625,0.06451613,0.06666667,0.06896552,0.07142857,0.07407407,0.07692308,0.08,0.08333333,0.08695652,0.09090909,0.09302326,0.0952381,0.09756098,0.1
+noutput=31
+foutput=2
+ugvtk=.true.                   ! ks では常に on (fout_* 系は未移植)
+idp_ugvtk=-1
+NI_ugvtk=64
+p3_output_minmass=-1d0
+SFC_output_minmass=-1d0
+/
+&INIT_PARAMS
+filetype='grafic'
+initfile(1)='ics/level_005'
+initfile(2)='ics/level_006'
+initfile(3)='ics/level_007'
+initfile(4)='ics/level_008'
+initfile(5)='ics/level_009'
+initfile(6)='ics/level_010'
+initfile(7)='ics/level_011'
+initfile(8)='ics/level_012'
+initfile(9)='ics/level_013'
+initfile(10)='ics/level_014'
+omega_b=0.044                  ! ks の omega_b0=0.044 (read_params で omega_b=omega_b0)
+/
+&AMR_PARAMS
+levelmin=5
+levelmax=16
+nexpand=1,1,1,1,1,1,1,1,1,1
+ngridmax=2240000
+npartmax=2240000
+/
+&REFINE_PARAMS
+m_refine=16*8,4*-1
+jeans_refine=20*0
+mass_cut_refine=4.54747e-13
+interpol_var=1
+interpol_type=0
+ivar_refine=11                 ! zoom-in scalar (NVAR=12: 6 metal, 7-10 ions, 11 zoom, 12 ks cooling flag)
+var_cut_refine=0.1
+!KS jeans_refine_nH=0.1        ! jeans_refine=0 なので未使用
+!KS strict_Npart_refine=.false.
+!KS f_mass_sph=1d0
+/
+&HYDRO_PARAMS
+gamma=1.666667
+courant_factor=0.8
+slope_type=1
+scheme='muscl'
+riemann='hllc'
+pressure_fix=.true.
+beta_fix=0.5
+pressure_fix_cond=1
+!KS pressure_fix_maxMach=1d1
+/
+&COOLING_PARAMS
+cooling=.true.
+neq_chem=.true.
+metal=.true.
+haardt_madau=.false.
+z_reion=40
+self_shielding=.true.
+H2coolfunc='Glover'
+H2_fesc=.true.
+H2_Hm_cool=.true.              ! ks の no_H2Hm_cool=.false.
+H2_chem_cool=.false.
+!KS met_switch=.false.
+fclump_H2dust=1d0
+/
+&SF_PARAMS
+sf_fg=.true.
+eps_star=0.10d0
+g_star=1.3333333
+T2_star=0.0d0
+n_star=-1d0
+m_star=1d2
+loc_vir=-1d0                   ! ks の既定 (base_np16 は未設定)
+pop2_peak_only=.false.         ! ks の既定
+pop2_njeans=4d0
+Tpop2=1d3
+pop2_model=5                   ! SFC 星形成 (star_by_star が必要)
+pop3_model=6
+Zpop3=1d-5
+dpop3=-1
+mpop3max=100
+mpop3_SNprog=-1d0
+pop3_dist_min_pc=1d0
+pop3_tMyr_suppress_newstar=1d0
+!KS pop2_SN_model='mass_dep'   ! 未移植 (takashi は常に FIRE-3)
+!KS pop2_no_delay_stochastic_SN=.false.
+nonlocal_depletion=.true.
+!KS flg_thin_star_cell=.true.  ! 未移植 (cooling 側)
+!KS tage_thin_star_cell=1d1
+pop2_H2depSF=.false.
+!KS pop2_sESN=1d50
+!KS pop2_SN_prob=-1d0
+SFC_dist_min_pc=1d2
+SFC_nH_min=-1d0
+SFC_f_nH_min=1d-3
+SFC_fate='crop'
+SFC_f_star=-1d-1
+SFC_f_star_Zdep=0              ! ks の既定 (base_np16 は未設定)
+SFC_f_rhocrop=2d0
+SFC_f_rhoSF=3d-2
+SFC_distribution='mass_weight'
+SFC_rsize_min_pc=1d0
+SFC_flg_thin=.false.
+SFC_t_life=1d1
+nH_postSF=-1d2
+!KS nHmax_preSN=-1
+star_by_star=.true.
+sbs_imf_name='Chabrier'
+sbs_Mmin=1d0
+!KS fJeans_cool=-1d0
+/
+&FEEDBACK_PARAMS
+eta_sn=0.1d0
+yield=0.05
+f_w=0
+delayed_cooling=.false.
+pop3_ESN=3d52
+SN_reservoir=.false.           ! ks の既定 (base_np16 は未設定)
+fcool_stop=-1d0                ! off (ks の既定)
+!KS nonlocal_SN=.false.
+!KS flg_voffset_ini=.true.     ! 初速オフセット (voffset_x/y/z) は未移植 → ks 側も .false. で比較
+!KS sgagn_seed='no'
+!KS f_rho_add=-2d0
+/
+&SINK_PARAMS
+create_sinks=.true.
+accretion_scheme='bondi'
+eddington_limit=.true.
+nsinkmax=500
+acc_sink_boost=1.0
+ir_cloud=4
+mass_sink_direct_force=-1d0
+smbh=.true.
+bhpop3=.true.
+BH_model=1
+sink_mass_min_pop3BH=0d0
+sink_mass_min_pop2BH=-1d0
+/
+&CLUMPFIND_PARAMS
+ivar_clump=0
+density_threshold=200
+saddle_threshold=100
+mass_threshold=10.
+/
+&RT_PARAMS
+isHe=.true.
+isH2=.true.
+X=7.6d-1
+Y=2.4d-1
+rt_output_coolstats=.true.
+rt_flux_scheme='glf'
+rt_smooth=.true.
+rt_courant_factor=0.8
+rt_c_fraction=0.01             ! ks は 30*0.01 (level ごと)
+rt_otsa=.true.
+rt_is_init_xion=.false.        ! ks の既定: 平衡電離度で上書きせず、grafic 読み込みの既定値 (Peebles の残留電離) を保つ
+rt_star=.true.
+rt_esc_frac=1.0d0
+sed_dir='SED'
+sedprops_update=1
+rt_nsubcycle=10
+uv_file=''
+cloudy_metal_cooling=.true.    ! 方針 1: takashi の cloudy テーブル (ks は CHtab_files/cloudy_metal_HM12_z.bin)
+cloudy_metal_file='cloudy/cloudy_excess_metal_cooling.bin'
+attn_after_chem=.true.
+isH2Katz=.true.
+relax_x_by_ne=.true.
+LWgroup=1
+LW_ss_model='WGH19'            ! ks の LW_ss_wgh=.true.
+LW_ss_dust=.true.
+LW_abs_thin=.true.
+LW_abs_atom=.true.
+LW_ss_from_incident_surface_yH2=.true.
+!KS SS_LVG=.false.
+iPEH_group=0                   ! ks は PEH=.true. だが FUV 群 (群 5) のエネルギーが 0 なので光電加熱は効かない
+PEH_all_FUV=.false.
+sec_ion=.false.
+!KS isXray=.true.              ! Xgroup=6 > nGroups=5 なので ks でも無効
+!KS Xgroup=6
+/
+&RT_GROUPS
+! ks の試験は 4 群だけ定義 (群 5 は L0=L1=0 の死んだ群)。ここでは群 5 を FUV 帯にしておき group_on(5)=0 で星からの光子を入れない
+groupL0       = 11.20, 13.60, 24.59, 54.42, 5.60
+groupL1       = 13.60, 24.59, 54.42, 200.00, 11.20
+group_egy     = 12.44, 18.85, 35.079, 65.666, 8.4
+spec2group    = 1,2,3,4
+group_on      = 1, 1, 1, 1, 0
+group_csn(1,:) = 2.1d-19, 0.0, 0.0, 0.0
+group_csn(2,:) = 5.0d-18, 3.007d-18, 0.0, 0.0
+group_csn(3,:) = 2.9d-18, 5.687d-19, 4.478d-18, 0.0
+group_csn(4,:) = 4.1d-19, 7.889d-20, 1.197d-18, 1.055d-18
+group_csn(5,:) = 0.0, 0.0, 0.0, 0.0
+group_cse(1,:) = 2.1d-19, 0.0, 0.0, 0.0
+group_cse(2,:) = 5.3d-18, 2.781d-18, 0.0, 0.0
+group_cse(3,:) = 2.8d-18, 5.042d-19, 4.130d-18, 0.0
+group_cse(4,:) = 4.1d-19, 7.456d-20, 1.142d-18, 1.001d-18
+group_cse(5,:) = 0.0, 0.0, 0.0, 0.0
+/
