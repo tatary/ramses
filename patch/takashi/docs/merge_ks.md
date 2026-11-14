@@ -596,5 +596,11 @@ ks 版バイナリと移植後のバイナリを同じ cosmological 初期条件
   a² の修正だけでは DICE は bit 一致 (fs3 で確認)。- **ks 側も同じ fine step 449 で同じ星 (idp 3、302.81 Msun) が直接崩壊し、同じ位置・速度の sink 1 (303 Msun) ができた**
   (ks の log は t_age=2.14 Myr; takashi の表示は上の a² の件で 4.6e-3 と出ていた、修正済み)。sink の質量は 302.8118 vs 302.8277
   (5e-5; 形成時の M_pop3 の差)、降着の周辺量 ninf 0.658 vs 0.666 cm⁻³、Ṁ_now 4.9e-11 vs 5.1e-11 Msun/yr (4%、局所の
-  ガス状態の差)、logsink1 の 1-2 行目も同程度で一致。
+  ガス状態の差)、logsink1 の 1-2 行目も同程度で一致。- **続く崩壊・sink の合体も一致**: idp 1 (1211 Msun) と idp 2 (606 Msun) の直接崩壊は ks が fine step 458/459、takashi が 459/459
+  (寿命 2.43 Myr の境界が 1 step 違い)。sink 2 (1211 Msun)・sink 3 (606 Msun) の質量・位置・速度は同一。3 個は 2 回の合体で
+  1 個 (ks 2119.68 Msun、takashi 2119.79 Msun) になり、合体時の距離は ks 5.8e-3 / 4.0e-3 pc、takashi 1.28e-2 / 2.6e-3 pc
+  (r_merge=138.6 pc に対して十分小さい)。合体直後の Bondi 降着率は ks 2.67e-9 vs takashi 2.36e-9 Msun/yr (12%、局所のガスの差)。
+  この後 idp 4 (151 Msun) の PISN (1.44e52 erg、Mej=151 Msun、Z_ej=0.47) が takashi 側で fine step 475 に起きた (ks は未到達の
+  うちにランを止めた: ks バイナリは -O2 + 境界チェックで 2 倍以上遅く、PISN 後は dt が 8e-5 に落ちて進まなくなるため)。
+  結論: 星形成 → 寿命末 → BH sink → 合体 → 降着の連鎖が ks と同じイベント・同じ数値 (1e-4 以下、降着率は 1e-1) で再現する。
 

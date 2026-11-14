@@ -609,6 +609,12 @@ OpenMP 化し、1 ノードで 1・2・3 スレッドの伸びとメモリ帯域
   粒子を levelmin までしか下ろしていない状態で走る (load_balance 自体は粒子を trunk に上げてから map を作るので
   粒子は直接は効かないはず) など、1 step 目の状態が in-run と違うことが原因と思われるが未解明。
   本番 (24 h = 数百 step) では 1 step 分なので優先度は低い。テストでは step 1 を比較に使わない。
+  2026-11-14 の確認 (MUSIC zoom、16 ランク、単一分割の output から `two_tier_balance=.true., restart_remap=.true.` で再開):
+  起動直後の balance で 2 層 (`TWO_TIER STATUS step 6 load balance ok`) になり、two-tier は最初の step から効く。
+  起動時の分割と次の通常 balance の分割は粗い層でかなり違う (level 5 の active_max 935 → 2048) が、通常 balance 同士
+  (step 7 → 8: 2048 → 1634、octs/cpu max 47752 → 34258) も同程度に違うので、restart_remap 特有の問題ではなく
+  粒子支配の粗い層のコスト (1 oct + numbp×ngridmax/npartmax) に対する切れ目の敏感さ。起動時の粒子は in-run と同じく
+  levelmin にある (init_tree は levelmin まで、in-run は merge_tree_fine で各 coarse step の頭に levelmin へ戻る)。
 
 ### 2e. poisson まわりの上流変更の扱い (2026-11-09 時点、保留)
 
@@ -754,8 +760,9 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
 - ks との比較ラン (2026-11-14; merge_ks.md「ks との比較ラン」): MUSIC zoom (haloD_l5_14_z9) 6 step で ks 版と初期状態が全桁一致、
   以後は密度 1e-6・運動量 3e-5 の相対差、grid 数一致。合わせるのに `omega_b` (ks は omega_b0 を無条件代入) と
   初期電離度 (Peebles の残留電離を `init_flow_fine` に移植、`rt_is_init_xion=.false.`) が必要だった。残り:
-  - 長いラン (12 ランク、z=21 まで): 最初の Pop III 形成 (pop3_model=6、8 連星 2413 Msun) は同じ fine step・同じセル・同じ
-    質量で一致 (merge_ks.md「長いラン」)。その際 takashi の FIRE-3 feedback の年齢換算 (cosmo で a² 倍小さい) を修正。
+  - 長いラン (12 ランク、z=21 まで): 最初の Pop III 形成 (pop3_model=6、8 連星 2413 Msun)、3 つの直接崩壊、BH sink 3 個の
+    生成と合体 (2120 Msun)、Bondi 降着まで ks と同じイベント・同じ数値で一致 (merge_ks.md「長いラン」)。その際 takashi の
+    FIRE-3 feedback の年齢換算 (cosmo で a² 倍小さい) を修正。PISN 以後 (SN reservoir、金属汚染、Pop II 形成) の比較は未実施。
   - FIRE-3 の年齢の評価点を ks 式 (step 中央、最初の step は年齢 0 からの積分) に揃えた (2026-11-14)。DICE の結果は
     変わる (SN 率の評価点が半 step ずれる) ので、以後の回帰の基準はこの版の出力。
   - 初期温度 0.5% (`rt_evol_single_cell` の冷却率・定数)、`x_MIN` (ks 1e-12 / takashi 1e-20) の差は残したまま。
