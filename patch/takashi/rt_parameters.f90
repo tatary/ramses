@@ -82,6 +82,7 @@ module rt_parameters
   character(LEN=128)::cloudy_metal_file='' ! File containing cloudy metallicity cooling tables   !
   logical::attn_after_chem=.false.     ! calculate attenuation after chemistry           !
   logical::rt_skip_convergence=.false. ! skip convergence check for the photon density and fluxes !
+  logical::attn_new_abund=.false.      ! with attn_after_chem: attenuate with the abundances after the chemistry update (as ks) instead of before !
   logical::relax_x_by_ne=.false.       ! relax the xHI/xHII/xHe subcycle tests using the electron budget (TO ADDED) !
   ! LW self-shielding of the H2 photodissociation (ported from patch/ks 2026-11-12, docs/merge_ks.md 方針 3).
   ! Default: off (upstream Nickerson+2018 behaviour, bit-identical).

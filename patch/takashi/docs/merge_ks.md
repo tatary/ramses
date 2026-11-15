@@ -604,3 +604,66 @@ ks 版バイナリと移植後のバイナリを同じ cosmological 初期条件
   うちにランを止めた: ks バイナリは -O2 + 境界チェックで 2 倍以上遅く、PISN 後は dt が 8e-5 に落ちて進まなくなるため)。
   結論: 星形成 → 寿命末 → BH sink → 合体 → 降着の連鎖が ks と同じイベント・同じ数値 (1e-4 以下、降着率は 1e-1) で再現する。
 
+### PISN 以後の比較 (2026-11-15、`ksref_pisn` / `kstest_pisn`、12 ランク、初期条件から z=20 まで)
+
+ks 側を `-O3`・境界チェックなしで別ビルドし (`Ramses-FG/bin_fast/`、`make -f ../makefiles/Makefile_0X.ws F90="mpif90 -O3 ..."`)、
+takashi 側は HEAD (FIRE-3 の年齢修正後) で、両方を最初から z=20 まで走らせた (ks 5.6 時間、takashi 3.4 時間; 出力 a=0.0323, 0.0385,
+0.0462, 0.0465, 0.0470, 0.0476)。
+
+- **イベントは z=20 まで全部一致**: Pop III 8 連星の寿命末 7 件 (直接崩壊 303/1211/606/76 Msun、PISN 151 Msun 1.436e52 erg、
+  SN 38 Msun 2.739e52 erg Mej=22.9 Msun、SN 19 Msun 1e51 erg Mej=15.2 Msun) が同じ星・同じ質量・同じエネルギーで起き、fine step は
+  449/458/459/475/503/522/1016 (ks) vs 449/459/459/474/502/522/1086 (takashi; 最後の差は hypernova 後の dt の履歴、年齢は 8.85 vs 8.87 Myr)。
+  SN 後の dt も同じ (PISN 後 3.8e-4 vs 3.9e-4、38 Msun の SN 後 3.8e-5 vs 3.7e-5)。z=20 で Pop III 1、BH 7、Pop II 0、
+  sink 2214.09 vs 2214.21 Msun。log の `Zej` は ks 23.5 / takashi 0.470 と 50 倍違うが (未確認: 表示が Zsun 単位か絶対値かの差と推定)、
+  星の周り (箱の 2% 半径) のメタル質量は 71.20 → 79.69 → 82.48 Msun (ks) vs 71.20 → 79.70 → 82.49 Msun で 5e-5 一致。
+- **HII 領域は takashi が小さい (ks の試験 namelist の群 5 が原因)**: 同じ球内の電離水素質量 (ks → takashi) は a=0.0462 で
+  1.83e8 → 1.60e8 Msun、0.0465 で 4.15e8 → 3.42e8、0.0470 で 8.43e8 → 5.85e8、0.0476 で 8.24e8 → 5.53e8。熱エネルギーも 11-28% 小さい。
+  星の光子放出量 (log) は同じ、LW 群の飛行中の光子数は 4 桁一致、電離 3 群の飛行中の光子数は星形成直後 (a=0.0457) は 0.1% 一致で、
+  a=0.0460 で 4%、0.0462 で 7% takashi が少ない (z=25 の出力から出力を足して再開した `ksref_ts` / `kstest_ts`)。
+  原因: ks の試験 namelist (`run_l5.sh` が作る) は `groupL0/L1` を 4 群しか書かず、`isFUVbin=.true.` の群 5 がコードの既定値
+  (`groupL0=13.6`, `groupL1=0` = 上限なし) のままになって、電離光子の帯域全体をもう 1 群ぶん運んでいる (飛行中の光子数は群 2 の
+  0.55-0.62 倍、星の死後は電離群と同じく吸収されて減る)。ks の本番 namelist (`ngridmax_fire3.nml` 等) は群 5 を 5.6-11.2 eV と明示。
+  「ks との比較ラン」で群 5 を「エネルギー 0 の死んだ群」としたのは誤りだった (log の初期値 egy=0 は on the fly で更新される)。
+- **確認**: takashi 側の群 5 を ks と同じ定義 (13.6 eV〜上限なし、`group_on(5)=1`) にして z=25 から再開 (`kstest_g5`) すると、a=0.0462 で
+  電離水素 1.78e8 Msun (ks 1.83e8、差 13% → 2.7%)、HeIII 1.37e8 (ks 1.46e8)、熱エネルギー 1.83e54 erg (ks 1.86e54)、
+  飛行中の光子数は電離 3 群 1.6%、群 5 1.7% の差になる。`attn_after_chem` (ks の試験も `&PHYSICS_PARAMS` で .true.、両者で有効) と `relax_x_by_ne` (takashi 独自) を takashi 側で切っても
+  ほとんど変わらない (1.60e8 → 1.57e8 Msun、`kstest_noattn`)。
+  `namelist/ks/l5_14_test.nml` は意図した物理 (群 5 = FUV 帯、星からは入れない) のままにし、ks の試験を数値まで再現する 4 行を注に書いた。
+- **残った差の内訳 (2026-11-15、a=0.0460 から coarse step ごとに出力した `ksref_sn` / `kstest_sn_cur` / `kstest_sn_ks`)**:
+  - HII 領域の残り 2.7% は `attn_after_chem` の解き方の違い。ks も試験では `attn_after_chem=.true.` (`&PHYSICS_PARAMS`)。どちらも
+    吸収前の輻射場 (注入だけ足した N*) で chemistry を解くが、ks はそのあと**更新後**の電離状態で吸収を計算し収束判定を使わない。
+    takashi は**更新前**の電離状態で吸収した値を取っておいて最後に採用し、光子密度・flux の 10% 則 (`rt_skip_convergence=.false.` が既定)
+    で substep を刻む。`namelist/ks/*.nml` は `rt_skip_convergence` を書いていなかったので比較ランは判定ありで走っていた
+    (DICE 本番 `xd_rt.nml` と `tests/dice_rt_*.nml` は `.true.`)。ks 方式に切り替えるスイッチ `attn_new_abund` (`&RT_PARAMS`、既定
+    .false. で bit 一致) を入れ、`attn_new_abund=.true.` + `rt_skip_convergence=.true.` にすると a=0.0462 で電離水素 1.825e8 Msun
+    (ks 1.832e8、-0.4%)、熱エネルギー +1.0%、飛行中の電離光子 -0.2% まで合う (現行設定は -2.7% / -1.2% / -1.1%)。
+  - PISN の注入は一致 (直後の出力で T>1e5 K 2.54e4 vs 2.52e4 Msun、Tmax 1.31e7 vs 1.33e7 K、中心の平均温度 62.3 vs 61.4 kK)。その後
+    takashi のほうが速く冷える (T>1e5 K のガスが 2-5 step 後に 3.98e4/2.56e4/5.9e3/1.8e3 vs 4.13e4/4.33e4/2.66e4/9.2e3 Msun、中心温度
+    23.6 vs 26.3 kK)。吸収の方式を変えても同じなので冷却側の差 (ejecta は Z=0.47; cloudy テーブル = 方針 1 と推定、冷却率は未比較)。
+  - Pop II は z=20 までどちらも形成されず、Pop II 形成の比較は未実施。
+
+### 吸収の順序と収束判定 (2026-11-15、`tests/ifront_thick.nml`)
+
+1 substep で a = k N* ddt、tau = k n_old ddt (k = sigma c) と書くと、chemistry の電離数は N* tau/(1+a)、除かれる光子は
+takashi N* tau/(1+tau)、ks N* tau/(1+a+tau)。ks は常に電離数より少なく除き (電離して中性でなくなった原子の分を数え損ねる)、
+takashi は N* = n_old (電離波面) で保存し前後で誤差の符号が変わる。どちらも tau >> 1 では電離数が吸収数の ~(1+tau) 倍になる
+(吸収前の輻射場で chemistry を解くことの誤差) ので、substep の tau を抑える収束判定が効く。
+
+光学的に厚いセルを進む R 型波面 (一様 nH=0.1、64^3、セルの tau~14、RT 1 step の tau~4、再結合時間より短い 0.4 Myr) での電離原子数:
+
+| 方式 | rt_courant 0.8 | rt_courant 0.1 |
+|---|---|---|
+| takashi の順序、判定あり (既定) | 6.856e60 | 6.809e60 |
+| ks の順序 (`attn_new_abund`)、判定あり | 6.925e60 | 6.841e60 |
+| takashi の順序、判定なし (DICE 本番の設定) | 9.801e60 | 7.013e60 |
+| ks の順序、判定なし (ks 相当) | 1.002e61 | 7.048e60 |
+| 上流の既定 (`attn_after_chem=.false.`) | 6.359e60 | 6.386e60 |
+
+順序の差は 1-2%。判定なしは通常の刻みで 4 割以上多く電離し、刻みを 1/8 にすると判定ありの値に寄る (= 光子の作りすぎ)。
+上流の既定は刻みによらず 7% 少ない (cooling の substep 内の誤差で、どちらが真値に近いかはこのテストでは決まらない)。
+通常の Stromgren 球 (nH=1e-3、平衡半径) はどの方式も 1% 以内で一致し、この差は見えない。DICE 本番の `rt_skip_convergence=.true.` が
+R 型の過渡期にどれだけ効くか (セルの tau は本番のほうが大きい) は未評価。
+- 道具: `tests/rt_photon_total.py` (rt ファイルの level 5 のセルから群ごとの飛行中の光子総数)。yt は sink のない出力で空の `sink_*.csv` に
+  落ちる (`EmptyDataError`)、ks の出力は `hydro_file_descriptor.txt` が実態と違うので `yt.load(..., fields=[...])` で変数名を与える。
+  ks は restart ファイルと namelist の `noutput` の一致を要求する (途中で `aout` を足すときは個数を保つ)。
+

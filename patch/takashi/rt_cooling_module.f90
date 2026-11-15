@@ -224,6 +224,8 @@ CONTAINS
     real(dp),dimension(nGroups):: dNp
     real(dp),dimension(nGroups):: dNp_save !TO: to update photon number density and chemistry simulataneously
     real(dp),dimension(nGroups):: dNp_noabs !TO: to keep original photon number befor absorption
+    real(dp),dimension(nGroups):: phAbs_gas0, phAbs_gas1, attn_corr ! attn_new_abund: gas absorption before/after chemistry
+    real(dp),dimension(nIons):: nN1
     real(dp),dimension(1:ndim, 1:nGroups):: dFp
     real(dp),dimension(1:ndim, 1:nGroups):: dFp_save
     real(dp),dimension(1:ndim, 1:nGroups):: dFp_noabs
@@ -556,6 +558,7 @@ CONTAINS
               - nN(ixHI)*signc(LWgroup,ixHI)*ssh2(LWgroup)*(1d0-f_shd)
             if(LW_abs_atom) phAbs(LWgroup) = phAbs(LWgroup) + nN(ixHII)*5.23d-25*rt_c_cgs
           endif
+          phAbs_gas0 = phAbs   ! gas absorption with the abundances before the chemistry update (attn_new_abund)
           ! IR, optical and UV depletion by dust absorption: ----------------
           phSc(iIR)  = phSc(iIR) + dustSc(iIR)
           do igroup=1,nGroups        ! Deplete photons, since they go into IR
@@ -1264,6 +1267,40 @@ CONTAINS
       endif
 
       if (rt .and. rt_advect .and. attn_after_chem) then
+        if (attn_new_abund) then
+          ! As ks: the chemistry above used the unattenuated field; attenuate with the abundances after
+          ! the chemistry update. dNp_save/dFp_save were attenuated with the old abundances (phAbs), so
+          ! replace the gas part of the absorption rate (dust/PEH absorption and the LW shielding factor
+          ! are kept as computed before the chemistry).
+          nN1=0d0
+          if(isH2) then
+            nN1(ixHI)  = nH(icell)*MAX((1.-dxion(ixHI)-dxion(ixHII))/2.,x_min)   ! nH2
+            nN1(ixHII) = nH(icell)*MAX(dxion(ixHI),x_min)                        ! nHI
+          else
+            nN1(ixHII) = nH(icell)*MAX(1d0-dxion(ixHII),x_min)
+          endif
+          if(isHe) then
+            nN1(ixHeII)  = nHe*MAX(1.-dxion(ixHeII)-dxion(ixHeIII),x_min)        ! nHeI
+            nN1(ixHeIII) = nHe*dxion(ixHeII)                                     ! nHeII
+          endif
+          do igroup=1,nGroups
+            phAbs_gas1(igroup) = SUM(nN1(:)*signc(igroup,:)*ssh2(igroup))
+          end do
+          if(LW_on) then
+            if(.not.LW_abs_thin) phAbs_gas1(LWgroup) = phAbs_gas1(LWgroup)           &
+              - nN1(ixHI)*signc(LWgroup,ixHI)*ssh2(LWgroup)*(1d0-f_shd)
+            if(LW_abs_atom) phAbs_gas1(LWgroup) = phAbs_gas1(LWgroup) + nN1(ixHII)*5.23d-25*rt_c_cgs
+          endif
+          do igroup=1,nGroups
+            attn_corr(igroup) = (1d0+ddt(icell)*phAbs(igroup))                      &
+              / (1d0+ddt(icell)*(phAbs(igroup)-phAbs_gas0(igroup)+phAbs_gas1(igroup)))
+            dNp_save(igroup) = MAX(smallNp, dNp_save(igroup)*attn_corr(igroup))
+            attn_corr(igroup) = (1d0+ddt(icell)*(phAbs(igroup)+phSc(igroup)))       &
+              / (1d0+ddt(icell)*(phAbs(igroup)-phAbs_gas0(igroup)+phAbs_gas1(igroup)+phSc(igroup)))
+            dFp_save(:,igroup) = dFp_save(:,igroup)*attn_corr(igroup)
+            call reduce_flux(dFp_save(:,igroup),dNp_save(igroup)*rt_c_cgs)
+          end do
+        endif
         ! Update the values for which absorption is considered
         dNp = dNp_save
         dFp = dFp_save

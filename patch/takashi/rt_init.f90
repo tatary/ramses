@@ -159,7 +159,7 @@ SUBROUTINE read_rt_params(nml_ok)
   & ,rt_isoPress, rt_isIRtrap, iPEH_group, heat_unresolved_HII      &
   & ,cosmic_rays, rt_isIR_alt                                       &
   & ,cloudy_metal_cooling, cloudy_metal_file,attn_after_chem        &
-  & ,rt_skip_convergence, relax_x_by_ne                             &
+  & ,rt_skip_convergence, relax_x_by_ne, attn_new_abund             &
   & ,isH2Katz, PEH_all_FUV, sec_ion, LWgroup, LW_ss_model, LW_ss_dust, LW_abs_thin, LW_abs_atom &
   & ,LW_ss_from_incident_surface_yH2, p3_noFUV, p3_noEUV              &
   ! RT regions (for initialization)                                 &

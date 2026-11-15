@@ -4,7 +4,8 @@
 ! 「ks との比較ラン」)。ビルドは bin/Makefile.xd_ks_intel 相当 (NGROUPS=5, NPSCAL=3 → NVAR=12, QUADHILBERT, DICE 空)。
 ! ks 側は flg_voffset_ini=.false. (初速オフセットは未移植) と fof_find=.false. (この設定では物理に効かない) にして比較する。
 ! 翻訳規則は namelist/ks/ngridmax_fire3.nml と同じ。ks と違う点: cloudy テーブル (方針 1)、群 5 (FUV) は ks では
-! エネルギー 0 の死んだ群なので group_on(5)=0 と iPEH_group=0 で光子を入れない、flg_thin_star_cell (未移植)。
+! 13.6 eV〜上限なしの重複した電離群 (ks の試験 namelist が 4 群しか定義しないため既定値のまま; &RT_GROUPS の注) で、ここでは
+! group_on(5)=0 と iPEH_group=0 で光子を入れない、flg_thin_star_cell (未移植)。
 ! 実行ディレクトリには ics/level_005..014 (MUSIC)、SED (bc03_Chabrier)、cloudy へのリンクを置く。
 &RUN_PARAMS
 cosmo=.true.
@@ -202,14 +203,23 @@ LW_abs_thin=.true.
 LW_abs_atom=.true.
 LW_ss_from_incident_surface_yH2=.true.
 !KS SS_LVG=.false.
-iPEH_group=0                   ! ks は PEH=.true. だが FUV 群 (群 5) のエネルギーが 0 なので光電加熱は効かない
+iPEH_group=0                   ! ks は PEH=.true. だが試験 namelist の群 5 は FUV 帯ではない (&RT_GROUPS の注)
 PEH_all_FUV=.false.
 sec_ion=.false.
 !KS isXray=.true.              ! Xgroup=6 > nGroups=5 なので ks でも無効
 !KS Xgroup=6
 /
 &RT_GROUPS
-! ks の試験は 4 群だけ定義 (群 5 は L0=L1=0 の死んだ群)。ここでは群 5 を FUV 帯にしておき group_on(5)=0 で星からの光子を入れない
+! ks の試験 (run_l5.sh) は 4 群だけ定義するので、群 5 はコードの既定値 groupL0=13.6, groupL1=0 (上限なし) になり、星の電離光子を
+! もう 1 群ぶん重複して運ぶ (HII 領域の電離質量が 1 割強増える; docs/merge_ks.md「PISN 以後の比較」)。ks の本番 namelist は
+! 群 5 を 5.6-11.2 eV と明示している。ここでは群 5 を FUV 帯にして group_on(5)=0 で星からの光子を入れない (意図した物理)。
+! ks の試験ランを数値まで再現したいときは次の 4 行に差し替える:
+!   groupL0   = 11.20, 13.60, 24.59, 54.42, 13.60
+!   groupL1   = 13.60, 24.59, 54.42, 200.00, 0.0
+!   group_egy = 12.44, 18.85, 35.079, 65.666, 0.0
+!   group_on  = 1, 1, 1, 1, 1
+! さらに &RT_PARAMS に attn_new_abund=.true. と rt_skip_convergence=.true. (ks の attn_after_chem は更新後の電離状態で吸収し、
+! 収束判定を使わない) を足すと a=0.0462 の電離質量が 0.4% まで合う。既定 (収束判定あり) のほうが光子の作りすぎが小さい。
 groupL0       = 11.20, 13.60, 24.59, 54.42, 5.60
 groupL1       = 13.60, 24.59, 54.42, 200.00, 11.20
 group_egy     = 12.44, 18.85, 35.079, 65.666, 8.4
