@@ -199,6 +199,9 @@ subroutine star_formation(ilevel)
 
 ! get values of uold for density and velocities in virtual boundaries
 #ifndef WITHOUTMPI
+  ! separate timer labels for the two places where this routine waits for the other ranks
+  ! (the exchange below and the collective sums after the main loop): TODO.md 2d-4
+  call timer('sf - ghostzones','start')
   if(async_fwd(1)%active)then
     ! amr_step started the exchange (conservative variables) after the
     ! cooling of the emission grids: complete it and convert the virtual
@@ -232,6 +235,7 @@ subroutine star_formation(ilevel)
     call make_virtual_fine_dp_nv(uold,nvar,1,4,ilevel)
 #endif
   end if
+  call timer('star formation','start')
 #endif
 
   !------------------------------------------------
@@ -686,6 +690,7 @@ subroutine star_formation(ilevel)
   !---------------------------------
   ! Check for free particle memory
   !---------------------------------
+  call timer('sf - reduce','start')
   ok_free=(numbp_free-ntot-ndebris_tot)>=0
 #ifndef WITHOUTMPI
   call MPI_ALLREDUCE(numbp_free,numbp_free_tot,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,info)
@@ -733,6 +738,8 @@ subroutine star_formation(ilevel)
       & ilevel,ntot_all,nstar_tot,mtot_all,mlost_all/(mlost_all+mtot_all)*100.
     endif
   end if
+
+  call timer('star formation','start')
 
   !------------------------------
   ! Create new star particles

@@ -4,6 +4,7 @@
 !###########################################################
 subroutine phi_fine_cg(ilevel,icount)
   use amr_commons
+!$ use omp_lib
   use pm_commons
   use poisson_commons
   use mpi_mod
@@ -23,7 +24,9 @@ subroutine phi_fine_cg(ilevel,icount)
   ! b  : stored in rho(i)
   !=========================================================
   integer::i,ind,iter,iskip,itermax,nx_loc
-  integer::idx
+  integer::idx,ngrid_act,tid
+  real(kind=8)::r2_loc,psum
+  real(kind=8),dimension(0:255)::part   ! per-thread partial sums, added in thread order (reproducible)
   real(dp)::error,error_ini
   real(dp)::dx2,fourpi,scale,oneoversix,fact,fact2
   real(dp)::r2_old=0,alpha_cg,beta_cg
@@ -86,6 +89,34 @@ subroutine phi_fine_cg(ilevel,icount)
   !====================================
   ! Main iteration loop
   !====================================
+  ! OpenMP (omp_poisson, TODO.md 2d-4): the loops of one iteration are threaded as three parallel regions
+  ! (p update; Ap and p.Ap; x and r updates with the next r.r). The sums keep the serial order (ind outer,
+  ! grid inner), so one thread is bit-identical to the serial code; with several threads the reductions
+  ! change the rounding. The partial sums of the threads are added in thread order (not with a
+  ! reduction clause, whose combination order is unspecified), so a run is reproducible for a given
+  ! number of threads. The regions are short (a fraction of a ms), so the workers must not go to
+  ! sleep between them: run with KMP_BLOCKTIME=1 (Intel) / GOMP_SPINCOUNT (GNU) rather than 0.
+  ngrid_act=active(ilevel)%ngrid
+  part=0.0d0
+!$omp parallel private(ind,i,idx,tid,psum) if(omp_poisson .and. ngrid_act>=omp_mg_mingrid)
+  tid=0
+!$ tid=omp_get_thread_num()
+  psum=0.0d0
+!$omp do collapse(2) schedule(static)
+  do ind=1,twotondim
+     do i=1,ngrid_act
+        idx=active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax
+        psum=psum+f(idx,1)*f(idx,1)
+     end do
+  end do
+!$omp end do nowait
+  part(tid)=psum
+!$omp end parallel
+  r2_loc=0.0d0
+  do tid=0,255
+     r2_loc=r2_loc+part(tid)
+  end do
+
   iter=0; itermax=10000
   error=1.0D0; error_ini=1.0D0
   do while(error>epsilon*error_ini.and.iter<itermax)
@@ -93,16 +124,9 @@ subroutine phi_fine_cg(ilevel,icount)
      iter=iter+1
 
      !====================================
-     ! Compute residual norm
+     ! Residual norm (local sum computed with the r update of the previous iteration)
      !====================================
-     r2=0.0d0
-     do ind=1,twotondim
-        iskip=ncoarse+(ind-1)*ngridmax
-        do i=1,active(ilevel)%ngrid
-           idx=active(ilevel)%igrid(i)+iskip
-           r2=r2+f(idx,1)*f(idx,1)
-        end do
-     end do
+     r2=r2_loc
      ! Compute global norm
 #ifndef WITHOUTMPI
      call MPI_ALLREDUCE(r2,r2_all,1,MPI_DOUBLE_PRECISION,MPI_SUM,&
@@ -123,31 +147,43 @@ subroutine phi_fine_cg(ilevel,icount)
      !====================================
      ! Recurrence on p
      !====================================
+!$omp parallel do collapse(2) private(ind,i,idx) schedule(static) if(omp_poisson .and. ngrid_act>=omp_mg_mingrid)
      do ind=1,twotondim
-        iskip=ncoarse+(ind-1)*ngridmax
-        do i=1,active(ilevel)%ngrid
-           idx=active(ilevel)%igrid(i)+iskip
+        do i=1,ngrid_act
+           idx=active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax
            f(idx,2)=f(idx,1)+beta_cg*f(idx,2)
         end do
      end do
+!$omp end parallel do
      ! Update boundaries
      call make_virtual_fine_dp(f(1,2),ilevel)
 
      !==============================================
      ! Compute z = Ap and store it into f(i,3)
      !==============================================
-     call cmp_Ap_cg(ilevel)
+     part=0.0d0
+!$omp parallel private(ind,i,idx,tid,psum) if(omp_poisson .and. ngrid_act>=omp_mg_mingrid)
+     call cmp_Ap_cg(ilevel)      ! orphaned worksharing loop (implicit barrier at its end)
 
      !====================================
      ! Compute p.Ap scalar product
      !====================================
-     pAp=0.0d0
+     tid=0
+!$   tid=omp_get_thread_num()
+     psum=0.0d0
+!$omp do collapse(2) schedule(static)
      do ind=1,twotondim
-        iskip=ncoarse+(ind-1)*ngridmax
-        do i=1,active(ilevel)%ngrid
-           idx=active(ilevel)%igrid(i)+iskip
-           pAp=pAp+f(idx,2)*f(idx,3)
+        do i=1,ngrid_act
+           idx=active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax
+           psum=psum+f(idx,2)*f(idx,3)
         end do
+     end do
+!$omp end do nowait
+     part(tid)=psum
+!$omp end parallel
+     pAp=0.0d0
+     do tid=0,255
+        pAp=pAp+part(tid)
      end do
      ! Compute global sum
 #ifndef WITHOUTMPI
@@ -164,23 +200,28 @@ subroutine phi_fine_cg(ilevel,icount)
      !====================================
      ! Recurrence on x
      !====================================
+     ! Recurrence on r, and r.r for the next iteration (same loop)
+     !====================================
+     part=0.0d0
+!$omp parallel private(ind,i,idx,tid,psum) if(omp_poisson .and. ngrid_act>=omp_mg_mingrid)
+     tid=0
+!$   tid=omp_get_thread_num()
+     psum=0.0d0
+!$omp do collapse(2) schedule(static)
      do ind=1,twotondim
-        iskip=ncoarse+(ind-1)*ngridmax
-        do i=1,active(ilevel)%ngrid
-           idx=active(ilevel)%igrid(i)+iskip
+        do i=1,ngrid_act
+           idx=active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax
            phi(idx)=phi(idx)+alpha_cg*f(idx,2)
+           f(idx,1)=f(idx,1)-alpha_cg*f(idx,3)
+           psum=psum+f(idx,1)*f(idx,1)
         end do
      end do
-
-     !====================================
-     ! Recurrence on r
-     !====================================
-     do ind=1,twotondim
-        iskip=ncoarse+(ind-1)*ngridmax
-        do i=1,active(ilevel)%ngrid
-           idx=active(ilevel)%igrid(i)+iskip
-           f(idx,1)=f(idx,1)-alpha_cg*f(idx,3)
-        end do
+!$omp end do nowait
+     part(tid)=psum
+!$omp end parallel
+     r2_loc=0.0d0
+     do tid=0,255
+        r2_loc=r2_loc+part(tid)
      end do
 
      ! Compute error
@@ -358,10 +399,12 @@ subroutine cmp_Ap_cg(ilevel)
   real(dp)::oneoversix
   integer,dimension(1:3,1:2,1:8)::iii,jjj
 
-  integer,dimension(1:nvector),save::ind_grid,ind_cell
-  integer,dimension(1:nvector,0:twondim),save::igridn
-  real(dp),dimension(1:nvector,1:ndim),save::phig,phid
-  real(dp),dimension(1:nvector),save::residu
+  ! Work arrays are ordinary locals (not save): the routine is called inside a parallel region
+  ! of phi_fine_cg and its grid loop is an orphaned worksharing loop.
+  integer,dimension(1:nvector)::ind_grid,ind_cell
+  integer,dimension(1:nvector,0:twondim)::igridn
+  real(dp),dimension(1:nvector,1:ndim)::phig,phid
+  real(dp),dimension(1:nvector)::residu
 
   ! Set constants
   oneoversix=1.0D0/dble(twondim)
@@ -375,6 +418,7 @@ subroutine cmp_Ap_cg(ilevel)
 
   ! Loop over myid grids by vector sweeps
   ncache=active(ilevel)%ngrid
+!$omp do private(igrid,ngrid,i,idim,ind,iskip,id1,id2,ig1,ig2,ih1,ih2) schedule(static)
   do igrid=1,ncache,nvector
 
      ! Gather nvector grids
@@ -443,6 +487,7 @@ subroutine cmp_Ap_cg(ilevel)
      ! End loop over cells
 
   end do
+!$omp end do
   ! End loop over grids
 
 end subroutine cmp_Ap_cg

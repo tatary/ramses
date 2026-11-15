@@ -174,12 +174,15 @@ subroutine cmp_residual_mg_fine(ilevel)
 
    ngrid=active(ilevel)%ngrid
 
+   ! OpenMP (omp_poisson): every cell writes only its own f(:,1), so the result does not depend on
+   ! the number of threads. Small levels stay serial (ngrid < omp_mg_mingrid).
    ! Loop over cells
+!$omp parallel do collapse(2) schedule(static) if(omp_poisson .and. ngrid>=omp_mg_mingrid) &
+!$omp & private(ind,igrid_mg,iskip_amr,igrid_amr,icell_amr,phi_c,nb_sum,inbor,idim,igshift,igrid_nbor_amr,icell_nbor_amr)
    do ind=1,twotondim
-      iskip_amr = ncoarse+(ind-1)*ngridmax
-
       ! Loop over active grids
       do igrid_mg=1,ngrid
+         iskip_amr = ncoarse+(ind-1)*ngridmax
          igrid_amr = active(ilevel)%igrid(igrid_mg)
          icell_amr = iskip_amr + igrid_amr
 
@@ -245,6 +248,7 @@ subroutine cmp_residual_mg_fine(ilevel)
          f(icell_amr,1) = -oneoverdx2*( nb_sum - dtwondim*phi_c )+f(icell_amr,2)
       end do
    end do
+!$omp end parallel do
 
 end subroutine cmp_residual_mg_fine
 
@@ -253,6 +257,7 @@ end subroutine cmp_residual_mg_fine
 
 subroutine cmp_residual_norm2_fine(ilevel, norm2)
    use amr_commons
+!$ use omp_lib
    use poisson_commons
    implicit none
 
@@ -262,25 +267,41 @@ subroutine cmp_residual_norm2_fine(ilevel, norm2)
    real(kind=8) :: dx2
    integer  :: ngrid
    integer  :: ind, igrid_mg
-   integer  :: igrid_amr, icell_amr, iskip_amr
+   integer  :: igrid_amr, icell_amr, iskip_amr, tid
+   real(kind=8) :: psum
+   real(kind=8), dimension(0:255) :: part   ! per-thread partial sums, added in thread order
 
    ! Set constants
    dx2  = (0.5d0**ilevel)**ndim
    ngrid=active(ilevel)%ngrid
 
    norm2 = 0.0d0
-   ! Loop over cells
+   ! Loop over cells (per-thread partial sums added in thread order: serial order with one thread,
+   ! reproducible for a given number of threads)
+   part = 0.0d0
+!$omp parallel if(omp_poisson .and. ngrid>=omp_mg_mingrid) &
+!$omp & private(ind,igrid_mg,iskip_amr,igrid_amr,icell_amr,tid,psum)
+   tid = 0
+!$ tid = omp_get_thread_num()
+   psum = 0.0d0
+!$omp do collapse(2) schedule(static)
    do ind=1,twotondim
-      iskip_amr = ncoarse+(ind-1)*ngridmax
       ! Loop over active grids
       do igrid_mg=1,ngrid
+         iskip_amr = ncoarse+(ind-1)*ngridmax
          igrid_amr = active(ilevel)%igrid(igrid_mg)
          icell_amr = iskip_amr + igrid_amr
          if(f(icell_amr,3)<=0.0) then      ! Do not count masked cells
             cycle
          end if
-         norm2 = norm2 + f(icell_amr,1)**2
+         psum = psum + f(icell_amr,1)**2
       end do
+   end do
+!$omp end do nowait
+   part(tid) = psum
+!$omp end parallel
+   do tid=0,255
+      norm2 = norm2 + part(tid)
    end do
    norm2 = dx2*norm2
 
@@ -288,6 +309,7 @@ end subroutine cmp_residual_norm2_fine
 
 subroutine cmp_ivar_norm2_fine(ilevel, ivar, norm2)
    use amr_commons
+!$ use omp_lib
    use poisson_commons
    implicit none
 
@@ -297,7 +319,9 @@ subroutine cmp_ivar_norm2_fine(ilevel, ivar, norm2)
    real(kind=8) :: dx2
    integer  :: ngrid
    integer  :: ind, igrid_mg
-   integer  :: igrid_amr, icell_amr, iskip_amr
+   integer  :: igrid_amr, icell_amr, iskip_amr, tid
+   real(kind=8) :: psum
+   real(kind=8), dimension(0:255) :: part   ! per-thread partial sums, added in thread order
 
    ! Set constants
    dx2  = (0.5d0**ilevel)**ndim
@@ -305,21 +329,34 @@ subroutine cmp_ivar_norm2_fine(ilevel, ivar, norm2)
 
    norm2 = 0.0d0
    ! Loop over cells
+   part = 0.0d0
+!$omp parallel if(omp_poisson .and. ngrid>=omp_mg_mingrid) &
+!$omp & private(ind,igrid_mg,iskip_amr,igrid_amr,icell_amr,tid,psum)
+   tid = 0
+!$ tid = omp_get_thread_num()
+   psum = 0.0d0
+!$omp do collapse(2) schedule(static)
    do ind=1,twotondim
-      iskip_amr = ncoarse+(ind-1)*ngridmax
       ! Loop over active grids
       do igrid_mg=1,ngrid
+         iskip_amr = ncoarse+(ind-1)*ngridmax
          igrid_amr = active(ilevel)%igrid(igrid_mg)
          icell_amr = iskip_amr + igrid_amr
          if(f(icell_amr,3)<=0.0) then      ! Do not count masked cells
             cycle
          end if
          if(ivar>0)then
-            norm2 = norm2 + f(icell_amr,ivar)**2
+            psum = psum + f(icell_amr,ivar)**2
          else
-            norm2 = norm2 + phi(icell_amr)**2
+            psum = psum + phi(icell_amr)**2
          endif
       end do
+   end do
+!$omp end do nowait
+   part(tid) = psum
+!$omp end parallel
+   do tid=0,255
+      norm2 = norm2 + part(tid)
    end do
    norm2 = dx2*norm2
 
@@ -368,17 +405,19 @@ subroutine gauss_seidel_mg_fine(ilevel,redstep)
    ngrid=active(ilevel)%ngrid
 
    ! Loop over cells, with red/black ordering
+   ! OpenMP (omp_poisson): the six neighbours of a red cell are black and vice versa, so the cells of
+   ! one sweep are independent and the result does not depend on the number of threads.
+!$omp parallel do collapse(2) schedule(static) if(omp_poisson .and. ngrid>=omp_mg_mingrid) &
+!$omp & private(ind0,ind,igrid_mg,iskip_amr,igrid_amr,icell_amr,nb_sum,weight,inbor,idim,igshift,igrid_nbor_amr,icell_nbor_amr)
    do ind0=1,twotondim/2      ! Only half of the cells for a red or black sweep
-      if(redstep) then
-         ind = ired  (ndim,ind0)
-      else
-         ind = iblack(ndim,ind0)
-      end if
-
-      iskip_amr = ncoarse+(ind-1)*ngridmax
-
       ! Loop over active grids
       do igrid_mg=1,ngrid
+         if(redstep) then
+            ind = ired  (ndim,ind0)
+         else
+            ind = iblack(ndim,ind0)
+         end if
+         iskip_amr = ncoarse+(ind-1)*ngridmax
          igrid_amr = active(ilevel)%igrid(igrid_mg)
          icell_amr = iskip_amr + igrid_amr
 
@@ -448,6 +487,7 @@ subroutine gauss_seidel_mg_fine(ilevel,redstep)
          end if
       end do
    end do
+!$omp end parallel do
 end subroutine gauss_seidel_mg_fine
 
 ! ------------------------------------------------------------------------
@@ -548,10 +588,16 @@ subroutine restrict_residual_fine_reverse(ifinelevel)
    icoarselevel=ifinelevel-1
 
    ! Loop over fine cells of the myid active comm
+   ! OpenMP (omp_poisson): for one fine cell index the fine grids map to distinct coarse cells (their
+   ! fathers), so the grid loop has no write conflict; the 8 fine cells of a grid are added in the
+   ! serial order, so the result does not depend on the number of threads.
+!$omp parallel if(omp_poisson .and. active(ifinelevel)%ngrid>=omp_mg_mingrid) &
+!$omp & private(ind_f_cell,iskip_f_amr,igrid_f_mg,igrid_f_amr,icell_f_amr,icell_c_amr,ind_c_cell,igrid_c_amr,cpu_amr,igrid_c_mg,iskip_c_mg,icell_c_mg,res)
    do ind_f_cell=1,twotondim
       iskip_f_amr=ncoarse+(ind_f_cell-1)*ngridmax
 
       ! Loop over fine grids of myid
+!$omp do schedule(static)
       do igrid_f_mg=1,active(ifinelevel)%ngrid
          igrid_f_amr=active(ifinelevel)%igrid(igrid_f_mg)
          icell_f_amr=igrid_f_amr+iskip_f_amr
@@ -586,7 +632,9 @@ subroutine restrict_residual_fine_reverse(ifinelevel)
             active_mg(cpu_amr,icoarselevel)%u(icell_c_mg,2)+res
 #endif
       end do
+!$omp end do
    end do
+!$omp end parallel
 end subroutine restrict_residual_fine_reverse
 
 ! ------------------------------------------------------------------------
@@ -608,10 +656,11 @@ subroutine interpolate_and_correct_fine(ifinelevel)
    real(dp), dimension(1:8)     :: bbb
    integer,  dimension(1:8,1:8) :: ccc
 
-   integer,  dimension(1:nvector), save               :: igrid_f_amr, icell_amr
-   integer,  dimension(1:nvector,1:threetondim), save :: nbors_father_cells
-   integer,  dimension(1:nvector,1:twotondim), save   :: nbors_father_grids
-   real(dp), dimension(1:nvector), save               :: corr
+   ! not save: private work arrays of the threaded grid loop
+   integer,  dimension(1:nvector)               :: igrid_f_amr, icell_amr
+   integer,  dimension(1:nvector,1:threetondim) :: nbors_father_cells
+   integer,  dimension(1:nvector,1:twotondim)   :: nbors_father_grids
+   real(dp), dimension(1:nvector)               :: corr
 
    ! Local constants
    a = 1d0/4d0**ndim
@@ -633,6 +682,10 @@ subroutine interpolate_and_correct_fine(ifinelevel)
 
    ! Loop over fine grids by vector sweeps
    ngrid_f=active(ifinelevel)%ngrid
+   ! OpenMP (omp_poisson): each fine grid corrects its own cells from the coarse solution (read only)
+!$omp parallel do schedule(static) if(omp_poisson .and. ngrid_f>=omp_mg_mingrid) &
+!$omp & private(istart,nbatch,i,igrid_f_amr,icell_amr,nbors_father_cells,nbors_father_grids,corr) &
+!$omp & private(ind_f,iskip_f_amr,ind_average,ind_father,coeff,icell_c_amr,ind_c,igrid_c_amr,cpu_amr,igrid_c_mg,icell_c_mg)
    do istart=1,ngrid_f,nvector
 
       ! Gather nvector grids
@@ -694,6 +747,7 @@ subroutine interpolate_and_correct_fine(ifinelevel)
       ! End loop over cells
 
    end do
+!$omp end parallel do
    ! End loop over grids
 end subroutine interpolate_and_correct_fine
 

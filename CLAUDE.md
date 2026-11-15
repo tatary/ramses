@@ -37,6 +37,9 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
 - 別ディレクトリでビルドするときは Makefile をコピーして `../` を絶対パスに置換する。
 - `DEBUG=1` は `-ffpe-trap=...underflow...` を含み RT 初期化が SIGILL で落ちる。
   デバッグ時は `underflow` を外す。
+- `OPENMP=1` (TODO.md 2d): `&RUN_PARAMS` の `omp_hydro/omp_rt/omp_cooling/omp_poisson` で成分ごとに切れる。実行時は `OMP_STACKSIZE=128m` と
+  `ulimit -s unlimited` が必須。bit 比較は `BITREPRO=1` のビルド同士で。スレッド化したループに和を足すときは `reduction` 句ではなく
+  スレッド番号順の部分和にする (合算順が実行ごとに変わり再現しなくなる; `phi_fine_cg.f90` の `part`)。`save` と宣言時初期化はスレッド共有になる。
 - `LIGHT_MPI_COMM=1` (通信バッファを軽くするフラグ、既定 0) では `reception(icpu,ilevel)` が別の型になる:
   `%igrid/%u/%f` は `%pcomm%igrid/%pcomm%u/%pcomm%f`、粒子の属性は `pcomm%u(property, particle)` と
   添字の順が heavy と逆、送信側は `emission(ilevel)` / `emission_part(ilevel)` に全相手分がまとまる。
@@ -52,8 +55,9 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
 |---|---|---|
 | `sedov3d_amr.nml` | Sedov, levelmin 5 / levelmax 7, nremap 2, 4 ランク | RT=0, DICE 空 |
 | `stromgren_amr.nml` | Stromgren RT (7 群) を AMR にしたもの | RT=1, DICE 空 |
+| `ifront_thick.nml` | 厚いセルを進む R 型電離波面 (一様 64³)、`photon_budget.py` で電離数を比べる (吸収方式・収束判定の検証) | RT=1, DICE 空 |
 | `dice_amr.nml` | DICE 矮小銀河 (粒子 194 万), levelmax 8, 星形成あり, RT なし | 本番設定 |
-| `dice_rt_amr.nml` | 本番 `xd_rt.nml` の短縮版 (RT, 星の放射, cloudy 冷却, nremap=1) | 本番設定 |
+| `dice_rt_amr.nml` | 本番 `xd_rt.nml` の短縮版 (RT, cloudy 冷却, nremap=1)。6 step では星が光子を出さないので放射まわりの回帰には `dice_rt_fg.nml` を使う。CG を通すには `cg_levelmin=7` を足す | 本番設定 |
 | `namelist/ks/l5_14_test.nml` | ks 版との比較ラン (MUSIC zoom haloD_l5_14_z9、levelmin 5 / levelmax 16、16 ランク 6 step; docs/merge_ks.md「ks との比較ラン」) | `Makefile.xd_ks_intel` 相当 (NGROUPS=5, NPSCAL=3, QUADHILBERT, DICE 空) |
 
 - 回帰確認は「変更前バイナリとの出力バイナリ比較」で行う:

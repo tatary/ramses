@@ -4,6 +4,7 @@
 !#########################################################
 subroutine force_fine(ilevel,icount)
   use amr_commons
+!$ use omp_lib
   use pm_commons
   use poisson_commons
   use mpi_mod
@@ -21,11 +22,15 @@ subroutine force_fine(ilevel,icount)
   integer::nx_loc,idim
   real(dp)::dx,dx_loc,scale,fact,fourpi
   real(kind=8)::rho_loc,rho_all,epot_loc,epot_all
+  integer::tid
+  real(kind=8)::psum
+  real(kind=8),dimension(0:255)::part   ! per-thread partial sums of epot, added in thread order
   real(dp),dimension(1:twotondim,1:3)::xc
   real(dp),dimension(1:3)::skip_loc
 
-  integer ,dimension(1:nvector),save::ind_grid,ind_cell
-  real(dp),dimension(1:nvector,1:ndim),save::xx,ff
+  ! not save: private work arrays of the threaded loops (omp_poisson)
+  integer ,dimension(1:nvector)::ind_grid,ind_cell
+  real(dp),dimension(1:nvector,1:ndim)::xx,ff
 
   if(numbtot(1,ilevel)==0)return
   if(verbose)write(*,111)ilevel
@@ -117,6 +122,8 @@ subroutine force_fine(ilevel,icount)
 
      ! Loop over myid grids by vector sweeps
      ncache=active(ilevel)%ngrid
+     ! OpenMP (omp_poisson): gradient_phi writes only f of the cells of its own grids
+!$omp parallel do private(igrid,ngrid,i,ind_grid) schedule(static) if(omp_poisson .and. ncache>=omp_mg_mingrid)
      do igrid=1,ncache,nvector
         ngrid=MIN(nvector,ncache-igrid+1)
         do i=1,ngrid
@@ -125,6 +132,7 @@ subroutine force_fine(ilevel,icount)
         ! Compute gradient of potential
         call gradient_phi(ind_grid,ngrid,ilevel,icount)
      end do
+!$omp end parallel do
      ! End loop over grids
 
 #if NDIM==3
@@ -155,6 +163,15 @@ subroutine force_fine(ilevel,icount)
 
   ! Loop over myid grids by vector sweeps
   ncache=active(ilevel)%ngrid
+  ! OpenMP (omp_poisson): the partial sums of epot are added in thread order (serial order with one
+  ! thread, reproducible for a given number of threads; epot_tot goes into the amr file header)
+  part=0.0d0
+!$omp parallel private(igrid,ngrid,i,ind,iskip,idim,ind_grid,ind_cell,tid,psum) &
+!$omp & reduction(max:rho_loc) if(omp_poisson .and. ncache>=omp_mg_mingrid)
+  tid=0
+!$ tid=omp_get_thread_num()
+  psum=0.0d0
+!$omp do schedule(static)
   do igrid=1,ncache,nvector
      ngrid=MIN(nvector,ncache-igrid+1)
      do i=1,ngrid
@@ -171,7 +188,7 @@ subroutine force_fine(ilevel,icount)
         do idim=1,ndim
            do i=1,ngrid
               if(son(ind_cell(i))==0)then
-                 epot_loc=epot_loc+fact*f(ind_cell(i),idim)**2
+                 psum=psum+fact*f(ind_cell(i),idim)**2
               end if
            end do
         end do
@@ -181,6 +198,12 @@ subroutine force_fine(ilevel,icount)
         end do
      end do
      ! End loop over cells
+  end do
+!$omp end do nowait
+  part(tid)=psum
+!$omp end parallel
+  do tid=0,255
+     epot_loc=epot_loc+part(tid)
   end do
   ! End loop over grids
 
@@ -220,11 +243,11 @@ subroutine gradient_phi(ind_grid,ngrid,ilevel,icount)
   real(dp)::dx,a,b,scale,dx_loc
   integer,dimension(1:3,1:4,1:8)::ggg,hhh
 
-  integer ,dimension(1:nvector),save::ind_cell
-  integer ,dimension(1:nvector,1:ndim),save::ind_left,ind_right
-  integer ,dimension(1:nvector,0:twondim),save::igridn
-  real(dp),dimension(1:nvector),save::phi1,phi2,phi3,phi4
-  real(dp),dimension(1:nvector,1:twotondim,1:ndim),save::phi_left,phi_right
+  integer ,dimension(1:nvector)::ind_cell
+  integer ,dimension(1:nvector,1:ndim)::ind_left,ind_right
+  integer ,dimension(1:nvector,0:twondim)::igridn
+  real(dp),dimension(1:nvector)::phi1,phi2,phi3,phi4
+  real(dp),dimension(1:nvector,1:twotondim,1:ndim)::phi_left,phi_right
 
   ! Mesh size at level ilevel
   dx=0.5D0**ilevel

@@ -99,6 +99,8 @@ module amr_parameters
   logical::omp_hydro=.true.                ! OpenMP: thread the hydro Godunov sweeps (OPENMP=1 builds)
   logical::omp_rt=.true.                   ! OpenMP: thread the RT Godunov sweeps
   logical::omp_cooling=.true.              ! OpenMP: thread the cooling / chemistry sweeps
+  logical::omp_poisson=.true.              ! OpenMP: thread the Poisson solvers (phi_fine_cg and the fine-level multigrid)
+  integer,parameter::omp_mg_mingrid=256    ! levels with fewer active grids on this rank are solved serially
   ! Recursive bisection tree parameters
   integer::nbilevelmax=1                   ! Max steps of bisection partitioning
   integer::nbinodes=3                      ! Max number of internal nodes

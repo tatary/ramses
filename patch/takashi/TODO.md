@@ -616,6 +616,40 @@ OpenMP 化し、1 ノードで 1・2・3 スレッドの伸びとメモリ帯域
   粒子支配の粗い層のコスト (1 oct + numbp×ngridmax/npartmax) に対する切れ目の敏感さ。起動時の粒子は in-run と同じく
   levelmin にある (init_tree は levelmin まで、in-run は merge_tree_fine で各 coarse step の頭に levelmin へ戻る)。
 
+### 2d-4. poisson の OpenMP 化 (2026-11-15、`&RUN_PARAMS omp_poisson`、既定 .true.)
+
+本番 (339731、4 スレッド、3 step 287 s) の poisson 59 s の内訳は log から CG (level 11-15、1 解法 50-80 反復、計 1500 回) が約 41 s、
+multigrid (level 7-10) が約 3.4 s。level 15 は 1 ランク平均 2400 grid (1.9 万セル) で 1 反復 0.44 ms なので計算が主。
+
+- `phi_fine_cg.f90`: 1 反復を 3 つの parallel region に (p の更新 / `cmp_Ap_cg` (orphaned `omp do`) と p·Ap / x と r の更新 + 次の r·r)。
+  r·r は r の更新と同じループで求める (1 pass 減る; 値は同じ)。`cmp_Ap_cg` の save 作業配列を除去。
+- `multigrid_fine_fine.f90`: 残差、ノルム、red-black Gauss-Seidel (同じ色のセルは独立)、restriction (1 つの fine セル番号では
+  fine grid ごとに別の粗セル、8 個の加算順は逐次と同じ)、補間 (save 配列を除去)。**MG の核はスレッド数によらず同じ値**。
+- `force_fine.f90`: `gradient_phi` のループと epot/rho_max のループ。`gradient_phi` と `interpol_phi` の save 配列を除去
+  (`poisson/interpol_phi.f90` を patch にコピー; **未追跡なので commit 時に git add**)。
+- 小さい level は逐次のまま (`omp_mg_mingrid=256` grid 未満、`amr_parameters`)。
+- **和は `reduction` 句を使わない**: 部分和を合算する順序が実行ごとに変わり、CG では内積が次の反復に入るので同じスレッド数でも
+  出力が再現しなかった (3 スレッド 2 回で 16/40 ファイル相違、丸め誤差の範囲だが回帰比較ができない)。スレッドごとの部分和を配列に入れて
+  スレッド番号順に足す形 (`part(0:255)`) にした。CG の内積、MG のノルム、`force_fine` の epot (amr ファイルのヘッダに入る) が該当。
+  hydro/RT の atomic (粗セル補正) は従来どおりスレッド数固定でも再現しない。
+- 確認 (DICE levelmax 8、6 step、BITREPRO=1; CG は `cg_levelmin=7`): OPENMP=0 ビルドと OPENMP=1 の 1 スレッドは MG/CG とも変更前と 40 ファイル
+  bit 一致。3 スレッド (omp_hydro/omp_rt=.false.): MG は omp_poisson の on/off で amr ファイル 4 個 (epot) 以外一致、CG は 2 回流して
+  40 ファイル一致、1 スレッドとは総和・min/max の相対差 6.6e-10、反復回数は同じ。
+- 手元 (1 ランク、コア固定、Xeon E5-2687W v4) の `poisson` timer: CG モード 15.6 → 6.5 s (4 スレッド、2.4 倍) → 5.5 s (7 スレッド、2.8 倍)、
+  MG モード 12.5 → 6.7 s (1.9 倍) → 6.0 s (2.1 倍)。CG の解法だけなら 12.3 → 5.5 s (4 スレッド)。
+- **本番で試すときは `KMP_BLOCKTIME=1`** (`run_hybrid_intel.rb` の `KmpBlockTime`): CG の region は 1 つ 0.1 ms 程度で、間に通信が入る。
+  0 だと region ごとにワーカーを起こすコストが勝つはず (未測定)。1 ms なら CG の中では回り続け、長い逐次部分では眠る。
+- poisson の残り (逐次): MG の粗い level (`multigrid_fine_coarse.f90`、上流のまま)、MG の準備 (`build_parent_comms_mg`、`make_fine_mask`、
+  `make_fine_bc_rhs`、`restrict_mask`、`set_scan_flag`; 1 解法 4 反復なので比重が大きく、MG モードの伸びが 2 倍で止まる理由)、
+  `make_initial_phi`、`cmp_residual_cg`、`save_phi_old`、`synchro_hydro_fine` (手元で poisson の 3%)。
+- **未スレッド化の一覧 (339731 の割合)**: star formation 16.9%、rt-ghostzones 8.2%、hydro-rev ghostzones 7.2%、refine 5.0%、
+  rt-rev ghostzones 3.9%、rho 2.5%、load balance 2.4%、flag 1.8%、feedback 1.4%、courant 1.2%、その他 3.5%。
+- **star formation は計算ではなく待ちの可能性が高い**: 手元 (dice_rt_amr、4 ランク) では計算 0.06 s に対して `uold` 交換の完了待ち
+  0.04-0.25 s、ALLREDUCE 5 本 0.001-0.07 s でランク間のばらつきが大きい。本番でもランク間で 35-66 s とばらつき、他の部分が
+  スレッドで速くなると一緒に縮んだ (339648 → 339731 の step 1 で 43.4 → 17.6 s)。確かめるため `star_formation.f90` の timer を
+  `star formation` (計算) / `sf - ghostzones` (交換の完了 + ghost の変換) / `sf - reduce` (集団通信) に分けた (出力は bit 一致)。
+  次の本番ランの timer 表でこの 3 行を見る。待ちが大半なら star formation のスレッド化は不要で、負荷の不均衡の問題。
+
 ### 2e. poisson まわりの上流変更の扱い (2026-11-09 時点、保留)
 
 `poisson/` は 2023-09 の上流のまま。上流 (ramses-organisation) のその後の poisson 変更は 3 つで、PCG の類は無い。
@@ -762,7 +796,18 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   初期電離度 (Peebles の残留電離を `init_flow_fine` に移植、`rt_is_init_xion=.false.`) が必要だった。残り:
   - 長いラン (12 ランク、z=21 まで): 最初の Pop III 形成 (pop3_model=6、8 連星 2413 Msun)、3 つの直接崩壊、BH sink 3 個の
     生成と合体 (2120 Msun)、Bondi 降着まで ks と同じイベント・同じ数値で一致 (merge_ks.md「長いラン」)。その際 takashi の
-    FIRE-3 feedback の年齢換算 (cosmo で a² 倍小さい) を修正。PISN 以後 (SN reservoir、金属汚染、Pop II 形成) の比較は未実施。
+    FIRE-3 feedback の年齢換算 (cosmo で a² 倍小さい) を修正。
+  - PISN 以後 z=20 まで (2026-11-15; merge_ks.md「PISN 以後の比較」): Pop III の寿命末 7 件と SN 後の dt、メタル質量 (5e-5) は一致。
+    HII 領域が takashi で 1-3 割小さいのは ks の試験 namelist の群 5 (既定値 13.6 eV〜上限なしの重複した電離群) が原因で、
+    takashi 側に同じ群を入れると電離質量の差は 13% → 2.7%。杉村さんに伝える (`run_l5.sh` の `groupL0/L1` が 4 群ぶんしかない)。
+    残りの 2.7% は `attn_after_chem` の解き方 (ks: 更新後の状態で吸収・収束判定なし) で、`attn_new_abund=.true.` + `rt_skip_convergence=.true.`
+    にすると 0.4% まで合う。PISN の注入は一致、その後の高温ガスは takashi が速く冷える (冷却テーブルの差と推定、冷却率は未比較)。
+    残り: 高温・高金属量ガスの冷却率の比較、Pop II 形成の比較 (z=20 では未形成)。
+  - 収束判定 (2026-11-15; merge_ks.md「吸収の順序と収束判定」、`tests/ifront_thick.nml`): 厚いセルの R 型波面では `rt_skip_convergence=.true.`
+    が通常の刻みで 4 割以上多く電離する (刻みを細かくすると判定ありの値に寄る)。DICE 本番 (`xd_rt.nml`) は `.true.`。本番の密度・解像度で
+    どれだけ効くかは未評価。`namelist/ks/*.nml` は既定 (判定あり) のまま。コストは手元の DICE (fb6 相当 24 step、4 ランク) で
+    cooling 105.5 → 167.3 s (+59%)、全体 +26%。このテストはガスがほぼ全部電離していて (HI 2e3 / 1.3e8 Msun) 電離波面が無く、結果への
+    影響は測れなかった (HeIII の質量差 0.8%)。本番 snapshot から `rt_skip_convergence=.false.` で数 step 流して電離質量と時間を比べる。
   - FIRE-3 の年齢の評価点を ks 式 (step 中央、最初の step は年齢 0 からの積分) に揃えた (2026-11-14)。DICE の結果は
     変わる (SN 率の評価点が半 step ずれる) ので、以後の回帰の基準はこの版の出力。
   - 初期温度 0.5% (`rt_evol_single_cell` の冷却率・定数)、`x_MIN` (ks 1e-12 / takashi 1e-20) の差は残したまま。
@@ -785,8 +830,9 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   乱数列はランク数で変わるので星形成・SN は統計的な同等まで。QUADHILBERT ビルドは非対応。
   `part_file_descriptor.txt` で `mp0` と `msp0` が両方 `initial_stellar_mass` だったのを
   `stellar_population_mass` に改名した (`output_part.f90`、バイナリは不変)。名前で読むツール向け。
-- `patch/takashi/` には未追跡ファイルが残っている (`rt_cooling_module.f90.back`,
-  `to_dice/init_flow_fine_corrected.f90`, `backup_*` ディレクトリ, `format_fortran_script*.sh`)。
-  必要なものは `git add`、不要なものは削除して状態をはっきりさせたい。
+- 未追跡ファイルは 2026-11-15 に整理した: `*~`、findent 整形前の `backup_*` (git 履歴と空白以外同一)、
+  `rt_cooling_module.f90.back`、`to_dice/init_flow_fine_corrected.f90` (a6263c68 の `init_flow_fine.f90` と同一)、
+  `to_dice/format_fortran_script*.sh` (`patch/takashi/` の追跡済みと同一)、`*.nml.bak` を削除。
+  `.gitignore` に `*~`, `*.bak`, `patch/takashi/logs/` (本番ログ、未追跡のまま置く), `.claude/settings.local.json` を追加。
 - 2026-10-29: per-level 分割のために patch に置いていた `load_balance.f90, refine_utils.f90,
   sink_particle.f90, flag_formation_sites.f90, init_tracer.f90` は削除した (上流が使われる)。
