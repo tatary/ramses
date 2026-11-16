@@ -237,6 +237,7 @@ subroutine dump_restart
   use turb_commons
 #endif
   use mpi_mod
+  use posix_fs, only: fs_mkdir, fs_rename, fs_rmtree
   implicit none
 #if ! defined (WITHOUTMPI) || defined (NOSYSTEM)
   integer::info
@@ -250,6 +251,8 @@ subroutine dump_restart
   logical::file_exist
   integer::iunit2
   character::byte_char
+  character(LEN=80)::tmpdir,prevdir,finaldir
+  integer::ierr_fs
 
   if(nstep_coarse==nstep_coarse_old.and.nstep_coarse>0)return
   if(nstep_coarse==0.and.nrestart>0)return
@@ -264,12 +267,31 @@ subroutine dump_restart
   !if(aexp>=aout_next)aout_next=aout_next+delta_aout
   output_done=.true.
 
+  !--------------------------------------------------------------------------
+  ! Protected restart dump (ported from patch/ks, 2026-11-16): write into
+  ! output_restart.tmp/ and rename it to output_restart/ only after every rank
+  ! has finished (end of this routine), so that output_restart/ always holds a
+  ! complete and consistent set even if the job is killed in the middle of the
+  ! dump. The previous set is kept as output_restart.prev/ until the next dump
+  ! starts. Directory operations use posix_fs (libc through ISO_C_BINDING).
+  !--------------------------------------------------------------------------
+  finaldir='output_restart'
+  tmpdir  ='output_restart.tmp'
+  prevdir ='output_restart.prev'
+  if(myid==1)then
+    ierr_fs=fs_rmtree(prevdir)   ! at most two sets (current + tmp) on disk while writing
+    ierr_fs=fs_rmtree(tmpdir)    ! leftovers of a dump that was killed half way
+    ierr_fs=fs_mkdir(tmpdir)
+    if(ierr_fs/=0) write(*,*)'WARNING: dump_restart: could not create ',TRIM(tmpdir)
+  endif
+#ifndef WITHOUTMPI
+  call MPI_BARRIER(MPI_COMM_WORLD,info)
+#endif
   if(IOGROUPSIZEREP>0) then
     call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
-    !filedir='output_'//TRIM(nchar)//'/group_'//TRIM(ncharcpu)//'/'
-    filedir='output_restart/group_'//TRIM(ncharcpu)//'/'
+    filedir=TRIM(tmpdir)//'/group_'//TRIM(ncharcpu)//'/'
   else
-    filedir='output_restart/'
+    filedir=TRIM(tmpdir)//'/'
   endif
 
   call create_output_dirs(filedir)
@@ -484,6 +506,23 @@ subroutine dump_restart
   call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
   if(myid==1.and.print_when_io) write(*,*)'End output timer'
+
+  ! every rank has closed its files: publish the new set. Both renames are atomic
+  ! and instantaneous. If the job dies between them, output_restart.prev/ (old)
+  ! and output_restart.tmp/ (new) are both complete.
+  if(myid==1)then
+    ierr_fs=fs_rename(finaldir,prevdir)   ! fails harmlessly if output_restart/ does not exist yet
+    ierr_fs=fs_rename(tmpdir,finaldir)
+    if(ierr_fs/=0)then
+      write(*,*)'ERROR: dump_restart: could not rename ',TRIM(tmpdir),'/ to ',TRIM(finaldir),'/'
+      write(*,*)'       the complete new restart set is still in ',TRIM(tmpdir),'/'
+    else
+      write(*,*)'Restart files written to ',TRIM(finaldir),'/  (previous set kept in ',TRIM(prevdir),'/)'
+    endif
+  endif
+#ifndef WITHOUTMPI
+  call MPI_BARRIER(MPI_COMM_WORLD,info)
+#endif
 
 end subroutine dump_restart
 !#########################################################################

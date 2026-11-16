@@ -78,6 +78,8 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
   (`eps_star=0` にすると `init_flow_fine` で未確保配列を読む)。
 - `initfile`, `uv_file` 等は CHARACTER(80): 長いパスは切れるので相対パスか短い symlink。
 - 並列度を変えて restart したいときは Mera.jl の `repartition` で output を書き直す (TODO.md 4 節)。
+  このマシンでは `julia13` (alias; `LD_LIBRARY_PATH` を外して起動) を使う。外さないとシステムの libunwind を拾って例外のたびに無言で落ちる。
+- `nrestart=-1` は `output_restart/` から再開する。`dump_restart` は `output_restart.tmp/` に書いてから rename し、前の組を `output_restart.prev/` に残す (TODO.md 4 節)。
 
 ## コードの地図 (今回の作業に関係する所)
 
