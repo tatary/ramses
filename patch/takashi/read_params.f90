@@ -51,7 +51,7 @@ subroutine read_params
   namelist/run_params/clumpfind,cosmo,pic,sink,tracer,lightcone,poisson,hydro,rt,verbose,debug &
   & ,nrestart,ncontrol,nstepmax,nsubcycle,nremap,ordering &
   & ,bisec_tol,static,overload,cost_weighting,cost_weight_power,cost_time_weighting,cost_time_relax,timer_ranks_every,omp_hydro,omp_rt,omp_cooling,omp_poisson,aton,nrestart_quad,restart_remap &
-  & ,two_tier_balance,two_tier_level,two_tier_fine_frac,two_tier_test_shift &
+  & ,two_tier_balance,two_tier_level,two_tier_fine_frac,two_tier_test_shift,two_tier_auto_tol,two_tier_auto_ghost,two_tier_auto_memmax &
   & ,static_dm,static_gas,static_stars,convert_birth_times,use_proper_time,remap_pscalar &
   & ,unbind,make_mergertree,stellar,aexp_ini
   namelist/output_params/noutput,foutput,aout,tout &

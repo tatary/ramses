@@ -1905,18 +1905,44 @@ subroutine two_tier_cut(key,cost,n,bkey)
   ! (about 3*(nlevelmax+1) rounds). On return key is sorted.
   !----------------------------------------------------------------------
   integer,allocatable,dimension(:)::perm
+  real(kind=8),allocatable,dimension(:)::scost
+  integer::i
+
+  allocate(perm(1:max(n,1)),scost(1:max(n,1)))
+  if(n>1)call quick_sort(key,perm,n)
+  if(n==1)perm(1)=1
+  do i=1,n
+    scost(i)=cost(perm(i))
+  end do
+  call two_tier_cut_sorted(key,scost,n,bkey)
+  deallocate(perm,scost)
+end subroutine two_tier_cut
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine two_tier_cut_sorted(key,cost,n,bkey)
+  use amr_commons
+  use mpi_mod
+  implicit none
+  integer::n
+  real(qdp),dimension(1:n)::key
+  real(kind=8),dimension(1:n)::cost
+  real(qdp),dimension(0:ndomain)::bkey
+  !----------------------------------------------------------------------
+  ! The bisection of two_tier_cut for items already sorted by key (cost in
+  ! the same order); two_tier_auto_ls sorts once for all its candidates.
+  !----------------------------------------------------------------------
   real(kind=8),allocatable,dimension(:)::csum,cloc,cglob
   real(qdp),allocatable,dimension(:)::lo,hi,mid
   real(kind=8)::tot_loc,tot,target
   integer::i,idom,info,iround,j,jlo,jhi
   logical::done
 
-  allocate(perm(1:max(n,1)),csum(0:max(n,1)))
-  if(n>1)call quick_sort(key,perm,n)
-  if(n==1)perm(1)=1
+  allocate(csum(0:max(n,1)))
   csum(0)=0d0
   do i=1,n
-    csum(i)=csum(i-1)+cost(perm(i))
+    csum(i)=csum(i-1)+cost(i)
   end do
   tot_loc=csum(n)
   tot=tot_loc
@@ -1972,8 +1998,8 @@ subroutine two_tier_cut(key,cost,n,bkey)
     bkey(idom)=lo(idom)
   end do
   bkey(ndomain)=order_all_max
-  deallocate(perm,csum,lo,hi,mid,cloc,cglob)
-end subroutine two_tier_cut
+  deallocate(csum,lo,hi,mid,cloc,cglob)
+end subroutine two_tier_cut_sorted
 !#########################################################################
 !#########################################################################
 !#########################################################################
@@ -2031,6 +2057,9 @@ subroutine cmp_new_cpu_map_two_tier
   ! Last level of the coarse tier
   if(two_tier_level>0)then
     ls=min(max(two_tier_level,1),nlevelmax)
+  else if(two_tier_level<0)then
+    ! every candidate is cut and scored (critical path, then memory)
+    call two_tier_auto_ls(nlev_tot,niter_cost,ls)
   else
     ls=max(levelmin,1)
     do while(ls<nlevelmax)
@@ -2164,6 +2193,240 @@ subroutine cmp_new_cpu_map_two_tier
   end do
 
 end subroutine cmp_new_cpu_map_two_tier
+!#########################################################################
+!#########################################################################
+!#########################################################################
+!#########################################################################
+subroutine two_tier_auto_ls(nlev_tot,niter_cost,ls)
+  use amr_commons
+  use pm_commons
+  use mpi_mod
+  implicit none
+  integer(kind=8),dimension(1:MAXLEVEL)::nlev_tot
+  real(kind=8),dimension(1:MAXLEVEL)::niter_cost
+  integer::ls
+  !----------------------------------------------------------------------
+  ! two_tier_level<0: choose Ls by trying every candidate (levelmin ... the
+  ! finest level with grids). For each candidate the two tiers are cut with
+  ! the same costs as in cmp_new_cpu_map_two_tier and the owner of every
+  ! existing grid is evaluated, which gives per cpu and level the work
+  ! w = sum of (cells x 80 + particles) and per cpu the memory. Scores:
+  !   time   = sum_l niter_cost(l) * max_cpu w(cpu,l) / (the same with the
+  !            average over cpus): the critical path of a coarse step, since
+  !            the cpus synchronise at every fine step of every level
+  !            (as in tools/lb_two_tier_estimate.py of patch/ks);
+  !   memory = max_cpu max(octs/ngridmax, particles/npartmax), where octs =
+  !            owned grids + the ghosts made by the tier mismatch (a level
+  !            Ls+1 grid whose owner differs from the owner of its father
+  !            grid is a ghost for the latter, and the father is one for the
+  !            former; ordinary surface ghosts are not counted).
+  ! A mismatch ghost also counts in the time score as two_tier_auto_ghost
+  ! owned octs of its level (0: Ls just above a populated level looks best
+  ! but runs slower; the value is only loosely calibrated, docs/merge_ks.md).
+  ! Choice: the best time among the candidates with memory score <=
+  ! two_tier_auto_memmax (the least memory if none). The current Ls is kept
+  ! while its time is within two_tier_auto_tol of the best and it fits in
+  ! memory: changing Ls moves every grid of the levels that switch tier, and
+  ! the time score is flat within 1-2% over a range of Ls.
+  !----------------------------------------------------------------------
+  integer::ilevel,igrid,i,idim,info,nx_loc,ngrid,ncache,n,nc,nf,lc,l1,l2,lfin,idom,jdom,icpu,jcpu,lbest
+  integer(kind=8)::nfine
+  real(dp)::scale,wpart
+  real(dp),dimension(1:3)::skip_loc
+  real(dp),dimension(1:nvector,1:ndim),save::xx
+  real(qdp),dimension(1:nvector),save::order
+  integer,dimension(1:nvector),save::ind_grid,ind_fa
+  real(qdp),allocatable,dimension(:)::key,kfa,key_c,key_f
+  real(qdp),dimension(0:ndomain)::bk_c,bk_f
+  real(kind=8),allocatable,dimension(:)::wt,cost_c,cost_f
+  integer,allocatable,dimension(:)::lev,np,perm,itmp
+  real(kind=8),allocatable,dimension(:,:)::wloc,wtot
+  real(kind=8),dimension(1:MAXLEVEL)::tscore,mscore,gscore,pscore,gtot
+  real(kind=8)::cp,cpi,t0,t1
+  logical::keep
+
+  t0=MPI_WTIME()
+  l1=max(levelmin,1)
+  lfin=l1
+  do ilevel=l1,nlevelmax
+    if(nlev_tot(ilevel)>0)lfin=ilevel
+  end do
+  l2=lfin
+  ls=l2
+  if(l2<=l1)return
+
+  nx_loc=icoarse_max-icoarse_min+1
+  scale=boxlen/dble(nx_loc)
+  skip_loc=(/0.0d0,0.0d0,0.0d0/)
+  if(ndim>0)skip_loc(1)=dble(icoarse_min)
+  if(ndim>1)skip_loc(2)=dble(jcoarse_min)
+  if(ndim>2)skip_loc(3)=dble(kcoarse_min)
+  wpart=0d0
+  if(pic.and.npartmax>0)wpart=dble(ngridmax)/dble(npartmax)
+
+  ! My active grids: key, key of the father grid, level, particles
+  n=0
+  do ilevel=1,lfin
+    n=n+active(ilevel)%ngrid
+  end do
+  allocate(key(1:max(n,1)),kfa(1:max(n,1)),lev(1:max(n,1)),np(1:max(n,1)),wt(1:max(n,1)))
+  allocate(key_c(1:max(n,1)),key_f(1:max(n,1)),cost_c(1:max(n,1)),cost_f(1:max(n,1)))
+  n=0
+  do ilevel=1,lfin
+    ncache=active(ilevel)%ngrid
+    do igrid=1,ncache,nvector
+      ngrid=MIN(nvector,ncache-igrid+1)
+      do i=1,ngrid
+        ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
+      end do
+      do idim=1,ndim
+        do i=1,ngrid
+          xx(i,idim)=(xg(ind_grid(i),idim)-skip_loc(idim))*scale
+        end do
+      end do
+      call cmp_ordering(xx,order,ngrid)
+      do i=1,ngrid
+        key(n+i)=order(i)
+        kfa(n+i)=order(i)
+        lev(n+i)=ilevel
+        np(n+i)=0
+        if(pic)np(n+i)=numbp(ind_grid(i))
+      end do
+      if(ilevel>l1)then
+        do i=1,ngrid
+          ind_fa(i)=mod(father(ind_grid(i))-ncoarse-1,ngridmax)+1
+        end do
+        do idim=1,ndim
+          do i=1,ngrid
+            xx(i,idim)=(xg(ind_fa(i),idim)-skip_loc(idim))*scale
+          end do
+        end do
+        call cmp_ordering(xx,order,ngrid)
+        do i=1,ngrid
+          kfa(n+i)=order(i)
+        end do
+      end if
+      n=n+ngrid
+    end do
+  end do
+  ! Sort once by key: the two tiers of every candidate are then sorted too
+  if(n>1)then
+    allocate(perm(1:n),itmp(1:n))
+    call quick_sort(key,perm,n)
+    itmp(1:n)=lev(1:n)
+    do i=1,n
+      lev(i)=itmp(perm(i))
+    end do
+    itmp(1:n)=np(1:n)
+    do i=1,n
+      np(i)=itmp(perm(i))
+    end do
+    key_c(1:n)=kfa(1:n)
+    do i=1,n
+      kfa(i)=key_c(perm(i))
+    end do
+    deallocate(perm,itmp)
+  end if
+  do i=1,n
+    wt(i)=dble(twotondim*80+np(i))
+  end do
+
+  ! wloc(cpu,level): work; wloc(cpu,lfin+1..3): owned octs, mismatch ghosts, particles
+  allocate(wloc(1:ncpu,1:lfin+3),wtot(1:ncpu,1:lfin+3))
+  tscore=0d0; mscore=0d0; gscore=0d0; pscore=0d0; gtot=0d0
+  do lc=l1,l2
+    nc=0; nf=0
+    do i=1,n
+      if(lev(i)<=lc)then
+        nc=nc+1
+        key_c(nc)=key(i)
+        cost_c(nc)=1d0+dble(np(i))*wpart
+      else
+        nf=nf+1
+        key_f(nf)=key(i)
+        cost_f(nf)=wt(i)*niter_cost(lev(i))
+      end if
+    end do
+    nfine=0
+    if(lc<lfin)nfine=sum(nlev_tot(lc+1:lfin))
+    call two_tier_cut_sorted(key_c,cost_c,nc,bk_c)
+    if(nfine>0)then
+      call two_tier_cut_sorted(key_f,cost_f,nf,bk_f)
+    else
+      bk_f=bk_c
+    end if
+    wloc=0d0
+    do i=1,n
+      if(lev(i)<=lc)then
+        call two_tier_find_dom(key(i),bk_c,idom)
+        icpu=mod(idom-1,ncpu)+1
+      else
+        call two_tier_find_dom(key(i),bk_f,idom)
+        icpu=two_tier_fine_cpu(idom)
+        if(lev(i)==lc+1)then
+          call two_tier_find_dom(kfa(i),bk_c,jdom)
+          jcpu=mod(jdom-1,ncpu)+1
+          if(jcpu/=icpu)then
+            wloc(jcpu,lfin+2)=wloc(jcpu,lfin+2)+1d0
+            wloc(icpu,lfin+2)=wloc(icpu,lfin+2)+1d0/dble(twotondim)
+            ! a ghost is counted as the work of an owned grid of its level
+            wloc(jcpu,lc+1)=wloc(jcpu,lc+1)+two_tier_auto_ghost*wt(i)
+            wloc(icpu,lc)=wloc(icpu,lc)+two_tier_auto_ghost*wt(i)/dble(twotondim)
+          end if
+        end if
+      end if
+      wloc(icpu,lev(i))=wloc(icpu,lev(i))+wt(i)
+      wloc(icpu,lfin+1)=wloc(icpu,lfin+1)+1d0
+      wloc(icpu,lfin+3)=wloc(icpu,lfin+3)+dble(np(i))
+    end do
+    wtot=wloc
+#ifndef WITHOUTMPI
+    call MPI_ALLREDUCE(wloc,wtot,ncpu*(lfin+3),MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+    cp=0d0; cpi=0d0
+    do ilevel=1,lfin
+      cp =cp +niter_cost(ilevel)*maxval(wtot(1:ncpu,ilevel))
+      cpi=cpi+niter_cost(ilevel)*dble(twotondim*80)*dble(nlev_tot(ilevel))/dble(ncpu)
+    end do
+    tscore(lc)=cp/max(cpi,1d-300)
+    gscore(lc)=maxval(wtot(1:ncpu,lfin+1)+wtot(1:ncpu,lfin+2))/dble(ngridmax)
+    if(pic.and.npartmax>0)pscore(lc)=maxval(wtot(1:ncpu,lfin+3))/dble(npartmax)
+    mscore(lc)=max(gscore(lc),pscore(lc))
+    gtot(lc)=sum(wtot(1:ncpu,lfin+2))
+  end do
+
+  ! Best time among the candidates that fit in memory (least memory if none fits)
+  lbest=0
+  do lc=l1,l2
+    if(mscore(lc)<=two_tier_auto_memmax)then
+      if(lbest==0)lbest=lc
+      if(tscore(lc)<tscore(lbest))lbest=lc
+    end if
+  end do
+  if(lbest==0)then
+    lbest=l1
+    do lc=l1,l2
+      if(mscore(lc)<mscore(lbest))lbest=lc
+    end do
+  end if
+  ls=lbest
+  keep=.false.
+  lc=two_tier_ls
+  if(lc>=l1.and.lc<=l2.and.lc/=lbest)then
+    keep=tscore(lc)<=tscore(lbest)*(1d0+two_tier_auto_tol).and.mscore(lc)<=max(two_tier_auto_memmax,mscore(lbest))
+    if(keep)ls=lc
+  end if
+  t1=MPI_WTIME()
+  if(myid==1)then
+    write(*,'(" Two-tier auto Ls (",F7.3," s):   Ls  crit.path/ideal   octs_max%   part_max%  mismatch ghosts")')t1-t0
+    do lc=l1,l2
+      write(*,'(31X,I3,F17.3,2F12.2,F17.0,A)')lc,tscore(lc),100d0*gscore(lc),100d0*pscore(lc),gtot(lc), &
+      & merge('  <-','    ',lc==ls)
+    end do
+    if(keep)write(*,'("   kept the current Ls=",I3," (best",I3,", inside the hysteresis band)")')ls,lbest
+  end if
+  deallocate(key,kfa,lev,np,wt,key_c,key_f,cost_c,cost_f,wloc,wtot)
+end subroutine two_tier_auto_ls
 !#########################################################################
 !#########################################################################
 !#########################################################################

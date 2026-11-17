@@ -272,6 +272,61 @@ HI と HeI の光電離に適用する。こちらにはこれを `&RT_PARAMS` �
   "Restart file has a two-tier decomposition" で停止、単一分割の output から `.true.` で再開して最初の balance で 2 層に移行。
 - 本番規模 (ks の 448 / 1792 ランク) での効果は ks の 7g の結果 (355 s/step vs 415 s、メモリ 20%) に拠る。こちらでは未実施。
 
+## Ls の自動選択と Hilbert key の高速化 (2026-11-17): `two_tier_level=-1`, `patch/takashi/hilbert.f90`
+
+`two_tier_level=0` の経験則 (細かい層の oct が全体の `two_tier_fine_frac` 以下) は ks でも使われていない (本番は固定 13)。
+`two_tier_level<0` で、balance のたびに候補 Ls (levelmin 〜 grid のある最も細かい level) を全部切って採点する
+(`load_balance.f90` の `two_tier_auto_ls`; 切り方は本番と同じ `two_tier_cut_sorted`、key のソートは 1 回)。
+
+- 時間: critical path = Σ_level niter × (仕事量 (セル×80+粒子) のランク最大) を oct 数だけの理想値で割ったもの
+  (ks の `lb_two_tier_estimate.py` と同じ考え方)。層の食い違い ghost (level Ls+1 の grid の所有者 ≠ 親 grid の所有者) は
+  `two_tier_auto_ghost` (既定 0.5) 個分の所有 oct として親の所有者に数える (親は 1/8 個分を子の所有者に)。
+- メモリ: ランク最大の max((所有 oct + 食い違い ghost)/ngridmax, 粒子/npartmax)。通常の表面 ghost は数えない。
+- 選択: メモリが `two_tier_auto_memmax` (既定 0.7) 以下の候補のうち時間最良 (どれも超えるならメモリ最小)。現在の Ls は
+  時間が最良の `two_tier_auto_tol` (既定 0.05) 以内でメモリに収まる限り保持する (Ls を変えると層が入れ替わる level の
+  grid が全部移動する)。メモリを同点決勝に使う版 (「時間が 5% 以内のうちメモリ最小」) は、粒子数のランク最大が
+  balance ごとに数ポイント揺れるせいで Ls が 11↔12 と振れたのでやめた。
+- log に候補ごとの表 (`Two-tier auto Ls`) が出る。
+
+### `hilbert3d` (QUADHILBERT) の key の組み立て
+
+採点 (0.6 s/回) と cpu map (3.1 s/回) の内訳を取ると、ほぼ全部が `cmp_ordering` → `hilbert3d` だった (1 key 約 8.5 µs:
+cpu map のセルのループ 1.95 s、footprint 0.45 s、item 0.24 s、採点の key 0.48 s; 切る bisection は 0.06 s、ALLREDUCE は
+1 ms)。原因は key を実数にする最後のループが bit ごとに `real(2,kind=16)**i` (ソフトウェアの 4 倍精度べき乗) を呼ぶこと。
+`patch/takashi/hilbert.f90` (上流のコピー) で、QUADHILBERT のとき bit を整数 2 個 (0-59、60-) に詰めて 1 回だけ 4 倍精度に
+直す形にした (値は同じ: 96 bit までの整数は 4 倍精度で正確)。QUADHILBERT なしのコードは不変。
+境界の展開/縮小 (`authorize_fine` の `cmp_minmaxorder`) も同じ所を通るので一緒に速くなる。
+
+### 検証
+
+MUSIC zoom、`kstest_long` の output_00003 (step 108、level 16 まで 33 万 oct) から 12 ランクで再開、nremap=1
+(`claude_scratch/run/tt*`、バイナリ `claude_scratch/build_tt_new` / 変更前 `build_tt_base`)。
+
+- bit 一致: 固定 Ls=13 の 4 step 後の 72 ファイルが変更前バイナリと一致 (hilbert の変更込み)。全体 221 s → 65 s。
+- load balance 1 回 (Ls=8): cpu map 3.2 → 0.16 s、展開 1.0 → 0.07 s、縮小 0.8 → 0.08 s。採点 0.6 → 0.06 s。
+  step は 15–17 s → 9.7 s、load balance の割合は 4–7 割 → 約 1 割。
+- hilbert 修正後の固定 Ls との比較 (落ち着いたあとの step 時間):
+
+| Ls | step (s) | 採点 (ghost 重み 0 / 0.5 / 1) |
+|---|---|---|
+| 8 | 9.7–9.9 | 1.94 / 2.10 / 2.08 |
+| 自動 (既定) → 9 で安定 | 9.2–9.7 | 2.10 |
+| 12 | 10.2–10.6 | 2.0 / 2.2 / 2.3 |
+| 13 | 10.8–14 (6 step では落ち着かない) | 2.07 / 2.4 / 2.8 |
+| 14 | 10.1–10.3 | 1.68 / 2.2–2.6 / 2.9 |
+| 15 | 11.1–11.3 | 2.2 / 2.3–2.9 / 2.7 |
+| 16 (細かい層なし) | 11.1–11.4 | 2.4 / 2.4–3.0 / 2.7 |
+
+- 「最速」と「選ばれた Ls」が食い違って見えた理由 (hilbert 修正前: Ls=8 15.3 s、自動 Ls=11 17 s): ソルバの時間は同じ
+  (10.5 s/step) で、差は全部 load balance (5.6 vs 7.0 s/回)。採点は load balance 自体のコストを見ておらず、当時は
+  それが壁時計の半分だった。修正後は差が消えた (9.7 vs 9.8 s)。
+- ghost の重み: 0 だと Ls=14 が最良に見えるが実測は Ls=8 より 4% 遅く、1 だと Ls=14 が最悪に見えるが実測は 12 より速い。
+  間の 0.5 を既定にした。実測の幅が全体で 15% しかなく採点の分解能 (数 %) と同程度なので、これ以上は詰められない。
+- DICE ビルド (本番設定、`dice_rt_amr` 4 ランク 6 step): 既定 (2 層なし) と `two_tier_level=7` が変更前バイナリと bit 一致
+  (24 ファイルずつ)。`two_tier_level=-1` は完走、balance 11 回 `TWO_TIER STATUS ok`、Ls は初期の balance で 6→7→8 と動いたあと
+  6 で安定 (時間スコアは 6–8 で 1.14–1.16 とほぼ同じ)、採点 0.011 s/回。
+- 未確認: 本番規模 (448/1792 ランク、level 22; 時間スコアの差がもっと大きいはず) で選ばれる Ls と ks の固定 13 の比較。
+
 ## 星形成の移植 (2026-11-13): `sf_fg` と `star_formation_fg.f90`
 
 ### 方式
