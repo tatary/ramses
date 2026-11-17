@@ -96,20 +96,23 @@ subroutine phi_fine_cg(ilevel,icount)
   ! reduction clause, whose combination order is unspecified), so a run is reproducible for a given
   ! number of threads. The regions are short (a fraction of a ms), so the workers must not go to
   ! sleep between them: run with KMP_BLOCKTIME=1 (Intel) / GOMP_SPINCOUNT (GNU) rather than 0.
+  ! No collapse(2) on the (ind,i) loops: every thread runs the ind loop and shares the inner one (nowait:
+  ! different ind touch different cells). The collapsed form recovers (ind,i) from a flat index, and the
+  ! cluster logs of 2026-11-17 showed the CG ~22% slower than the unthreaded code even with omp_poisson off.
   ngrid_act=active(ilevel)%ngrid
   part=0.0d0
 !$omp parallel private(ind,i,idx,tid,psum) if(omp_poisson .and. ngrid_act>=omp_mg_mingrid)
   tid=0
 !$ tid=omp_get_thread_num()
   psum=0.0d0
-!$omp do collapse(2) schedule(static)
   do ind=1,twotondim
+!$omp do schedule(static)
      do i=1,ngrid_act
         idx=active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax
         psum=psum+f(idx,1)*f(idx,1)
      end do
-  end do
 !$omp end do nowait
+  end do
   part(tid)=psum
 !$omp end parallel
   r2_loc=0.0d0
@@ -147,14 +150,16 @@ subroutine phi_fine_cg(ilevel,icount)
      !====================================
      ! Recurrence on p
      !====================================
-!$omp parallel do collapse(2) private(ind,i,idx) schedule(static) if(omp_poisson .and. ngrid_act>=omp_mg_mingrid)
+!$omp parallel private(ind,i,idx) if(omp_poisson .and. ngrid_act>=omp_mg_mingrid)
      do ind=1,twotondim
+!$omp do schedule(static)
         do i=1,ngrid_act
            idx=active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax
            f(idx,2)=f(idx,1)+beta_cg*f(idx,2)
         end do
+!$omp end do nowait
      end do
-!$omp end parallel do
+!$omp end parallel
      ! Update boundaries
      call make_virtual_fine_dp(f(1,2),ilevel)
 
@@ -171,14 +176,14 @@ subroutine phi_fine_cg(ilevel,icount)
      tid=0
 !$   tid=omp_get_thread_num()
      psum=0.0d0
-!$omp do collapse(2) schedule(static)
      do ind=1,twotondim
+!$omp do schedule(static)
         do i=1,ngrid_act
            idx=active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax
            psum=psum+f(idx,2)*f(idx,3)
         end do
-     end do
 !$omp end do nowait
+     end do
      part(tid)=psum
 !$omp end parallel
      pAp=0.0d0
@@ -207,16 +212,16 @@ subroutine phi_fine_cg(ilevel,icount)
      tid=0
 !$   tid=omp_get_thread_num()
      psum=0.0d0
-!$omp do collapse(2) schedule(static)
      do ind=1,twotondim
+!$omp do schedule(static)
         do i=1,ngrid_act
            idx=active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax
            phi(idx)=phi(idx)+alpha_cg*f(idx,2)
            f(idx,1)=f(idx,1)-alpha_cg*f(idx,3)
            psum=psum+f(idx,1)*f(idx,1)
         end do
-     end do
 !$omp end do nowait
+     end do
      part(tid)=psum
 !$omp end parallel
      r2_loc=0.0d0
