@@ -25,6 +25,8 @@ subroutine phi_fine_cg(ilevel,icount)
   !=========================================================
   integer::i,ind,iter,iskip,itermax,nx_loc
   integer::idx,ngrid_act,tid
+  logical::warm
+  real(dp)::wall_time,tw0,tw1,t_comm,t_red,t_setup
   real(kind=8)::r2_loc,psum
   real(kind=8),dimension(0:255)::part   ! per-thread partial sums, added in thread order (reproducible)
   real(dp)::error,error_ini
@@ -39,6 +41,9 @@ subroutine phi_fine_cg(ilevel,icount)
   if(numbtot(1,ilevel)==0)return
   if(verbose)write(*,111)ilevel
 
+  ! Time breakdown (cg_stat): ghost exchange and MPI_ALLREDUCE of the iterations; the rest of the
+  ! solve is local work (plus the set-up). The ALLREDUCE time includes the wait for the slowest rank.
+  tw0=wall_time(); t_comm=0d0; t_red=0d0
 
   ! Set constants
   dx2=(0.5D0**ilevel)**2
@@ -53,7 +58,11 @@ subroutine phi_fine_cg(ilevel,icount)
   !===============================
   ! Compute initial phi
   !===============================
-   if(ilevel>levelmin)then
+   warm=cg_warm_start.and.ilevel>levelmin
+   if(warm)warm=cg_warm_ok(ilevel)
+   if(warm)then
+      call make_warm_phi(ilevel,icount)          ! cg_warm_start: previous solution (phi_old)
+   else if(ilevel>levelmin)then
       call make_initial_phi(ilevel,icount)              ! Interpolate phi down
    else
       call make_multipole_phi(ilevel)            ! Fill up with simple initial guess
@@ -122,9 +131,17 @@ subroutine phi_fine_cg(ilevel,icount)
      r2_loc=r2_loc+part(tid)
   end do
 
+  t_setup=wall_time()-tw0   ! initial guess, right-hand side norm, first residual
+
   iter=0; itermax=10000
   error=1.0D0; error_ini=1.0D0
-  do while(error>epsilon*error_ini.and.iter<itermax)
+  do while(iter<itermax)
+     ! stock test: relative to the initial residual; warm start: relative to the right-hand side
+     if(warm)then
+        if(iter>0.and.error<=epsilon*rhs_norm)exit
+     else
+        if(error<=epsilon*error_ini)exit
+     end if
 
      iter=iter+1
 
@@ -134,9 +151,11 @@ subroutine phi_fine_cg(ilevel,icount)
      r2=r2_loc
      ! Compute global norm
 #ifndef WITHOUTMPI
+     tw1=wall_time()
      call MPI_ALLREDUCE(r2,r2_all,1,MPI_DOUBLE_PRECISION,MPI_SUM,&
           & MPI_COMM_WORLD,info)
      r2=r2_all
+     t_red=t_red+(wall_time()-tw1)
 #endif
 
      !====================================
@@ -163,7 +182,9 @@ subroutine phi_fine_cg(ilevel,icount)
      end do
 !$omp end parallel
      ! Update boundaries
+     tw1=wall_time()
      call make_virtual_fine_dp(f(1,2),ilevel)
+     t_comm=t_comm+(wall_time()-tw1)
 
      !==============================================
      ! Compute z = Ap and store it into f(i,3)
@@ -194,9 +215,11 @@ subroutine phi_fine_cg(ilevel,icount)
      end do
      ! Compute global sum
 #ifndef WITHOUTMPI
+     tw1=wall_time()
      call MPI_ALLREDUCE(pAp,pAp_all,1,MPI_DOUBLE_PRECISION,MPI_SUM,&
           & MPI_COMM_WORLD,info)
      pAp=pAp_all
+     t_red=t_red+(wall_time()-tw1)
 #endif
 
      !====================================
@@ -245,8 +268,17 @@ subroutine phi_fine_cg(ilevel,icount)
      cg_failed(ilevel)=.true.   ! cg_auto: fall back to multigrid for this level
   end if
 
+  if(cg_warm_start)cg_warm_ok(ilevel)=iter<itermax
+
   ! Update boundaries
   call make_virtual_fine_dp(phi(1),ilevel)
+
+  cg_stat(1,ilevel)=cg_stat(1,ilevel)+t_comm
+  cg_stat(2,ilevel)=cg_stat(2,ilevel)+t_red
+  cg_stat(3,ilevel)=cg_stat(3,ilevel)+(wall_time()-tw0)
+  cg_stat(4,ilevel)=cg_stat(4,ilevel)+1d0
+  cg_stat(5,ilevel)=cg_stat(5,ilevel)+dble(iter)
+  cg_stat(6,ilevel)=cg_stat(6,ilevel)+t_setup
 
 111 format('   Entering phi_fine_cg for level ',I2)
 112 format('   ==> Step=',i5,' Error=',2(1pe10.3,1x))
@@ -502,6 +534,64 @@ end subroutine cmp_Ap_cg
 !###########################################################
 !###########################################################
 !###########################################################
+subroutine make_warm_phi(ilevel,icount)
+  use amr_commons
+  use pm_commons
+  use poisson_commons
+  implicit none
+  integer::ilevel,icount
+  !------------------------------------------------------------------
+  ! cg_warm_start: initial guess of phi_fine_cg from the previous solution.
+  ! phi itself was used as work space by rho_fine; phi_old is the copy made
+  ! just before (save_phi_old in amr_step). A grid created since the last
+  ! solve has no solution: make_grid_fine gave its eight cells the value of
+  ! the father cell. Such grids (eight identical values) get the
+  ! interpolation from level-1, as in make_initial_phi.
+  !------------------------------------------------------------------
+  integer::igrid,ncache,i,ngrid,ind,iskip,nnew
+  integer ,dimension(1:nvector)::ind_grid,ind_cell_father
+  logical ,dimension(1:nvector)::isnew
+  real(dp),dimension(1:nvector,1:twotondim)::phi_int
+  real(dp)::p1
+
+  ncache=active(ilevel)%ngrid
+  do igrid=1,ncache,nvector
+     ngrid=MIN(nvector,ncache-igrid+1)
+     do i=1,ngrid
+        ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
+     end do
+     isnew(1:ngrid)=.true.
+     do ind=2,twotondim
+        iskip=ncoarse+(ind-1)*ngridmax
+        do i=1,ngrid
+           p1=phi_old(ncoarse+ind_grid(i))
+           if(phi_old(iskip+ind_grid(i))/=p1)isnew(i)=.false.
+        end do
+     end do
+     nnew=count(isnew(1:ngrid))
+     if(nnew>0)then
+        do i=1,ngrid
+           ind_cell_father(i)=father(ind_grid(i))
+        end do
+        call interpol_phi(ind_cell_father,phi_int,ngrid,ilevel,icount)
+     end if
+     do ind=1,twotondim
+        iskip=ncoarse+(ind-1)*ngridmax
+        do i=1,ngrid
+           if(isnew(i))then
+              phi(iskip+ind_grid(i))=phi_int(i,ind)
+           else
+              phi(iskip+ind_grid(i))=phi_old(iskip+ind_grid(i))
+           end if
+        end do
+     end do
+  end do
+
+end subroutine make_warm_phi
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
 subroutine make_initial_phi(ilevel,icount)
   use amr_commons
   use pm_commons
@@ -676,3 +766,53 @@ subroutine make_multipole_phi(ilevel)
   ! End loop over grids
 
 end subroutine make_multipole_phi
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
+subroutine cg_timer_output
+  use amr_commons
+  use poisson_commons
+  use mpi_mod
+  implicit none
+  !------------------------------------------------------------------
+  ! Print the time breakdown of phi_fine_cg accumulated over the run
+  ! (cg_stat), per level: number of solves, iterations per solve, time
+  ! of the solves (average over ranks), the set-up per solve (initial
+  ! guess, first residual) and, per iteration, the ghost exchange, the
+  ! two MPI_ALLREDUCE and the local work, as average / maximum over ranks.
+  !------------------------------------------------------------------
+  integer::ilevel
+#ifndef WITHOUTMPI
+  integer::info
+#endif
+  real(dp),dimension(1:6,1:nlevelmax)::sav,smx
+  real(dp),dimension(1:3)::av,mx
+  real(dp)::nit,nsol
+
+  if(.not.poisson)return
+  if(.not.allocated(cg_stat))return
+  ! local work of the iterations = whole solve - set-up - exchange - reduce
+  cg_stat(3,:)=cg_stat(3,:)-cg_stat(1,:)-cg_stat(2,:)-cg_stat(6,:)
+#ifndef WITHOUTMPI
+  call MPI_ALLREDUCE(cg_stat,sav,6*nlevelmax,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+  call MPI_ALLREDUCE(cg_stat,smx,6*nlevelmax,MPI_DOUBLE_PRECISION,MPI_MAX,MPI_COMM_WORLD,info)
+  sav=sav/dble(ncpu)
+#else
+  sav=cg_stat; smx=cg_stat
+#endif
+  cg_stat(3,:)=cg_stat(3,:)+cg_stat(1,:)+cg_stat(2,:)+cg_stat(6,:)
+  if(myid/=1)return
+  if(sum(smx(4,:))==0d0)return
+  write(*,'(" CG solver breakdown (ms, average / maximum over ranks; set-up per solve, the others per iteration)")')
+  write(*,'(" level  solves  iter/solve  total(s)      set-up          exchange          allreduce         local")')
+  do ilevel=1,nlevelmax
+     if(smx(4,ilevel)==0d0)cycle
+     nit=max(smx(5,ilevel),1d0); nsol=smx(4,ilevel)
+     av=1d3*sav(1:3,ilevel)/nit; mx=1d3*smx(1:3,ilevel)/nit
+     write(*,'(I6,I8,F12.1,F10.3,4(F9.4," /",F7.4))')ilevel,nint(nsol), &
+          & smx(5,ilevel)/nsol,sum(sav(1:3,ilevel))+sav(6,ilevel),1d3*sav(6,ilevel)/nsol,1d3*smx(6,ilevel)/nsol, &
+          & av(1),mx(1),av(2),mx(2),av(3),mx(3)
+  end do
+
+end subroutine cg_timer_output

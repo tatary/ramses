@@ -698,6 +698,32 @@ multigrid (level 7-10) が約 3.4 s。level 15 は 1 ランク平均 2400 grid (
 - **flat 3584 (341473、`ngridtot=4e8`、`npartmax=400000`)**: メモリは足りて完走。`Used memory` 1.56 GB/ランク、step 98.5 / 96.1 s、
   TOTAL 350 s (poisson 77.1、rt - ghostzones 27.1、load balance 20.2 s)。896x4 (72.5 s) より 3 割遅く、flat に戻す理由は無い。
 
+### 2d-4b. CG を速くする: warm start (`cg_warm_start`) と時間の内訳 (2026-11-18)
+
+- 動機: クラスター (48206e6a、`omp_poisson=.false.`) の `cg_auto` の時間を反復数で割ると level 13–15 で 0.46 ms/反復とほぼ一定、
+  1 ランクの grid が 1/4 の flat 3584 では 0.60 ms とむしろ遅い。計算量に比例していないので、スレッド化ではなく反復数と通信を減らす
+  のが筋 (RAMSES-yOMP 論文 arXiv:2411.14631 も CG の得は PPCG による反復数 1/1.86 で、反復ごとの全体通信が最大のボトルネックと書く)。
+- **`&POISSON_PARAMS` の `cg_warm_start` (既定 .false.、切れば変更前と bit 一致)**: `phi_fine_cg` の初期値を粗い level からの補間
+  (`make_initial_phi`) ではなく前回の解にする (`make_warm_phi`)。
+  - 前回の解は `phi_old` から取る。`phi` は解く直前に `rho_fine` が作業配列として上書きしている (最初 `phi` をそのまま使って
+    反復が 3 倍に増えた)。`phi_old` は `amr_step` が `rho_fine` の直前に `save_phi_old` で写したもの。
+  - 新しくできた grid には解が無い。`make_grid_fine` が 8 セルに親セルの値を入れているので、「8 セルが完全に同じ値」の grid だけ
+    従来どおり補間値を使う (これで refinement 直後の反復が 38 → 27)。
+  - 収束判定は warm のときだけ「残差 ≤ `epsilon` × 右辺ノルム」(従来は初期残差に対する比で、初期値が良いほど厳しくなる)。
+  - 各 level のそのランで最初の solve は従来どおり (`cg_warm_ok`)。restart 直後も同じ。
+- 結果 (`tests/dice_rt_amr.nml` + `cg_levelmin=7`、4 ランク、6 step): 反復数 level 7: 107 → 17、level 8: 101 → 25 (最初の 1 回を除く平均)、
+  poisson 3.73 → 2.18 s。全セル統計は相対 1e-7–1e-6 の違い (ソルバーの許容誤差の範囲; スレッド化の丸めは 1e-13)。
+- **未確認**: (1) 本番 (level 15、現状 52 反復) での減り方。(2) 許容誤差ぎりぎりの残差が同じ形で残り続けて長時間で系統誤差に
+  ならないか (従来は毎回解き直すので誤差が入れ替わる)。ログの `econs` は冷却・フィードバック・RT 加熱を数えないので本番設定では
+  判定に使えない; 冷却等を切った重力 + 流体のランか、従来の解との力の差で見る。(3) `cg_auto` との組み合わせ (CG が速くなると
+  MG/CG の選択が変わる level が出るはず)。
+- **CG の時間の内訳**: ランの最後 (タイマー表の直前、`clean_end` → `cg_timer_output`; `end.f90` を patch にコピー) に level ごとに
+  solve 数、反復数/solve、set-up (初期値・右辺ノルム・最初の残差、solve あたり)、反復あたりの ghost 交換 / `MPI_ALLREDUCE` 2 回 /
+  局所計算を、ランク平均 / 最大で出す。ALLREDUCE の時間には一番遅いランクを待つ分が入る。
+  手元 (4 ランク) では局所計算が 0.7–1.1 ms/反復で支配的、**set-up が 20–35 ms/solve と 30 反復分**あり、warm start 後は solve の半分を
+  占める (`interpol_phi` と `cmp_residual_cg`)。クラスターの内訳を見てから次の手 (set-up の軽量化、ALLREDUCE を 1 回にまとめる
+  Chronopoulos–Gear 形、前処理) を決める。
+
 ### 2d-5. 512 ランク × 7 スレッド (flat-339876、2026-11-15、変更前のバイナリ、`KMP_BLOCKTIME=0`)
 
 `hu_lv15_test_512/output_00051` (Mera で 512 ランクに書き直し) から 3 step、32 ノード × 16 task × 7 スレッド。比較は 896 × 4 の 339731。

@@ -40,6 +40,10 @@ module poisson_commons
   real(dp),allocatable, dimension(:) :: t_solve_cg    ! last local solve time with CG (<0: none)
   logical, allocatable, dimension(:) :: cg_trial_due  ! next solve at this level tries the other method
   logical, allocatable, dimension(:) :: cg_pending    ! trial done, waiting for the current method's time
+  logical, allocatable, dimension(:) :: cg_warm_ok    ! cg_warm_start: phi of this level holds a CG solution of this run
+  ! CG time breakdown per level, local sums over the run (cg_timer_output): 1 ghost exchange,
+  ! 2 MPI_ALLREDUCE, 3 whole solve, 4 number of solves, 5 number of iterations, 6 set-up before the iterations
+  real(dp),allocatable, dimension(:,:) :: cg_stat
   integer :: cg_auto_step=-1                           ! coarse step at which the trial flags were last set
 
   ! Multipole coefficients

@@ -28,6 +28,12 @@ module poisson_parameters
   logical :: cg_auto=.false.
   integer :: cg_auto_every=20
   real(dp):: cg_auto_margin=0.1d0
+  ! cg_warm_start=.true.: phi_fine_cg starts from phi_old of the level (the previous
+  ! solution; new grids hold the value of their father cell) instead of the interpolation from
+  ! level-1, and stops when the residual is below epsilon times the right-hand side norm (the stock
+  ! test is relative to the initial residual, which a good start makes small). The first solve of a
+  ! level in a run is always a cold start. Results change within the solver tolerance.
+  logical :: cg_warm_start=.false.
 
   ! Gauss-Seidel smoothing sweeps for fine multigrid
   integer, parameter :: ngs_fine   = 2
