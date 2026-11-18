@@ -724,6 +724,24 @@ multigrid (level 7-10) が約 3.4 s。level 15 は 1 ランク平均 2400 grid (
   占める (`interpol_phi` と `cmp_residual_cg`)。クラスターの内訳を見てから次の手 (set-up の軽量化、ALLREDUCE を 1 回にまとめる
   Chronopoulos–Gear 形、前処理) を決める。
 
+- **set-up の軽量化 (2026-11-18)**: (1) `cmp_residual_cg` は束ごとに `interpol_phi` を 6 回無条件に呼んでいたが、補間値を使うのは
+  その方向に隣の grid が無い grid だけなので、該当する grid だけ集めて呼ぶようにした (スレッド無関係、flat MPI にも効く)。
+  (2) `cmp_residual_cg` / `make_initial_phi` / `make_warm_phi` の束のループを `omp_poisson` でスレッド化 (作業配列の `save` を外した;
+  `make_initial_phi` は multigrid からも呼ばれる)。どちらも結果は bit 一致: 1 スレッドは変更前と (既定・warm とも 16 ファイル)、
+  4 スレッドは 1 スレッドと (`omp_hydro=.false.`、既定・warm とも)。
+  手元 (4 ランク、level 7 / 8、set-up ms/solve): 変更前 32.5 / 19.6 → (1) で 8.7 / 5.5 → 4 スレッドで 4.8 / 3.3。
+  warm start では 28.2 / 17.1 → 4.7 / 2.8 → 2.7 / 1.9。CG の合計 (level 7+8) は 変更前の既定 2.23 s → warm + 軽量化 + 4 スレッド 0.57 s。
+
+- **反復ループの形を solve ごとに分岐 (2026-11-18)**: スレッド化しないとき (既定の `omp_cg=.false.`、または grid が `omp_mg_mingrid` 未満) は
+  OpenMP の指示を含まない素のループ、スレッド化するとき (`omp_poisson .and. omp_cg`) は collapse(2)。根拠はクラスター (ifx、896x4、
+  level 15、1 ランク 2400 grid) の CG 時間: 1 スレッドは collapse なし 0.0237 s < あり 0.0303 s、4 スレッドは collapse あり 0.0281 s < なし 0.0411 s。
+  検証 (4 ランク、16 ファイル): 既定の 1 / 4 スレッドは変更前と bit 一致、`omp_cg=.true.` の 1 スレッドは既定と bit 一致、4 スレッドは 2 回で一致
+  (collapse なしの形とは和の分け方が変わるので丸めの範囲で不一致)。
+  **手元 (gfortran、1 ランクの grid が多い) では 4 スレッドの collapse ありの方が 2 割遅い**: 反復の局所計算 level 7 / 8 = collapse なし 0.472 / 0.200 ms、
+  あり 0.573 / 0.243 ms (1 スレッドは 1.02 / 0.63 ms)。クラスターと逆なので、コンパイラか grid 数のどちらに依るのかは未確認。
+  `omp_cg=.true.` を本番で使う場面 (512x7 など grid が多い設定) が出たら、ifx でどちらの形が速いかを測り直すこと。
+  なお手元では CG のスレッド化自体は 2.2–2.6 倍効いている (grid が多ければ `omp_cg` は得)。
+
 ### 2d-5. 512 ランク × 7 スレッド (flat-339876、2026-11-15、変更前のバイナリ、`KMP_BLOCKTIME=0`)
 
 `hu_lv15_test_512/output_00051` (Mera で 512 ランクに書き直し) から 3 step、32 ノード × 16 task × 7 スレッド。比較は 896 × 4 の 339731。
