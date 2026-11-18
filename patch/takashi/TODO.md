@@ -686,9 +686,15 @@ multigrid (level 7-10) が約 3.4 s。level 15 は 1 ランク平均 2400 grid (
   検証 (`tests/dice_rt_amr.nml` + `cg_levelmin=7`、4 ランク、BITREPRO、`omp_hydro=.false.`): `omp_cg=.true.` の 4 スレッドは 48206e6a の
   4 スレッドと bit 一致、既定 (`omp_cg=.false.`) は 4 スレッド = 1 スレッド = 48206e6a の 1 スレッドで bit 一致 (各 16 ファイル)。
   つまり `omp_cg` を切ると poisson の結果はスレッド数に依らない。
-- **未解決: `omp_hydro=.true.` の 4 スレッドは実行ごとに結果が変わる** (2026-11-18 に上の検証中に発見、48206e6a 同士でも
-  hydro/grav/part の 16 中 12 ファイルが不一致; `omp_hydro=.false.` にすると 2 回とも一致、1 スレッドは一致)。競合か合算順の
-  不定かは未調査 (`godunov_fine` のスレッド化したループを見る)。4 スレッドの bit 比較は `omp_hydro=.false.` で行うこと。
+- **`omp_hydro=.true.` の 4 スレッドは実行ごとに結果が変わる (原因確定 2026-11-18、競合ではなく丸め)**: 上の検証中に、48206e6a 同士でも
+  hydro/grav/part の 16 中 12 ファイルが不一致になった (`omp_hydro=.false.` か 1 スレッドなら一致)。原因は `godfine1` の粗セルへの
+  flux 補正 (`unew/divu/enew(ind_buffer)` の `atomic` 6 箇所): 1 つの粗セルに最大 6 個の fine grid が足し、その順がスレッドの実行順で
+  変わる (2d の最初に書いた既知の制限そのもの)。確認: (1) 2 回の 4 スレッドランの全セル統計 (`hydro_stats.py`) は相対 1e-13–1e-14 で一致、
+  セル数も同じ。(2) 補正のブロック全体を `!$omp ordered` で囲んでループ順に固定した診断ビルド (リポジトリには入れていない) は
+  4 スレッド 2 回 = 1 スレッド = 48206e6a の 1 スレッドで bit 一致 (16 ファイル) → 順序以外の原因 (競合) は無い。
+  `ordered` は sweep を事実上直列にするので本番には使えない。再現性が要るなら補正を sweep ごとのバッファに貯めて並列ループの後に
+  ループ順で足す形にする (RT の `rtunew` 補正 2 箇所も同じ)。**丸めの範囲なので受け入れる (2026-11-18 の判断)、実装しない**。4 スレッドの bit 比較は `omp_hydro=.false.` で行うこと
+  (RT が光子を運ぶテストでは `omp_rt=.false.` も)。
 - **flat 3584 (341473、`ngridtot=4e8`、`npartmax=400000`)**: メモリは足りて完走。`Used memory` 1.56 GB/ランク、step 98.5 / 96.1 s、
   TOTAL 350 s (poisson 77.1、rt - ghostzones 27.1、load balance 20.2 s)。896x4 (72.5 s) より 3 割遅く、flat に戻す理由は無い。
 
