@@ -99,9 +99,11 @@ subroutine phi_fine_cg(ilevel,icount)
   ! No collapse(2) on the (ind,i) loops: every thread runs the ind loop and shares the inner one (nowait:
   ! different ind touch different cells). The collapsed form recovers (ind,i) from a flat index, and the
   ! cluster logs of 2026-11-17 showed the CG ~22% slower than the unthreaded code even with omp_poisson off.
+  ! The CG is threaded only with omp_cg=.true. (default off): at ~2400 grids per rank the threaded iteration
+  ! was slower than the serial one in both forms (cluster 2026-11-18), while multigrid / force_fine gain.
   ngrid_act=active(ilevel)%ngrid
   part=0.0d0
-!$omp parallel private(ind,i,idx,tid,psum) if(omp_poisson .and. ngrid_act>=omp_mg_mingrid)
+!$omp parallel private(ind,i,idx,tid,psum) if(omp_poisson .and. omp_cg .and. ngrid_act>=omp_mg_mingrid)
   tid=0
 !$ tid=omp_get_thread_num()
   psum=0.0d0
@@ -150,7 +152,7 @@ subroutine phi_fine_cg(ilevel,icount)
      !====================================
      ! Recurrence on p
      !====================================
-!$omp parallel private(ind,i,idx) if(omp_poisson .and. ngrid_act>=omp_mg_mingrid)
+!$omp parallel private(ind,i,idx) if(omp_poisson .and. omp_cg .and. ngrid_act>=omp_mg_mingrid)
      do ind=1,twotondim
 !$omp do schedule(static)
         do i=1,ngrid_act
@@ -167,7 +169,7 @@ subroutine phi_fine_cg(ilevel,icount)
      ! Compute z = Ap and store it into f(i,3)
      !==============================================
      part=0.0d0
-!$omp parallel private(ind,i,idx,tid,psum) if(omp_poisson .and. ngrid_act>=omp_mg_mingrid)
+!$omp parallel private(ind,i,idx,tid,psum) if(omp_poisson .and. omp_cg .and. ngrid_act>=omp_mg_mingrid)
      call cmp_Ap_cg(ilevel)      ! orphaned worksharing loop (implicit barrier at its end)
 
      !====================================
@@ -208,7 +210,7 @@ subroutine phi_fine_cg(ilevel,icount)
      ! Recurrence on r, and r.r for the next iteration (same loop)
      !====================================
      part=0.0d0
-!$omp parallel private(ind,i,idx,tid,psum) if(omp_poisson .and. ngrid_act>=omp_mg_mingrid)
+!$omp parallel private(ind,i,idx,tid,psum) if(omp_poisson .and. omp_cg .and. ngrid_act>=omp_mg_mingrid)
      tid=0
 !$   tid=omp_get_thread_num()
      psum=0.0d0

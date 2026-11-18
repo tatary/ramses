@@ -103,6 +103,7 @@ module amr_parameters
   logical::omp_rt=.true.                   ! OpenMP: thread the RT Godunov sweeps
   logical::omp_cooling=.true.              ! OpenMP: thread the cooling / chemistry sweeps
   logical::omp_poisson=.true.              ! OpenMP: thread the Poisson solvers (phi_fine_cg and the fine-level multigrid)
+  logical::omp_cg=.false.                  ! OpenMP: also thread the CG iteration (needs omp_poisson); slower at ~2400 grids per rank (TODO.md 2d-4)
   integer,parameter::omp_mg_mingrid=256    ! levels with fewer active grids on this rank are solved serially
   ! Recursive bisection tree parameters
   integer::nbilevelmax=1                   ! Max steps of bisection partitioning
