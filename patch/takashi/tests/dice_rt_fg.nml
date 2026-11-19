@@ -112,6 +112,10 @@ nonlocal_depletion=.false.     ! .true. で球からの枯渇 (ufront を確保)
 ! フィードバックの試験 (2026-11-13): nstepmax=14 にすると Pop III (Zpop3=1d1, pop3_model=1, 寿命 4 Myr) の SN が step 13 で起きる。
 ! &FEEDBACK_PARAMS に SN_reservoir=.true., Ncell_SN_max=8d0, pop3_ESN=3d52 で半径探索と球注入、
 ! fcool_stop=8d0 は NPSCAL を 1 つ増やしたビルドで (ivar_coolstop=nvar)。
+! SFC 印の試験 (2026-11-19): pop2_SFC_marker=.true., SFC_dist_min_pc=5d3, SFC_t_life=1d1 → step 1 に印 1 個。logSFC に
+! R_cloud 9.8 kpc, M_cloud 1.0e8 Msun, Mdot_cloud 3.1e-5 Msun/yr の 1 行、logSFC_1Dprof に殻の分布 (docs/merge_ks.md)。
+! Pop III の雲半径 (2026-11-19): Zpop3=1d1, pop3_model=6, pop3_dist_min_pc=500. で step 1 に 90 候補、うち 3 個は流入殻が
+! 箱の中に無く警告を出して見送り (以前はここで stop)。
 ! ugvtk の試験 (2026-11-14): 上の sink 試験の &OUTPUT_PARAMS に ugvtk=.true., idp_ugvtk=425 (step 7 の Pop III), NI_ugvtk=16,
 ! p3_output_minmass=1d9 → ugvtk/idp425*.vtk (形成時 + 年齢ごと、level 6-8 の 3 本ずつ)。p3_output_minmass=-1 だと Pop III 846 個分出る。
 ! sink/BH の試験 (2026-11-13): 上の Pop III SN 設定 (nstepmax=18) に &RUN_PARAMS sink=.true. と

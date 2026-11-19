@@ -369,6 +369,23 @@ MUSIC zoom、`kstest_long` の output_00003 (step 108、level 16 まで 33 万 o
 - 大きな固定長配列 (`Nrbin×Npop3_max/SFC_n_max/Nnew_max` の殻配列、最大 50 MB) は allocatable に
   (ifort ではスタックに載って落ちる)。
 - 末尾の `make_virtual_fine_dp` × nvar × level は `make_virtual_fine_dp_nv` (level あたり 1 メッセージ)。
+- **Pop III の雲半径で止まらない** (2026-11-19、`get_mdot_dependent_pop3_mass`): ks は (a) 流入している殻
+  (VelR < 0) が 1 つも無い、(b) 選んだ雲半径が箱の境界に掛かる、のどちらでも `stop` した (ランク 1 だけが stop)。
+  (b) は箱からはみ出す殻 (`get_shell_quantities` は周期の折り返しをしないので質量が欠けている) を探索から外し
+  (`shells_inside_box`)、雲半径が無ければ警告を出して Mdot = 0 → `Mpop3 = 0` (その step は星もガス枯渇も無し;
+  `pop3_model=6` の質量下限と同じ経路)。止まらずに走っていたランの結果は変わらない。殻の最大半径は
+  1000 dx_min なので (b) は levelmax の低い箱 (DICE テスト: 箱の 4 倍) でだけ起きる。(a) は `loc_vir` の
+  virial 条件を課していればまず起きない。
+- `SFdata/pop3prof.*.dat` の Mdot の単位 (2026-11-19): ks はヘッダの `Mdot_cloud` と `Mdotshell` 列を `[Msun/yr]` と書きながら
+  Myr で換算していた (値は Msun/Myr)。Msun/yr に直した (標準出力は元から Msun/yr)。ks の古い `pop3prof` と比べるときは 1e6 倍違う。
+- **SFC 印 (`pop2_SFC_marker`) の `logSFC` / `logSFC_1Dprof`** (2026-11-19、`create_SFC_markers`): 印には SFC の
+  半径・質量が無いので、Pop III の質量に使う雲 (流入している殻のうち Menc/M_BE が最大のもの; 殻の計算は
+  `shell_derived_quantities` / `cloud_from_shells` で Pop III と共用) を書く。`logSFC` は列の位置を SFC と同じにして
+  R_cloud, M_cloud, N_star = M_star = 0, 雲内の平均 nH と Z, pos、最後に **Mdot_cloud [Msun/yr]** の列を足す
+  (ヘッダも変える; SFC モデルでは `pop2_SFC_marker` が切られるので 1 つのファイルに混ざらない)。
+  `logSFC_1Dprof` は SFC と同じブロックの後に `rcen, VelRshell [km/s], MBEshell, Menc/MBE, Mdotshell [Msun/yr]` の行
+  (セルの無い殻は -1、Mdot は 0; `Nshell` で区別する)。雲半径が無い印は `ir = -1` で R, M, Mdot が 0。
+  コストは印ができた step に全 leaf セルの掃引 1 回 (`get_shell_quantities`)。
 
 ### 検証 (dice_rt_amr の 6 step、4 ランク; `tests/dice_rt_fg.nml`)
 

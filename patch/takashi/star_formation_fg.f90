@@ -2321,6 +2321,114 @@ contains
   ! Get Pop III mass from cloud-scale Mdot
   !  - based on star_formation_in_SFC
   !----------------------------------------------------------------------------
+  !----------------------------------------------------------------------------
+  ! TO ADDED 2026-11-19: the shell arithmetic of get_mdot_dependent_pop3_mass as two routines, so that the SFC
+  ! markers (create_SFC_markers) get the same cloud radius and cloud-scale Mdot as a Pop III star. One centre
+  ! per call; the expressions are those of ks, unchanged.
+  !----------------------------------------------------------------------------
+  ! density, pressure, radial velocity and Bonnor-Ebert mass of the shells (-1 in a shell without cells)
+  subroutine shell_derived_quantities(Nrbin, Nshell, Mshell, Vshell, ETshell, MomRshell, factG_in, &
+      RHOshell, PRSshell, VelRshell, MBEshell)
+    integer,intent(in) :: Nrbin
+    integer,dimension(1:Nrbin),intent(in) :: Nshell
+    real(dp),dimension(1:Nrbin),intent(in) :: Mshell, Vshell, ETshell, MomRshell
+    real(dp),intent(in) :: factG_in
+    real(dp),dimension(1:Nrbin),intent(out) :: RHOshell, PRSshell, VelRshell, MBEshell
+    integer :: ir
+    do ir = 1, Nrbin
+      if (Nshell(ir)>0) then  !if there is at least one cell in the shell
+        RHOshell(ir) = Mshell(ir)/Vshell(ir)
+        PRSshell(ir) = (gamma-1.0) * ETshell(ir)/Vshell(ir)
+        VelRshell(ir) = MomRshell(ir)/Mshell(ir)
+        MBEshell(ir) = &
+          1.18d0 * PRSshell(ir)**1.5 / RHOshell(ir)**2 / factG_in**1.5  !BE mass
+      else                         !if thre is no cell in the shell
+        RHOshell(ir) = -1d0  !zero for ILL-DEFINED case
+        PRSshell(ir) = -1d0
+        VelRshell(ir) = -1d0
+        MBEshell(ir) = -1d0
+      end if
+    end do
+  end subroutine shell_derived_quantities
+
+  ! enclosed mass, Menc/M_BE, the cloud radius (the infalling shell with the largest Menc/M_BE) and the
+  ! cloud-scale variables there; Mdot_cloud = -4 pi R^2 rho v_r > 0. Only the shells 1..ir_max are searched
+  ! (shells_inside_box). Without an infalling shell among them: ir_cloud = -1 and the cloud-scale variables are zero.
+  subroutine cloud_from_shells(Nrbin, rcen, Nshell, Mshell, RHOshell, VelRshell, MBEshell, Menc, Menc_over_MBE, &
+      ir_cloud, R_cloud, M_cloud, rho_cloud, VelR_cloud, Mdot_cloud, Menc_over_MBE_cloud, ir_max)
+    integer,intent(in) :: Nrbin
+    integer,intent(in) :: ir_max
+    real(dp),dimension(1:Nrbin),intent(in) :: rcen
+    integer,dimension(1:Nrbin),intent(in) :: Nshell
+    real(dp),dimension(1:Nrbin),intent(in) :: Mshell, RHOshell, VelRshell, MBEshell
+    real(dp),dimension(1:Nrbin),intent(out) :: Menc, Menc_over_MBE
+    integer,intent(out) :: ir_cloud
+    real(dp),intent(out) :: R_cloud, M_cloud, rho_cloud, VelR_cloud, Mdot_cloud, Menc_over_MBE_cloud
+    real(dp),parameter :: pi = 3.1415926d0   ! the value of get_mdot_dependent_pop3_mass
+    real(dp) :: Menc_over_MBE_max
+    integer :: ir
+
+    !calculate Menc
+    Menc(:) = 0d0
+    do ir = 1, Nrbin
+      if (ir == 1) then
+        Menc(ir) = Mshell(1)
+      else
+        Menc(ir) = Menc(ir-1) + Mshell(ir)
+      end if
+    end do
+
+    !Menc_over_MBE (negative value for no-data shell)
+    Menc_over_MBE(:) = 0d0
+    do ir = 1, Nrbin
+      if (Nshell(ir)>0) then
+        Menc_over_MBE(ir) = Menc(ir)/MBEshell(ir)
+      else
+        Menc_over_MBE(ir) = -1d0
+      end if
+    end do
+
+    !determine cloud size from maximum Menc_over_MBE
+    Menc_over_MBE_max = 0
+    ir_cloud = -1
+    do ir = 1, min(ir_max, Nrbin)
+      if (Nshell(ir) == 0) cycle
+      if (VelRshell(ir) >= 0) cycle
+      if (Menc_over_MBE(ir) > Menc_over_MBE_max) then
+        Menc_over_MBE_max = Menc_over_MBE(ir)
+        ir_cloud = ir
+      end if
+    end do
+
+    if (ir_cloud < 0) then
+      R_cloud = 0d0; M_cloud = 0d0; rho_cloud = 0d0; VelR_cloud = 0d0; Mdot_cloud = 0d0; Menc_over_MBE_cloud = 0d0
+      return
+    end if
+
+    !cloud-scale variables
+    R_cloud = rcen(ir_cloud) !values at the center of radial bins
+    M_cloud = Menc(ir_cloud)
+    Menc_over_MBE_cloud = Menc_over_MBE(ir_cloud)
+    rho_cloud = RHOshell(ir_cloud)
+    VelR_cloud = VelRshell(ir_cloud)
+    Mdot_cloud = -4*pi*R_cloud**2*rho_cloud*VelR_cloud
+  end subroutine cloud_from_shells
+
+  ! number of the innermost shells that lie inside the box around pos (the test of the ks boundary error:
+  ! min(pos) - rbin >= 0 and max(pos) + rbin <= boxlen); rbin increases with ir
+  function shells_inside_box(Nrbin, rbin, pos)
+    integer,intent(in) :: Nrbin
+    real(dp),dimension(1:Nrbin),intent(in) :: rbin
+    real(dp),dimension(1:3),intent(in) :: pos
+    integer :: shells_inside_box
+    integer :: ir
+    shells_inside_box = 0
+    do ir = 1, Nrbin
+      if (MINVAL(pos(1:3))-rbin(ir) < 0d0 .or. MAXVAL(pos(1:3))+rbin(ir) > boxlen) exit
+      shells_inside_box = ir
+    end do
+  end function shells_inside_box
+
   subroutine get_mdot_dependent_pop3_mass
 
     integer,parameter :: Nrbin = 60 ! number of radial bins for shells (r_i = r_0 * (r_max/r_0)**(i/(Nrbin-1)))
@@ -2349,7 +2457,7 @@ contains
     real(dp),dimension(1:Nrbin) :: Menc, Venc, Menc_over_MBE  !enclosed mass, voulume, Menc/MBE
 
     real(dp) :: Menc_over_MBE_max, R_cloud, M_cloud, rho_cloud, velR_cloud, Mdot_cloud, Menc_over_MBE_cloud
-    integer :: ir_cloud, ip3, ir
+    integer :: ir_cloud, ip3, ir, ir_max
     real(dp), parameter:: yr = 3.15569d+07
 
     integer,parameter :: LUN = 11
@@ -2407,22 +2515,11 @@ contains
     !      MomRshell=MomRshell(1:Nrbin,1:p3new_nform_tot),RawMomRshell=RawMomRshell(1:Nrbin,1:p3new_nform_tot))
 
 
-    !get RHOshell, PRSshell, VelRshell
+    !get RHOshell, PRSshell, VelRshell, MBEshell (shared with the SFC markers, 2026-11-19)
     do ip3 = 1, p3new_nform_tot
-      do ir = 1, Nrbin
-        if (Nshell(ir,ip3)>0) then  !if there is at least one cell in the shell
-          RHOshell(ir,ip3) = Mshell(ir,ip3)/Vshell(ir,ip3)
-          PRSshell(ir,ip3) = (gamma-1.0) * ETshell(ir,ip3)/Vshell(ir,ip3)
-          VelRshell(ir,ip3) = MomRshell(ir,ip3)/Mshell(ir,ip3)
-          MBEshell(ir,ip3) = &
-            1.18d0 * PRSshell(ir,ip3)**1.5 / RHOshell(ir,ip3)**2 / factG**1.5  !BE mass
-        else                         !if thre is no cell in the shell
-          RHOshell(ir,ip3) = -1d0  !zero for ILL-DEFINED case
-          PRSshell(ir,ip3) = -1d0
-          VelRshell(ir,ip3) = -1d0
-          MBEshell(ir,ip3) = -1d0
-        end if
-      end do
+      call shell_derived_quantities(Nrbin, Nshell(1:Nrbin,ip3), Mshell(1:Nrbin,ip3), Vshell(1:Nrbin,ip3), &
+        ETshell(1:Nrbin,ip3), MomRshell(1:Nrbin,ip3), factG, &
+        RHOshell(1:Nrbin,ip3), PRSshell(1:Nrbin,ip3), VelRshell(1:Nrbin,ip3), MBEshell(1:Nrbin,ip3))
     end do
 
     !KS DEBUG
@@ -2452,66 +2549,22 @@ contains
     !----------------------------------------------------------------------------
     !loop over PopIII
     do ip3 = 1, p3new_nform_tot
-      !calculate Menc
-      Menc(:) = 0d0
-      do ir = 1, Nrbin
-        if (ir == 1) then
-          Menc(ir) = Mshell(1,ip3)
-        else
-          Menc(ir) = Menc(ir-1) + Mshell(ir,ip3)
-        end if
-      end do
+      !Menc, Menc/MBE, cloud radius (maximum Menc/MBE among the infalling shells) and the cloud-scale
+      !variables (shared with the SFC markers, 2026-11-19; all zero and ir_cloud = -1 if no radius is found)
+      !TO MODIFIED 2026-11-19: ks stopped the run if no shell was infalling or if the cloud reached the box
+      !boundary. Now the shells that cross the boundary (their sums miss the mass outside; no periodic wrap in
+      !get_shell_quantities) are left out of the search, and without a cloud radius Mdot_cloud = 0 --> Mpop3 = 0:
+      !no star and no gas depletion at this step, as for a Pop III mass below the floor of pop3_model = 6 (the
+      !cell can be tried again at a later step). Runs that did not stop are unchanged.
+      ir_max = shells_inside_box(Nrbin, rbin, p3new_pos_glob(1:3,ip3))
+      call cloud_from_shells(Nrbin, rcen, Nshell(1:Nrbin,ip3), Mshell(1:Nrbin,ip3), RHOshell(1:Nrbin,ip3), &
+        VelRshell(1:Nrbin,ip3), MBEshell(1:Nrbin,ip3), Menc, Menc_over_MBE, ir_cloud, &
+        R_cloud, M_cloud, rho_cloud, VelR_cloud, Mdot_cloud, Menc_over_MBE_cloud, ir_max)
 
-      !Menc_over_MBE (negative value for no-data shell)
-      Menc_over_MBE(:) = 0d0
-      do ir = 1, Nrbin
-        if (Nshell(ir,ip3)>0) then
-          Menc_over_MBE(ir) = Menc(ir)/MBEshell(ir,ip3)
-        else
-          Menc_over_MBE(ir) = -1d0
-        end if
-      end do
-
-      !determine cloud size from maximum Menc_over_MBE
-      Menc_over_MBE_max = 0
-      ir_cloud = -1
-      do ir = 1, Nrbin
-        !if (Menc_over_MBE(ir) < 0) cycle
-        if (Nshell(ir,ip3) == 0) cycle
-        if (VelRshell(ir, ip3) >= 0) cycle
-        if (Menc_over_MBE(ir) > Menc_over_MBE_max) then
-          Menc_over_MBE_max = Menc_over_MBE(ir)
-          ir_cloud = ir
-        end if
-      end do
-
-      !check if radius is found
-      if (ir_cloud < 0) then
-        if (myid == 1) then
-          print '(A,I5,A,1PE11.3/,A)', '*** ERROR *** PopIII cloud radius not found in get_mdot_dependent_pop3new_mass. ir = ', ir, ', stopping...'
-          stop
-        end if
+      if (ir_cloud < 0 .and. myid == 1) then
+        print '(A,I5,A,I5,A,1P3E15.6)', '*** WARNING *** PopIII cloud radius not found (no infalling shell inside the box): ip3 = ', &
+          ip3, ', shells inside the box = ', ir_max, ', no Pop III formation at pos = ', p3new_pos_glob(1:3,ip3)
       end if
-
-      !check if SFC touches the boundary (TODO: compatibility with periodic boundary)
-      if (VelRshell(ir_cloud, ip3) < 0 .and. (MINVAL(p3new_pos_glob(1:3,ip3))-rbin(ir_cloud) < 0d0 .or. &
-      & MAXVAL(p3new_pos_glob(1:3,ip3))+rbin(ir_cloud) > boxlen)) then   ! merge_ks: boxlen (ks: 1d0)
-        print '(A,1P4E15.6,/,A)', &
-          '*** ERROR *** PopIII cloud may extend beyond the boundary (ToDo: implementation of periodic boundary)', &
-          p3new_pos_glob(1:3,ip3),rbin(ir_cloud)*scale_pc, &
-          'stopping...'
-        stop
-      end if
-
-      !cloud-scale variables
-      !R_cloud = rbin(ir_cloud)
-      R_cloud = rcen(ir_cloud) !values at the center of radial bins
-      M_cloud = Menc(ir_cloud)
-      Menc_over_MBE_cloud = Menc_over_MBE(ir_cloud)
-      rho_cloud = RHOshell(ir_cloud,ip3)
-      VelR_cloud = VelRshell(ir_cloud,ip3)
-      Mdot_cloud = -4*pi*R_cloud**2*rho_cloud*VelR_cloud
-
 
       !calculate Mpop3 from Mdot_cloud
       if (Mdot_cloud > 0) then
@@ -2572,7 +2625,7 @@ contains
           ' [Msun], (Menc/MBE)_cloud = ', Menc_over_MBE_cloud,&
           ' VelR_cloud = ', VelR_cloud*scale_v/1d5, &
           ' [km/s], nH_cloud = ', rho_cloud*scale_nH, &
-          ' [cm-3], Mdot_cloud = ', Mdot_cloud*scale_msun/(scale_t/(1d6*365.*24.*3600.)), &
+          ' [cm-3], Mdot_cloud = ', Mdot_cloud*scale_msun/(scale_t/yr), &
           ' [Msun/yr], Mpop3 = ', p3new_Mpop3(ip3)*scale_msun,' [Msun]'
 
         !write header
@@ -2587,7 +2640,7 @@ contains
               Vshell(ir,ip3)*scale_pc**3, RHOshell(ir,ip3)*scale_nH, &
               MZshell(ir,ip3)*scale_msun, PRSshell(ir,ip3)/RHOshell(ir,ip3)*scale_T2, &
               VelRshell(ir,ip3)*scale_v/1d5, MBEshell(ir,ip3)*scale_msun, &
-              -4*pi*rbin(ir)**2*RHOshell(ir,ip3)*VelRshell(ir,ip3)*scale_msun/(scale_t/(1d6*365.*24.*3600.)),&
+              -4*pi*rbin(ir)**2*RHOshell(ir,ip3)*VelRshell(ir,ip3)*scale_msun/(scale_t/yr),&
               Menc(ir)/MBEshell(ir,ip3)
           else
             write(LUN, '(I5,1P2E16.8,I8,9(1PE16.8))') &
@@ -4557,13 +4610,54 @@ contains
   ! candidate cell (as star_formation_in_SFC does for an SFC; radius 0, no star formation, no cropping).
   ! Afterwards it is treated like an SFC: age outputs (output_around_SFC_at_given_age), FAM_PSC after
   ! SFC_t_life, counted in n_sfc, and while active it blocks new markers within SFC_dist_min_pc.
+  ! TO ADDED 2026-11-19: logSFC_1Dprof and logSFC also for a marker. A marker has no SFC radius or mass, so the
+  ! cloud is the one of the Pop III mass (get_mdot_dependent_pop3_mass): the infalling shell with the largest
+  ! Menc/M_BE; logSFC gets R_cloud, M_cloud (N_star = M_star = 0), the mean density and metallicity inside it and
+  ! an extra column Mdot_cloud. Without an infalling shell inside the box (the marker condition does not look
+  ! at div v) these are all zero.
   !----------------------------------------------------------------------
   subroutine create_SFC_markers()
     integer :: cell_levl1, cell_index1, index_star
     integer, dimension(1:nvector) :: ind_grid1, ind_part1
     logical, dimension(1:nvector) :: ok_new1
     real(dp), dimension(1:3) :: pos1
+    ! 1D profile (the bins of star_formation_in_SFC and get_mdot_dependent_pop3_mass)
+    integer,parameter :: Nrbin = 60
+    real(dp),parameter :: f_rmax = 1d3
+    real(dp),parameter :: pi_m = 3.1415926d0   ! as in get_mdot_dependent_pop3_mass
+    real(dp),parameter :: yr = 3.15569d+07
+    integer,parameter :: LUN = 11
+    real(dp),dimension(1:Nrbin) :: rbin, rcen, RHOsh, PRSsh, VelRsh, MBEsh, Menc, Menc_over_MBE, T2sh, Mdotsh
+    real(dp),allocatable,dimension(:,:) :: Msh, Vsh, MZsh, ETsh, MomRsh
+    integer,allocatable,dimension(:,:) :: Nsh
+    real(dp) :: factG_m, R_cloud, M_cloud, rho_cloud, VelR_cloud, Mdot_cloud, Menc_over_MBE_cloud
+    real(dp) :: Venc_cloud, MZenc_cloud, rho_ave, Zmetal
+    integer :: ir, ir_cloud
+    real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v, scale_msun, scale_pc
+
     ok_new1(:) = .true.
+
+    ! shells around all the new markers in one sweep of the leaf cells (ufront: set by the caller)
+    call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+    scale_msun=scale_d*scale_l**3/m_sun
+    scale_pc=scale_l/3.08568d18
+    factG_m=1
+    if(cosmo)factG_m=3d0/8d0/pi_m*omega_m*aexp
+    do ir = 1, Nrbin
+      rbin(ir) = dx_min * (1d0-1d-8) * f_rmax**(dble(ir-1)/(Nrbin-1))
+      if (ir == 1) then
+        rcen(ir)=0.5d0*rbin(ir)
+      else
+        rcen(ir)=0.5d0*(rbin(ir-1)+rbin(ir))
+      end if
+    end do
+    allocate(Msh(Nrbin,SFC_n_tot),Nsh(Nrbin,SFC_n_tot),Vsh(Nrbin,SFC_n_tot),MZsh(Nrbin,SFC_n_tot),&
+      ETsh(Nrbin,SFC_n_tot),MomRsh(Nrbin,SFC_n_tot))
+    call get_shell_quantities(SFC_n_tot, SFC_pos_glob(1:3,1:SFC_n_tot), Nrbin, rbin(1:Nrbin), Msh(1:Nrbin,1:SFC_n_tot),&
+      Nshell=Nsh(1:Nrbin,1:SFC_n_tot), Vshell=Vsh(1:Nrbin,1:SFC_n_tot), &
+      MZshell=MZsh(1:Nrbin,1:SFC_n_tot), ETshell=ETsh(1:Nrbin,1:SFC_n_tot),&
+      MomRshell=MomRsh(1:Nrbin,1:SFC_n_tot))
+
     do iSFC = 1, SFC_n_tot
       call output_around_SFC(iSFC, SFC_pos_glob(1:3,iSFC), use_current_ufront=.true.)  !formation nest, as for an SFC
       nstar_tot = nstar_tot + 1
@@ -4601,7 +4695,79 @@ contains
         print '(A,I5,A,I5,A,I10,A,1P3E20.12)', '** SFC marker **  iSFC/nSFC: ', iSFC, '/', SFC_n_tot, &
           ', idp = ', nstar_tot, ', pos = ', SFC_pos_glob(1:3,iSFC)
       end if
+
+      !------------------------------------------
+      ! cloud radius and cloud-scale Mdot as for a Pop III star; logSFC_1Dprof and logSFC
+      !------------------------------------------
+      call shell_derived_quantities(Nrbin, Nsh(1:Nrbin,iSFC), Msh(1:Nrbin,iSFC), Vsh(1:Nrbin,iSFC), &
+        ETsh(1:Nrbin,iSFC), MomRsh(1:Nrbin,iSFC), factG_m, RHOsh, PRSsh, VelRsh, MBEsh)
+      call cloud_from_shells(Nrbin, rcen, Nsh(1:Nrbin,iSFC), Msh(1:Nrbin,iSFC), RHOsh, VelRsh, MBEsh, &
+        Menc, Menc_over_MBE, ir_cloud, R_cloud, M_cloud, rho_cloud, VelR_cloud, Mdot_cloud, Menc_over_MBE_cloud, &
+        shells_inside_box(Nrbin, rbin, SFC_pos_glob(1:3,iSFC)))
+      ! mean density and metallicity inside the cloud (as RHOenc, Zenc of an SFC)
+      rho_ave = 0d0; Zmetal = 0d0
+      if (ir_cloud > 0) then
+        Venc_cloud = sum(Vsh(1:ir_cloud,iSFC))
+        MZenc_cloud = sum(MZsh(1:ir_cloud,iSFC))
+        if (Venc_cloud > 0) rho_ave = M_cloud/Venc_cloud
+        if (M_cloud > 0) Zmetal = MZenc_cloud/M_cloud
+      end if
+
+      if (myid == 1) then
+        print '(A,I5,6(A,1PE11.3))', '** SFC marker cloud **  ir_cloud = ', ir_cloud, &
+          ', R_cloud [pc] = ', R_cloud*scale_pc, ', M_cloud [Msun] = ', M_cloud*scale_msun, &
+          ', (Menc/MBE)_cloud = ', Menc_over_MBE_cloud, ', VelR_cloud [km/s] = ', VelR_cloud*scale_v/1d5, &
+          ', nH_cloud [cm-3] = ', rho_cloud*scale_nH, ', Mdot_cloud [Msun/yr] = ', Mdot_cloud*scale_msun/(scale_t/yr)
+
+        ! shells without cells are written as -1 (T2, VelR, MBE) or 0 (Mdot)
+        do ir = 1, Nrbin
+          if (Nsh(ir,iSFC) > 0) then
+            T2sh(ir) = PRSsh(ir)/RHOsh(ir)*scale_T2
+            Mdotsh(ir) = -4*pi_m*rcen(ir)**2*RHOsh(ir)*VelRsh(ir)*scale_msun/(scale_t/yr)
+            RHOsh(ir) = RHOsh(ir)*scale_nH
+            VelRsh(ir) = VelRsh(ir)*scale_v/1d5
+            MBEsh(ir) = MBEsh(ir)*scale_msun
+          else
+            T2sh(ir) = -1d0; Mdotsh(ir) = 0d0
+            RHOsh(ir) = -1d0; VelRsh(ir) = -1d0; MBEsh(ir) = -1d0; Menc_over_MBE(ir) = -1d0
+          end if
+        end do
+
+        ! the block of an SFC (star_formation_in_SFC) with the cloud of the Pop III Mdot in the place of the
+        ! SFC, and the lines after T2shell added
+        open(LUN, file='logSFC_1Dprof', position='APPEND')
+        write (LUN,'(A,2I10,1P1E14.6,I6)') 'coarse_step, fine_step, zred, iSFC:', nstep_coarse, nstep, 1./aexp - 1., iSFC
+        write (LUN,'(8(A, 1P1E11.3))') &
+          'R_cloud [pc] =', R_cloud*scale_pc, &
+          ', M_cloud [Msun]= ', M_cloud*scale_msun,&
+          ', nH_ave [cm-3] = ', rho_ave*scale_nH,&
+          ', nH_cloud [cm-3] = ', rho_cloud*scale_nH,&
+          ', Z [Zsun] = ', Zmetal/0.02,&
+          ', VelR_cloud [km/s] = ', VelR_cloud*scale_v/1d5,&
+          ', Mdot_cloud [Msun/yr] = ', Mdot_cloud*scale_msun/(scale_t/yr),&
+          ', (Menc/MBE)_cloud = ', Menc_over_MBE_cloud
+        write (LUN,'(A,1P3E20.12)') 'SFC_pos(:) = ', SFC_pos_glob(1:3,iSFC)
+        write (LUN,'(A,I5,A,I5)') 'Nrbin = ', Nrbin, ', ir = ', ir_cloud
+        write (LUN,'(A,1P100E10.2)') 'rbin(:):    ', rbin(:)*scale_pc
+        write (LUN,'(A,100I10)')     'Nshell(:):  ', Nsh(1:Nrbin,iSFC)
+        write (LUN,'(A,1P100E10.2)') 'Mshell(:):  ', Msh(1:Nrbin,iSFC)*scale_msun
+        write (LUN,'(A,1P100E10.2)') 'Vshell(:):  ', Vsh(1:Nrbin,iSFC)*scale_pc**3
+        write (LUN,'(A,1P100E10.2)') 'RHOshell(:):', RHOsh(1:Nrbin)
+        write (LUN,'(A,1P100E10.2)') 'MZshell(:): ', MZsh(1:Nrbin,iSFC)*scale_msun
+        write (LUN,'(A,1P100E10.2)') 'T2shell(:): ', T2sh(1:Nrbin)
+        write (LUN,'(A,1P100E10.2)') 'rcen(:):    ', rcen(:)*scale_pc
+        write (LUN,'(A,1P100E10.2)') 'VelRshell:  ', VelRsh(1:Nrbin)
+        write (LUN,'(A,1P100E10.2)') 'MBEshell(:):', MBEsh(1:Nrbin)
+        write (LUN,'(A,1P100E10.2)') 'Menc/MBE(:):', Menc_over_MBE(1:Nrbin)
+        write (LUN,'(A,1P100E10.2)') 'Mdotshell:  ', Mdotsh(1:Nrbin)
+        write (LUN,'(A)') ''
+        close(LUN)
+      end if
+
+      call write_log_SFC(iSFC, SFC_pos_glob(1:3,iSFC), R_cloud, M_cloud, rho_ave, Zmetal, 0d0, 0, &
+        Mdot=Mdot_cloud*scale_msun/(scale_t/yr))
     end do
+    deallocate(Msh,Nsh,Vsh,MZsh,ETsh,MomRsh)
     call ugvtk_flush_new_stars(ufront_updated, .false.)  ! ugvtk (merge_ks): the star idp_ugvtk
   end subroutine create_SFC_markers
 
@@ -6206,7 +6372,7 @@ contains
   !   * ind_part: cell index corresponding to new particles in each cpu
   !
   !----------------------------------------------------------------------------
-  subroutine write_log_SFC(iSFC, pos, radius, mass, rho, Zmetal, m_star_form, n_star_form)
+  subroutine write_log_SFC(iSFC, pos, radius, mass, rho, Zmetal, m_star_form, n_star_form, Mdot)
     !in
     integer, intent(IN) :: iSFC !index of SFC at each step (usually one)
     real(dp),dimension(1:3),intent(in) :: pos  !center
@@ -6216,6 +6382,9 @@ contains
     real(dp),intent(in) :: Zmetal !average metallicity of SFC
     real(dp),intent(in) :: m_star_form !stellar mass formed from SFC
     integer,intent(in) :: n_star_form !stellar number formed from SFC
+    ! TO ADDED 2026-11-19: SFC marker (pop2_SFC_marker): cloud-scale Mdot [Msun/yr], written as a last column;
+    ! radius, mass, rho, Zmetal are then those of the cloud of the Pop III Mdot and the stellar columns are 0
+    real(dp),intent(in),optional :: Mdot
 
     character(LEN=80),parameter::filename='logSFC' !name of log file
     integer,parameter :: LUN = 11, LUN2 = 12
@@ -6290,8 +6459,13 @@ contains
         else !初めてファイルを作成する場合
 
           open(LUN, file=filename)
-          write (LUN,'(A, A)')  '#coarse_step, fine_step, zred, iSFC, ',&
-            'R_SFC [pc], M_SFC [Msun], N_star, M_star [Msun], nH [cm-3], Zmetal [Zsun], pos(:) [pc]'
+          if (pop2_SFC_marker) then   ! markers only (pop2_SFC_marker is off in the SFC models)
+            write (LUN,'(A, A)')  '#coarse_step, fine_step, zred, iSFC, ',&
+              'R_cloud [pc], M_cloud [Msun], N_star, M_star [Msun], nH [cm-3], Zmetal [Zsun], pos(:) [pc], Mdot_cloud [Msun/yr]'
+          else
+            write (LUN,'(A, A)')  '#coarse_step, fine_step, zred, iSFC, ',&
+              'R_SFC [pc], M_SFC [Msun], N_star, M_star [Msun], nH [cm-3], Zmetal [Zsun], pos(:) [pc]'
+          end if
           close(LUN)
         end if
 
@@ -6333,9 +6507,15 @@ contains
 
 
       !coarse step, fine step, zred, iSFC, R_SFC [pc], M_SFC [Msun], M_star [Msun], nH [cm-3], Zmetal [Zsun], pos(:)
+      if (present(Mdot)) then
+        write (LUN,'(2I10, 1P1E14.6, I4, 1P2E11.3, I8, 1P3E11.3, 1P3E20.12, 1P1E11.3)') &
+          nstep_coarse, nstep, zred, &
+          iSFC, radius*scale_l/pc_cgs, mass*scale_msun, n_star_form, m_star_form*scale_msun, rho*scale_nH, Zmetal_Zsun, pos(1:3)*scale_l/pc_cgs, Mdot
+      else
       write (LUN,'(2I10, 1P1E14.6, I4, 1P2E11.3, I8, 1P3E11.3, 1P3E20.12)') &
         nstep_coarse, nstep, zred, &
         iSFC, radius*scale_l/pc_cgs, mass*scale_msun, n_star_form, m_star_form*scale_msun, rho*scale_nH, Zmetal_Zsun, pos(1:3)*scale_l/pc_cgs
+      end if
       close(LUN)
     end if
 
