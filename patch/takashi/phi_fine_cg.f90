@@ -25,7 +25,8 @@ subroutine phi_fine_cg(ilevel,icount)
   !=========================================================
   integer::i,ind,iter,iskip,itermax,nx_loc
   integer::idx,ngrid_act,tid
-  logical::warm,thr
+  logical::warm,thr,prec
+  real(kind=8)::rz,rz_loc,rz_old,red2(2),red2_all(2)
   real(dp)::wall_time,tw0,tw1,t_comm,t_red,t_setup
   real(kind=8)::r2_loc,psum
   real(kind=8),dimension(0:255)::part   ! per-thread partial sums, added in thread order (reproducible)
@@ -115,6 +116,11 @@ subroutine phi_fine_cg(ilevel,icount)
   ngrid_act=active(ilevel)%ngrid
   thr=.false.
 !$ thr=omp_poisson .and. omp_cg .and. ngrid_act>=omp_mg_mingrid
+  ! cg_precond=1: preconditioned CG, z = M^-1 r with M one symmetric Gauss-Seidel (SSOR) sweep over
+  ! the cells of this rank only (block Jacobi over the ranks: no communication). Plain loops only.
+  prec=cg_precond>0
+  if(prec)thr=.false.
+  rz=0.0d0; rz_loc=0.0d0; rz_old=0.0d0
   if(thr)then
      part=0.0d0
 !$omp parallel private(ind,i,idx,tid,psum)
@@ -145,6 +151,25 @@ subroutine phi_fine_cg(ilevel,icount)
      end do
   end if
 
+  if(prec)then
+     if(.not.allocated(cg_zw))then
+        allocate(cg_zw(0:ncoarse+twotondim*ngridmax),cg_yw(0:ncoarse+twotondim*ngridmax),cg_own(1:ngridmax))
+        cg_zw=0.0d0; cg_yw=0.0d0; cg_own=0; cg_stamp=0
+     end if
+     cg_stamp=cg_stamp+1
+     do i=1,ngrid_act
+        cg_own(active(ilevel)%igrid(i))=cg_stamp
+     end do
+     call cg_precond_table(ilevel)
+     call cg_precond_sgs(ilevel)
+     do ind=1,twotondim
+        do i=1,ngrid_act
+           idx=active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax
+           rz_loc=rz_loc+f(idx,1)*cg_zw(idx)
+        end do
+     end do
+  end if
+
   t_setup=wall_time()-tw0   ! initial guess, right-hand side norm, first residual
 
   iter=0; itermax=10000
@@ -166,10 +191,18 @@ subroutine phi_fine_cg(ilevel,icount)
      ! Compute global norm
 #ifndef WITHOUTMPI
      tw1=wall_time()
-     call MPI_ALLREDUCE(r2,r2_all,1,MPI_DOUBLE_PRECISION,MPI_SUM,&
-          & MPI_COMM_WORLD,info)
-     r2=r2_all
+     if(prec)then
+        red2(1)=r2; red2(2)=rz_loc
+        call MPI_ALLREDUCE(red2,red2_all,2,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+        r2=red2_all(1); rz=red2_all(2)
+     else
+        call MPI_ALLREDUCE(r2,r2_all,1,MPI_DOUBLE_PRECISION,MPI_SUM,&
+             & MPI_COMM_WORLD,info)
+        r2=r2_all
+     end if
      t_red=t_red+(wall_time()-tw1)
+#else
+     rz=rz_loc
 #endif
 
      !====================================
@@ -177,15 +210,25 @@ subroutine phi_fine_cg(ilevel,icount)
      !====================================
      if(iter==1)then
         beta_cg=0
+     else if(prec)then
+        beta_cg=rz/rz_old
      else
         beta_cg=r2/r2_old
      end if
      r2_old=r2
+     rz_old=rz
 
      !====================================
      ! Recurrence on p
      !====================================
-     if(thr)then
+     if(prec)then
+        do ind=1,twotondim
+           do i=1,ngrid_act
+              idx=active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax
+              f(idx,2)=cg_zw(idx)+beta_cg*f(idx,2)
+           end do
+        end do
+     else if(thr)then
 !$omp parallel do collapse(2) private(ind,i,idx) schedule(static)
         do ind=1,twotondim
            do i=1,ngrid_act
@@ -255,6 +298,7 @@ subroutine phi_fine_cg(ilevel,icount)
      ! Compute alpha factor
      !====================================
      alpha_cg = r2/pAp
+     if(prec)alpha_cg = rz/pAp
 
      !====================================
      ! Recurrence on x
@@ -295,6 +339,18 @@ subroutine phi_fine_cg(ilevel,icount)
         end do
      end if
 
+     ! Preconditioner: z = M^-1 r, and r.z for the next iteration
+     if(prec)then
+        call cg_precond_sgs(ilevel)
+        rz_loc=0.0d0
+        do ind=1,twotondim
+           do i=1,ngrid_act
+              idx=active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax
+              rz_loc=rz_loc+f(idx,1)*cg_zw(idx)
+           end do
+        end do
+     end if
+
      ! Compute error
      error=DSQRT(r2/dble(twotondim*numbtot(1,ilevel)))
      if(iter==1)error_ini=error
@@ -326,6 +382,115 @@ subroutine phi_fine_cg(ilevel,icount)
 115 format('   ==> Level=',i5,' Step=',i5,' Error=',2(1pe10.3,1x))
 
 end subroutine phi_fine_cg
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
+subroutine cg_precond_table(ilevel)
+  use amr_commons
+  use poisson_commons
+  implicit none
+  integer::ilevel
+  !------------------------------------------------------------------
+  ! Neighbour table of the preconditioner, built once per solve: for the k-th cell of the sweep
+  ! (grids of this rank in the order of the active list, the 8 cells of a grid in order),
+  ! cg_cell(k) is its cell index and cg_nb(1:6,k) those of its neighbours. A neighbour that is
+  ! not a cell of this rank on this level (other rank, coarser cell, boundary) points to element
+  ! 0 of the work arrays, which stays zero.
+  !------------------------------------------------------------------
+  integer::i,j,g,ig,idim,ind,n,k
+  integer,dimension(0:twondim)::nbg
+  integer,dimension(1:3,1:2,1:8)::iii,jjj
+
+  iii(1,1,1:8)=(/1,0,1,0,1,0,1,0/); jjj(1,1,1:8)=(/2,1,4,3,6,5,8,7/)
+  iii(1,2,1:8)=(/0,2,0,2,0,2,0,2/); jjj(1,2,1:8)=(/2,1,4,3,6,5,8,7/)
+  iii(2,1,1:8)=(/3,3,0,0,3,3,0,0/); jjj(2,1,1:8)=(/3,4,1,2,7,8,5,6/)
+  iii(2,2,1:8)=(/0,0,4,4,0,0,4,4/); jjj(2,2,1:8)=(/3,4,1,2,7,8,5,6/)
+  iii(3,1,1:8)=(/5,5,5,5,0,0,0,0/); jjj(3,1,1:8)=(/5,6,7,8,1,2,3,4/)
+  iii(3,2,1:8)=(/0,0,0,0,6,6,6,6/); jjj(3,2,1:8)=(/5,6,7,8,1,2,3,4/)
+
+  n=active(ilevel)%ngrid
+  if(allocated(cg_cell))then
+     if(size(cg_cell)<twotondim*n)deallocate(cg_cell,cg_nb)
+  end if
+  if(.not.allocated(cg_cell))allocate(cg_cell(1:twotondim*n+twotondim*n/4+64),cg_nb(1:twondim,1:twotondim*n+twotondim*n/4+64))
+
+  k=0
+  do i=1,n
+     g=active(ilevel)%igrid(i)
+     nbg(0)=g
+     do j=1,twondim
+        ig=son(nbor(g,j))
+        if(ig>0)then
+           if(cg_own(ig)/=cg_stamp)ig=0
+        end if
+        nbg(j)=ig
+     end do
+     do ind=1,twotondim
+        k=k+1
+        cg_cell(k)=g+ncoarse+(ind-1)*ngridmax
+        do idim=1,ndim
+           ig=nbg(iii(idim,1,ind))
+           cg_nb(2*idim-1,k)=0
+           if(ig>0)cg_nb(2*idim-1,k)=ig+ncoarse+(jjj(idim,1,ind)-1)*ngridmax
+           ig=nbg(iii(idim,2,ind))
+           cg_nb(2*idim,k)=0
+           if(ig>0)cg_nb(2*idim,k)=ig+ncoarse+(jjj(idim,2,ind)-1)*ngridmax
+        end do
+     end do
+  end do
+
+end subroutine cg_precond_table
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
+subroutine cg_precond_sgs(ilevel)
+  use amr_commons
+  use pm_commons
+  use hydro_commons
+  use poisson_commons
+  implicit none
+  integer::ilevel
+  !------------------------------------------------------------------
+  ! Preconditioner of phi_fine_cg (cg_precond=1): cg_zw = M^-1 r (r in f(:,1)), with M one SSOR sweep
+  ! (relaxation factor cg_precond_omega; 1 = symmetric Gauss-Seidel) of B = I - (1/6) sum over
+  ! the neighbours, restricted to the cells of this rank (table of cg_precond_table).
+  ! Neighbours of other ranks and outside the level count as zero, so nothing is communicated and
+  ! M is symmetric positive definite. The sign differs from A = -B, which CG does not see
+  ! (z -> -z flips p and alpha together). Forward sweep into cg_yw, backward sweep into cg_zw:
+  ! cells not yet swept hold zero, so each sweep adds all neighbours without testing the order.
+  !------------------------------------------------------------------
+  integer::k,nc,idx
+  real(dp)::oneoversix,om,om6,om2
+
+  oneoversix=1.0D0/dble(twondim)
+  om=cg_precond_omega
+  om6=om*oneoversix
+  om2=2.0d0-om
+  nc=twotondim*active(ilevel)%ngrid
+
+  do k=1,nc
+     idx=cg_cell(k)
+     cg_yw(idx)=0.0d0
+     cg_zw(idx)=0.0d0
+  end do
+
+  ! Forward sweep: (I/om - L) y = r
+  do k=1,nc
+     idx=cg_cell(k)
+     cg_yw(idx)=om*f(idx,1)+om6*(cg_yw(cg_nb(1,k))+cg_yw(cg_nb(2,k))+cg_yw(cg_nb(3,k)) &
+          &                     +cg_yw(cg_nb(4,k))+cg_yw(cg_nb(5,k))+cg_yw(cg_nb(6,k)))
+  end do
+
+  ! Backward sweep: (I/om - U) z = ((2-om)/om) y
+  do k=nc,1,-1
+     idx=cg_cell(k)
+     cg_zw(idx)=om2*cg_yw(idx)+om6*(cg_zw(cg_nb(1,k))+cg_zw(cg_nb(2,k))+cg_zw(cg_nb(3,k)) &
+          &                        +cg_zw(cg_nb(4,k))+cg_zw(cg_nb(5,k))+cg_zw(cg_nb(6,k)))
+  end do
+
+end subroutine cg_precond_sgs
 !###########################################################
 !###########################################################
 !###########################################################

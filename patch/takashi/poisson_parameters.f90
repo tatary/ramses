@@ -34,6 +34,10 @@ module poisson_parameters
   ! test is relative to the initial residual, which a good start makes small). The first solve of a
   ! level in a run is always a cold start. Results change within the solver tolerance.
   logical :: cg_warm_start=.false.
+  ! cg_precond=1: preconditioned CG with one SSOR sweep per rank (no communication; relaxation
+  ! factor cg_precond_omega, 1 = symmetric Gauss-Seidel). Experimental (TODO.md 2d-4d). 0 = stock CG.
+  integer :: cg_precond=0
+  real(dp):: cg_precond_omega=1.0d0
 
   ! Gauss-Seidel smoothing sweeps for fine multigrid
   integer, parameter :: ngs_fine   = 2

@@ -818,6 +818,53 @@ multigrid (level 7-10) が約 3.4 s。level 15 は 1 ランク平均 2400 grid (
   - 直すなら、初期値を「前回の解 + (今回の粗い level からの補間 − 前回の solve のときの補間)」にする。前回の補間値を覚える配列 (セルあたり実数 1 個)
     と、毎回の全 grid の補間 (set-up が従来並みに戻る) が要る。DICE でも反復がさらに減る可能性があるが未確認。
 
+### 2d-4c. 次にクラスターで流すテスト (2026-11-19 時点、未実行)
+
+バイナリは 95ee9930 のまま (作り直し不要)。場所は `synology1/dwarf/run/hu_lv15_heavy/hu_lv15_omp4_nops/`、`output_00051` から 3 step、
+896 ランク × 4 スレッド、`KmpBlockTime "1"` (`run_hybrid_intel.rb` の最後の行で namelist を選ぶ)。namelist は `xd_rt_pos.nml` (`omp_poisson=.true.`、
+`cg_auto=.true.`、`cg_auto_every=1`、`timer_ranks_every=1`) からの変更で書く。優先順:
+
+| 優先 | 変更 | 目的 | 見るもの |
+|---|---|---|---|
+| 1 (必須) | `&POISSON_PARAMS` に `cg_warm_start=.true.` | 本番候補 (`omp_poisson=.true.` + warm)。この組み合わせは未実行 | poisson が 36 s 前後 (B=342066 は 36.5)、level 15 の反復が 30 前後、TOTAL |
+| 2 | なし (C=342067 の再実行) | level 15 の RT subcycle 数が実行ごとに変わるか (A / B だけ 1663 / 1540、他は 1011) | `Performed level 15 RT-step` の subcycle の合計。1011 なら偶然、また増えるなら原因を調べる (RT と cooling が 1.6 倍になる) |
+| 3 | 512 ランク × 7 スレッド (`hu_lv15_test_512/output_00051`、`CoresPerTask=7`、`NumThreadsPerProc=7`)、`cg_warm_start=.true.`、`omp_cg=.true.` | 4 スレッドと 7 スレッドの決着 (前回 340611 は 92.3 / 77.8 s で負け; grid が多いので `omp_cg` と warm が効くはず) | step 時間、poisson、CG の内訳。896x4 で本番を始めるなら省略可 |
+| 4 | `cg_warm_start=.true.`、`cg_auto_every=20` | `cg_auto` の MG の試行 (3 step で 26 回) を減らす。得は 1 step 0.5 s 程度の見込み | poisson、`cg_auto:` の行数 |
+| 5 | **新しいバイナリ** (`cg_precond` 入り; `.o` と `.mod` を消してビルド)、`cg_warm_start=.true.`、`cg_precond=1`、`cg_precond_omega=1.5` | 前処理 (2d-4d) の実測。他のテストとバイナリが変わるが、`cg_precond=0` なら 95ee9930 と同じ結果 | level 15 の反復 (30 → 14 前後の見込み)、CG の内訳の局所計算、poisson |
+
+- どのログでも、TOTAL を比べる前に level 15 の RT subcycle の合計が揃っているかを確かめる。
+- `epsilon` は既定 (1e-4) のまま。`omp_cg` は 3 以外では指定しない (既定 .false.)。
+- **本番の namelist** は 1 の設定から `timer_ranks_every=1` を外す (既定 0)。`nstepmax` / `foutput` のテスト用の指定も戻す。
+- リポジトリの `namelist/dice/xd_rt.nml` と `jobfiles/run_hybrid_intel.rb` は古い (`cg_auto` / `omp_poisson` なし、512x7、`KmpBlockTime "0"`)。本番設定が決まったら合わせる。
+
+### 2d-4d. CG の前処理 `cg_precond` (2026-11-19、実験的、クラスター未測定)
+
+- **`&POISSON_PARAMS` の `cg_precond=1` (既定 0、切れば変更前と bit 一致)**: 前処理付き CG。前処理は「自分のランクのセルだけで閉じた SSOR 1 往復」
+  (`cg_precond_omega`、既定 1 = 対称 Gauss–Seidel)。他ランク・level の外の隣は 0 とみなすので通信は増えない (ランクごとのブロック Jacobi)。
+  ALLREDUCE も 1 反復 2 回のまま (r·r と r·z を 1 回で送る)。収束判定は従来と同じ r のノルム。
+  - 実装 (`phi_fine_cg.f90`): `cg_precond_table` が solve ごとに隣セルの表 (`cg_nb(6, セル)`、自分のセルでなければ添字 0 = 常に 0 の要素) を作り、
+    `cg_precond_sgs` が前進 (`cg_yw`) → 後退 (`cg_zw`) の掃引をする。作業配列はセルあたり実数 2 個 + grid あたり整数 1 個 (最初に使うとき確保) と、
+    その level の自分のセル × 整数 7 個の表。掃引は逐次で、`cg_precond>0` のとき反復ループはスレッド化しない形になる (`omp_cg` は無視)。
+  - 結果は領域分割に依存する (ランク数や load balance で前処理が変わる; 許容誤差の範囲)。
+- 手元 (`tests/dice_rt_amr.nml` + `cg_levelmin=7`、6 step、level 7 / 8、1 スレッド):
+
+  | | 反復/solve | 局所計算 ms/反復 | CG 合計 (s) |
+  |---|---|---|---|
+  | 16 ランク 従来 | 107 / 101 | 0.265 / 0.164 | 0.73 |
+  | 16 ランク 前処理 ω=1 | 53 / 49 | 0.464 / 0.286 | 0.63 |
+  | 16 ランク 前処理 ω=1.5 | 52 / 42 | 0.463 / 0.286 | 0.58 |
+  | 16 ランク warm | 30 / 31 | 0.267 / 0.165 | 0.24 |
+  | 16 ランク warm + 前処理 ω=1.5 | 14 / 13 | 0.473 / 0.293 | 0.21 |
+  | 4 ランク 従来 | 107 / 101 | 1.03 / 0.63 | 1.91 |
+  | 4 ランク 前処理 ω=1.5 | 37 / 38 | 1.75 / 1.08 | 1.24 |
+
+  16 ランクは level 8 で 1 ランク 1400 grid (本番 level 15 は 2300)。反復は 1/2.0–1/2.4 (4 ランクの大きいブロックでは 1/2.7–1/2.9)、
+  局所計算は 1.74 倍。ω=1.7 は 1.5 より悪い (55 / 45)。表を作る前の版 (掃引のたびに `son(nbor)` を引く) は局所計算が 2.8 倍で損だった。
+- **クラスターの見積もり (未測定)**: level 15 は 1 反復 0.39 ms のうち通信が 0.23 ms なので、局所計算が 1.74 倍でも 1 反復は 0.56 ms 程度、
+  反復が 1/2.2 なら CG は 3 割強の短縮 (warm ありで 3 step 23.8 → 17 s 前後、全体の約 3%)。
+- **未確認**: (1) クラスターでの反復数と時間。(2) 力の精度 (判定は同じだが残る誤差の形が変わる; `a_ref` との比較をしていない)。
+  (3) `cg_auto` との組み合わせ。(4) zoom (level 14 で 176 反復) での効き。(5) スレッド化 (スレッドごとのブロックにすれば掃引を並列にできる)。
+
 ### 2d-5. 512 ランク × 7 スレッド (flat-339876、2026-11-15、変更前のバイナリ、`KMP_BLOCKTIME=0`)
 
 `hu_lv15_test_512/output_00051` (Mera で 512 ランクに書き直し) から 3 step、32 ノード × 16 task × 7 スレッド。比較は 896 × 4 の 339731。
