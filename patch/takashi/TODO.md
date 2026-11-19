@@ -794,6 +794,30 @@ multigrid (level 7-10) が約 3.4 s。level 15 は 1 ランク平均 2400 grid (
   - **結論 (2026-11-19)**: 力の誤差 3e-5 は溜まらず (5 → 15 step で一定) 実害がないので、**本番は `cg_warm_start=.true.`、右辺ノルム基準、`epsilon` は既定 1e-4 のまま**。
     `cg_warm_ini_res` も `epsilon_cg` (CG だけ別の許容誤差) も入れない。`omp_poisson=.true.` と合わせた 1 本はまだ流していない。
 
+- **zoom の宇宙論ランでは warm start は逆効果 (2026-11-19)**: `namelist/ks/l5_14_test.nml` (MUSIC zoom、levelmin 5 / levelmax 16、6 step、8 ランク) に
+  `cg_levelmin=6` を足して従来と warm を比べた (`claude_scratch/run/zoom_zc`, `zoom_zw`; ビルドは `build_ks_new` = GNU、NGROUPS=5、NPSCAL=3、DICE 空)。
+  反復/solve は level 6–8 で同じ (46–50)、level 10: 58 → 70、12: 86 → 130、13: 134 → 221、14: 176 → 375。CG 合計 9.2 → 17.2 s。発散や未収束は無い
+  (最終 残差/右辺 は 7–10e-5)。
+  - 前回の解の初期残差 / 右辺ノルムが level 7 で 3、level 10 で 63、level 14 で 1600 (従来の補間の初期値は全 level で 0.8–1.7)。
+    level が 1 つ上がるごとに 2.5–3 倍になる。
+  - このランは `nsubcycle` が level 5–13 で 1 (全 level が coarse step ごとに 1 solve)。subcycle のせいかを見るため level 10 以上を 2 にして
+    2 step 流した (`zoom_zcs`, `zoom_zws`; level 14 は coarse step あたり 16 solve): それでも warm のほうが遅い。level 13: 134 → 179、14: 173 → 288 反復、
+    CG 合計 49 → 68 s。solve ごとに見ると、最初の coarse step の中 (粗い level が動かない間) は前回の解の初期残差 / 右辺ノルム が 0.16–1.4 で
+    反復は 172–257 (従来 173; 初期残差が補間より小さくても反復は減らない)、粗い level を解き直した直後は 600–5500 で約 400 反復。
+    つまり solve の頻度 (subcycle) だけでは決まらない。
+  - `cg_auto=.true.` (`cg_auto_every=1`、nsubcycle は元のまま 6 step; `zoom_zca`, `zoom_zwa`) だと level 6–12 は CG (MG 0.010–0.034 s に対し 0.005–0.028 s)、
+    grid の多い level 13 / 14 は MG (0.086 / 0.55 s; CG は 0.117 / 1.11 s) が選ばれる。poisson は 9.3 s (`cg_levelmin=6` 固定の従来 10.8 s)。
+    warm を足すと level 12 も MG になり、CG の試行が重くなって (level 14 で 1 回 2.95 s) poisson 15.0 s。8 ランクの手元の時間なので、選択はランク数で変わりうる。
+  - 推定 (未検証): 高赤方偏移の zoom は密度がほぼ一様で右辺 (密度ゆらぎ × dx²) が小さい。level の端の境界値は粗い level の phi の時間補間で
+    solve ごとに動き、その変化は phi の大きさで決まるので、右辺に対して大きな残差になる。これを消すのは level 全体にわたる滑らかな補正で、
+    CG では反復がかかる (補間の初期値はその滑らかな部分を最初から持っている)。DICE は密度の濃淡が大きく右辺が大きいので、境界の変化が相対的に小さい
+    (クラスター level 15 の初期残差 / 右辺ノルム は 0.015)。
+  - 右辺ノルムが小さすぎて判定が成り立たない、という心配のほうは起きていない (ほぼ一様な level 6–9 でも初期残差 / 右辺ノルム ≈ 1)。
+  - **当面: `cg_warm_start` は DICE の本番専用。宇宙論 / zoom では、少なくとも高赤方偏移では使わない** (低赤方偏移で銀河ができた後は未確認; 使う前に
+    `==> Level=` の反復数を従来と比べること)。
+  - 直すなら、初期値を「前回の解 + (今回の粗い level からの補間 − 前回の solve のときの補間)」にする。前回の補間値を覚える配列 (セルあたり実数 1 個)
+    と、毎回の全 grid の補間 (set-up が従来並みに戻る) が要る。DICE でも反復がさらに減る可能性があるが未確認。
+
 ### 2d-5. 512 ランク × 7 スレッド (flat-339876、2026-11-15、変更前のバイナリ、`KMP_BLOCKTIME=0`)
 
 `hu_lv15_test_512/output_00051` (Mera で 512 ランクに書き直し) から 3 step、32 ノード × 16 task × 7 スレッド。比較は 896 × 4 の 339731。
