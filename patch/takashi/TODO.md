@@ -742,6 +742,45 @@ multigrid (level 7-10) が約 3.4 s。level 15 は 1 ランク平均 2400 grid (
   `omp_cg=.true.` を本番で使う場面 (512x7 など grid が多い設定) が出たら、ifx でどちらの形が速いかを測り直すこと。
   なお手元では CG のスレッド化自体は 2.2–2.6 倍効いている (grid が多ければ `omp_cg` は得)。
 
+- **warm start の精度 (2026-11-19)**: `tests/dice_rt_amr.nml` + `cg_levelmin=7`、4 ランク 1 スレッド、30 step、95ee9930。基準は `epsilon=1e-9` の
+  従来の解き方。`grav_*` の力を同じセルどうしで比べ、差の rms を基準の力の rms で割った値 (level 7 / 8、5 step 目 = ランの軌道が分かれる前):
+
+  | | 力の rms 誤差 L7 / L8 | phi の rms 誤差 L7 / L8 | 反復/solve L7 / L8 | CG 合計 (s) | poisson (s) |
+  |---|---|---|---|---|---|
+  | 従来 `epsilon=1e-4` | 2.6e-5 / 8.1e-6 | 2.4e-5 / 1.5e-5 | 107 / 102 | 9.8 | 15.9 |
+  | warm `1e-4` | 3.6e-5 / 3.2e-5 | 2.5e-5 / 1.0e-5 | 22 / 30 | 2.6 | 8.5 |
+  | 従来 `1e-5` | 3.3e-6 / 8.9e-7 | 3.4e-6 / 2.1e-6 | 144 / 136 | 12.5 | 19.0 |
+  | warm `1e-5` | 4.4e-6 / 2.8e-6 | 3.2e-6 / 1.3e-6 | 50 / 70 | 5.6 | 12.1 |
+
+  - 同じ `epsilon` だと warm は phi の誤差は同じか小さいが、**力の誤差は level 7 で 1.4 倍、level 8 で 3–4 倍大きい** (7 step 目も同じ比)。
+    誤差が小さいスケールに残っている。それでも力の 3e-5 で、最大でも 2e-4。
+  - **warm + `epsilon=1e-5` は従来の `1e-4` より全 level で正確 (力 6 倍 / 3 倍) で、CG の時間は 57%**。精度を落とさずに使うならこの組み合わせ。
+  - 誤差の蓄積は見えない: 5 → 7 → 15 step で warm の rms 誤差は増えていない (L7 3.6e-5 → 3.6e-5 → 3.7e-5)。
+  - 30 step 目はどのランも level 8 の力の差が 7–9e-5 に揃う (`epsilon=1e-5` の従来の解き方でも 7.7e-5)。ソルバーの誤差ではなく
+    ランの軌道が分かれた分で、この長さより先は力の比較では判定できない。grid 構造は全出力で 5 本とも同じ。
+  - run は `claude_scratch/run/a_{ref,cold4,warm4,cold5,warm5}`。
+
+- **クラスター (95ee9930、896x4、KBT 1、3 step、`hu_lv15_omp4_nops/`、2026-11-19)**: A=342065 (`omp_poisson=.false.`)、B=342066 (A + `cg_warm_start`)、
+  C=342067 (`omp_poisson=.true.`)、D=342219 (C + `omp_cg=.true.`)。比較は 341477 (48206e6a、A と同じ namelist)。
+
+  | | 341477 | A | B | C | D |
+  |---|---|---|---|---|---|
+  | poisson (s) | 57.1 | 53.5 | 36.5 | 52.2 | 51.3 |
+  | CG level 15: 反復/solve | – | 52.0 | 30.0 | 52.1 | 52.1 |
+  | CG level 15: 合計 (s) | – | 17.5 | 10.6 | 18.3 | 17.9 |
+  | CG level 7–15 合計 (s) | – | 40.6 | 23.8 | 41.6 | 41.2 |
+  | level 15 の RT subcycle | 1011 | 1663 | 1540 | 1011 | 1011 |
+  | TOTAL (s) | 242.8 | 280.6 | 253.4 | 239.9 | 238.4 |
+
+  - **A と B は RT subcycle が 1.5–1.65 倍あり、TOTAL と step 時間は他と比べられない** (rt-godunov / cooling / rt-ghostzones / rt-rev / sf-reduce が
+    その分増えている; 同じ namelist の 341477 と A で変わる理由は未調査)。この 5 項目を 341477 に揃えると A ≈ 242、B ≈ 223。
+  - warm start: level 15 の反復 52 → 30 (level 10–14 は 115–68 → 34–42)、poisson −17 s (3 step)、全体の約 7%。手元 (107 → 22) ほどは減らない。
+  - `omp_poisson=.true.` はもう遅くならない (set-up 2.64 → 1.95 ms/solve、poisson −1.3 s)。`omp_cg` の上乗せは −0.9 s で誤差の範囲
+    (level 15 の局所計算 0.158 → 0.144 ms/反復、交換は 0.042 → 0.064 に増える)。
+  - level 15 の 1 反復 0.39 ms の内訳 (A): ALLREDUCE 2 回 0.19、局所計算 0.16 (最大 0.22)、交換 0.04。set-up は 2.6 ms/solve で反復 7 回分。
+    ALLREDUCE が最大なので、次の手は ALLREDUCE を 1 回にまとめる形 (Chronopoulos–Gear) か前処理で反復を減らすこと。
+  - `epsilon` は MG の収束判定 (`multigrid_fine_commons.f90` の `err<epsilon`) にも使われる。本番 namelist は指定なし (既定 1e-4)。
+
 ### 2d-5. 512 ランク × 7 スレッド (flat-339876、2026-11-15、変更前のバイナリ、`KMP_BLOCKTIME=0`)
 
 `hu_lv15_test_512/output_00051` (Mera で 512 ランクに書き直し) から 3 step、32 ノード × 16 task × 7 スレッド。比較は 896 × 4 の 339731。
