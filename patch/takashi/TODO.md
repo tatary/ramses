@@ -46,14 +46,13 @@
 - 確認 (DICE テスト 4 ランク 6 step): 星ありは変更前と bit 一致。`eps_star=0` は完走し、初期の金属量の
   総和・min・max が星ありと一致 (1 ランクとも丸めの範囲で一致)。`LIGHT_MPI_COMM=1` でも heavy と bit 一致。
 
-### 1c. (対処 2026-11-19) RT ビルドで `rt=.false.` かつ `neq_chem=.false.`
-- `rt_init.f90` の `read_rt_groups` で ion の添字 (`ixHII` 等) が未設定のまま `group_csn(…,0)` を参照する。
-  bounds check 付きでは落ちる。**通常のビルド (GNU) では落ちずに完走し、平衡冷却 (`cooling_module`) で進む**
-  (2026-11-19 に変更前バイナリで確認; 範囲外の読みは rt が off なので結果に使われていない可能性が高いが未確認)。
-- 対処: `read_hydro_params.f90` で、RT ビルドかつ `hydro` のとき `neq_chem=.false.` なら `.true.` に強制して
-  1 行出す (`RT build: neq_chem is forced to .true.`)。`neq_chem=.true.` を明示したランと bit 一致。
-  既定テスト (`neq_chem=.true.`) は変更前と bit 一致。
-- 副作用: RT ビルドでは平衡冷却が選べなくなる (平衡冷却を使うなら RT=0 でビルドする)。
+### 1c. (修正済 2026-11-19) RT ビルドで `rt=.false.` かつ `neq_chem=.false.`
+- `rt_init.f90` の `read_rt_groups` で ion の添字 (`ixHII`) が 0 のまま `group_csn(…,0)` / `group_cse(…,0)` に
+  **書き込んで**いた (範囲外)。bounds check 付きでは落ちる。通常のビルド (GNU) では落ちずに完走し、
+  平衡冷却 (`cooling_module`) で進む。
+- 修正: 該当の 6 行に `if(ixHII .gt. 0)` を付けた。`rt=.false.`、`neq_chem=.false.` のランは変更前と bit 一致
+  (範囲外の書き込みは結果に効いていなかった)、既定テストも bit 一致。
+- 一度 `neq_chem` を `.true.` に強制する形で入れたが (aebc95fe)、RT ビルドで平衡冷却が選べなくなるので外した。
 
 ### 1d. (コード削除 2026-10-29) balance_per_level の本番での所有者不整合
 - per-level 分割のコードごと削除したので消滅。経緯は `docs/level_domain_decomposition.md` 4b/4b-2。

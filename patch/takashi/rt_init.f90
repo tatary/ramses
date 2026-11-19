@@ -349,8 +349,8 @@ SUBROUTINE read_rt_groups(nml_ok)
       group_csn(igroup_HII,ixHI)=5.0d-18
       group_cse(igroup_HII,ixHI)=5.3d-18
     endif
-    group_csn(igroup_HII,ixHII)=3.007d-18                ! HI ionization
-    group_cse(igroup_HII,ixHII)=2.781d-18
+    if(ixHII .gt. 0) group_csn(igroup_HII,ixHII)=3.007d-18                ! HI ionization
+    if(ixHII .gt. 0) group_cse(igroup_HII,ixHII)=2.781d-18
     group_egy(igroup_HII)=18.85
   endif
   if(igroup_HeII .gt. 0) then
@@ -358,8 +358,8 @@ SUBROUTINE read_rt_groups(nml_ok)
       group_csn(igroup_HeII,ixHI)=2.9d-18
       group_cse(igroup_HeII,ixHI)=2.8d-18
     endif
-    group_csn(igroup_HeII,ixHII)=5.687d-19! HI ionization by HeI photons
-    group_cse(igroup_HeII,ixHII)=5.042d-19
+    if(ixHII .gt. 0) group_csn(igroup_HeII,ixHII)=5.687d-19! HI ionization by HeI photons
+    if(ixHII .gt. 0) group_cse(igroup_HeII,ixHII)=5.042d-19
     if(ixHeII .gt. 0) then                              ! HeI ionization
       group_csn(igroup_HeII,ixHeII)=4.478d-18
       group_cse(igroup_HeII,ixHeII)=4.130d-18
@@ -371,8 +371,8 @@ SUBROUTINE read_rt_groups(nml_ok)
       group_csn(igroup_HeIII,ixHI)=4.1d-19
       group_cse(igroup_HeIII,ixHI)=4.1d-19
     endif
-    group_csn(igroup_HeIII,ixHII)=7.889d-20  ! HI ioniz. by HeII photons
-    group_cse(igroup_HeIII,ixHII)=7.456d-20
+    if(ixHII .gt. 0) group_csn(igroup_HeIII,ixHII)=7.889d-20  ! HI ioniz. by HeII photons
+    if(ixHII .gt. 0) group_cse(igroup_HeIII,ixHII)=7.456d-20
     if(ixHeII .gt. 0) then                  ! HeI ioniz. by HeII photons
       group_csn(igroup_HeIII,ixHeII)=1.197d-18
       group_cse(igroup_HeIII,ixHeII)=1.142d-18
