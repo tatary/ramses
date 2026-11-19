@@ -129,10 +129,12 @@ subroutine init_part
     allocate(msp0(npartmax))
     msp0=0
 #endif
-    if(metal)then
-      allocate(zp(npartmax))
-      zp=0
-    end if
+  end if
+  ! DICE: init_flow_fine deposits the gas metallicity from zp, so zp is needed
+  ! whenever metal is on, also without star/sink (TODO.md 1b)
+  if(metal)then
+    allocate(zp(npartmax))
+    zp=0
   end if
 
   !--------------------
@@ -1823,12 +1825,12 @@ contains
               endif
               mp(ipart)      = mm(i)
               levelp(ipart)  = levelmin
+              ! Particle metallicity (also needed without star: gas metallicity)
+              if(metal) then
+                zp(ipart)  = zz(i)
+              endif
               if(star) then
                 tp(ipart)    = tt(i)
-                ! Particle metallicity
-                if(metal) then
-                  zp(ipart)  = zz(i)
-                endif
 #ifdef INIT_STELLAR_MASS
                 mp0(ipart) = mm(i)
 #endif

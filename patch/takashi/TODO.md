@@ -35,15 +35,25 @@
   ビルドに戻した (`.f90.mizuki` は削除)。上流 `amr/flag_utils.f90` との差は小野さんの追加のみ。
   これにより 44 Myr より若い星粒子のまわりの細分化が本番にも入る (物理結果が変わる)。
 
-### 1b. `to_dice/init_part.f90`: `zp` の確保条件
-- `zp` (粒子金属量) は `if(star.or.sink)` の中で `if(metal)` のときだけ確保されるが、
-  `to_dice/init_flow_fine.f90` は `metal` だけ見て `zp` を読む。`eps_star=0` で
-  `metal=.true.` だと未確保配列を読む (本番 namelist では起きない)。
-  `if(metal)` の確保を `star.or.sink` の外に出せばよい。
+### 1b. (修正済 2026-11-19) `to_dice/init_part.f90`: `zp` の確保条件
+- `zp` (粒子金属量) は `if(star.or.sink)` の中で `if(metal)` のときだけ確保されていたが、
+  `to_dice/init_flow_fine.f90` は `metal` だけ見て `zp` を読む。`eps_star=0` で `metal=.true.` だと
+  未確保配列を読んで SIGSEGV (変更前バイナリで再現)。
+- 修正は 3 か所 (どれも `to_dice/` だけ): (1) `init_part.f90` の `zp` の確保を `star.or.sink` の外へ、
+  (2) `load_dice` の `zp(ipart)=zz(i)` を `if(star)` の外へ、(3) `particle_tree.f90` で
+  `dice_init.and.metal.and..not.(star.or.sink)` のとき `zp` をランク間で送る (幅 +1; 星ありのときは従来どおり
+  `tp` の次で送るので変わらない)。(3) が無いと落ちはしないが、ランクを移ったガス粒子の金属量が 0 になる。
+- 確認 (DICE テスト 4 ランク 6 step): 星ありは変更前と bit 一致。`eps_star=0` は完走し、初期の金属量の
+  総和・min・max が星ありと一致 (1 ランクとも丸めの範囲で一致)。`LIGHT_MPI_COMM=1` でも heavy と bit 一致。
 
-### 1c. `rt_init.f90` ~316 行: `rt=.false.` かつ `neq_chem=.false.` で落ちる
-- NIONS=4 ビルドで ion の添字 (`ixHII` 等) が設定されず `group_csn(…,0)` を参照。
-  本番では常に rt=.true. なので実害なし。テスト時の罠。
+### 1c. (対処 2026-11-19) RT ビルドで `rt=.false.` かつ `neq_chem=.false.`
+- `rt_init.f90` の `read_rt_groups` で ion の添字 (`ixHII` 等) が未設定のまま `group_csn(…,0)` を参照する。
+  bounds check 付きでは落ちる。**通常のビルド (GNU) では落ちずに完走し、平衡冷却 (`cooling_module`) で進む**
+  (2026-11-19 に変更前バイナリで確認; 範囲外の読みは rt が off なので結果に使われていない可能性が高いが未確認)。
+- 対処: `read_hydro_params.f90` で、RT ビルドかつ `hydro` のとき `neq_chem=.false.` なら `.true.` に強制して
+  1 行出す (`RT build: neq_chem is forced to .true.`)。`neq_chem=.true.` を明示したランと bit 一致。
+  既定テスト (`neq_chem=.true.`) は変更前と bit 一致。
+- 副作用: RT ビルドでは平衡冷却が選べなくなる (平衡冷却を使うなら RT=0 でビルドする)。
 
 ### 1d. (コード削除 2026-10-29) balance_per_level の本番での所有者不整合
 - per-level 分割のコードごと削除したので消滅。経緯は `docs/level_domain_decomposition.md` 4b/4b-2。

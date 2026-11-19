@@ -321,6 +321,15 @@ subroutine read_hydro_params(nml_ok)
     if(myid==1)write(*,*) 'Recompile with RT=True (or -DRT)'
     nml_ok=.false.
   endif
+#else
+  ! An RT build always carries the ionisation fractions; with rt=.false. and
+  ! neq_chem=.false. their indices stay unset and read_rt_groups reads
+  ! group_csn(:,0) (TODO.md 1c). That combination has never run, so
+  ! switch non-equilibrium chemistry on.
+  if(hydro.and..not.neq_chem)then
+    if(myid==1)write(*,*)'RT build: neq_chem is forced to .true.'
+    neq_chem=.true.
+  endif
 #endif
 
   !--------------------------------------------------
