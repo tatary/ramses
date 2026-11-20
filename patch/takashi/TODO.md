@@ -941,7 +941,7 @@ star formation 3.6、cooling 3.5、rt - godunov 3.0、rt - ghostzones 3.1)。
 - **本番の設定 (提案)**: 896x4、`KmpBlockTime "1"`、`omp_poisson=.true.`、`cg_auto=.true.`、`cg_auto_every=20`、`cg_warm_start=.true.`、
   `cg_precond` は使わない (得が 2–3% で実験的)。変更なしの 70.9 s/step に対して 62.7 s/step (−12%)。
 
-### 2d-7. 残りの逐次部分のスレッド化: flag / rho / star formation (2026-11-20、クラスター未測定)
+### 2d-7. 残りの逐次部分のスレッド化: flag / rho / star formation (2026-11-20、クラスターの測定は末尾)
 
 動機 (2d-4e の 343082 と 343087 の step 3): スレッド化済みの 4 行 (hydro・rt の godunov、cooling、poisson) は 896x4 と 512x7 で同じ時間、
 通信・待ちは 512x7 が約 4 s 少ないが、未スレッド化の行が約 4.7 s 多くて引き分けになっている。待ちの原因は level ごとの grid 数の偏り
@@ -995,6 +995,29 @@ star formation 3.6、cooling 3.5、rt - godunov 3.0、rt - ghostzones 3.1)。
   他の成分を逐次にして測るとスレッドが眠っていて伸びが小さく見える (flag 0.43 → 0.32) ので、測るときは全部スレッド化した状態で。
 - **クラスターで見るもの**: 896x4 と 512x7 (どちらも warm + `cg_auto_every=20`) で `flag`、`rho`、`star formation`、`refine`、`refine - comm` の行と step 時間。
   512x7 が勝つなら 256x14 も試す価値がある。`refine` (= `refine_fine`) が大きければ `authorize_fine` と走査のループが次の対象。
+
+
+#### 2d-7 のクラスター測定 (2026-11-20 夜、バイナリ c4ce85ac)
+
+ログは 2d-4e と同じ場所。3 本とも level 15 の RT subcycle は step 2 / 3 が 256 / 256。数字は s/step (step 2–3 のランク平均)。
+
+| ジョブ | 構成・設定 | step 2 / 3 (s) | 比較相手 | poisson | flag | rho | star formation | refine (+ comm) | sf - reduce |
+|---|---|---|---|---|---|---|---|---|---|
+| 344393 | 896x4、warm + `cg_auto_every=20` | 61.5 / 60.8 | 343085: 63.8 / 61.5 | 8.3 (7.9) | 1.25 (1.85) | 2.30 (2.24) | 2.07 (3.60) | 1.65 + 2.63 (4.3) | 8.3 (8.4) |
+| 344397 | 896x4、warm + `cg_auto_every=1` | 62.0 / 59.8 | 343082: 65.2 / 64.8 | 8.8 (10.3) | 1.26 (1.82) | 2.27 (2.27) | 2.04 (3.61) | 1.66 + 2.62 (4.2) | 7.9 (8.3) |
+| 344396 | 512x7、warm + `cg_auto_every=20` + `omp_cg` | 57.8 / 58.1 | 343087 の step 3: 65.4 (`cg_auto_every=1`) | 7.6 (10.4) | 1.35 (2.42) | 2.55 (2.98) | 2.07 (5.13) | 1.98 + 2.98 (5.0) | 6.3 (7.0) |
+
+括弧内は比較相手の値。
+
+- **512x7 が 896x4 に勝った: 57.9 対 61.2 s/step (−5%)。** 前回は引き分け (65.4 対 64.8)。本番は 512x7 に変える価値がある。
+- スレッド化の得 (896x4): star formation −1.5、flag −0.6、rho は変わらず (+0.05)、合計 −2.1 s/step (step 時間は 62.7 → 61.2、−2.4%; 見込みの 5% の半分)。
+  512x7: star formation −3.1、flag −1.1、rho −0.4 で −4.6 s/step。343087 との差 7.3 s の残りは `cg_auto_every` 1 → 20 の poisson (−2.8)。
+- **rho は効いていない** (896x4 で 0、512x7 で −14%)。行の大半が通信か、粒子の CIC のリスト経由の上乗せで相殺されている。内訳は未調査。
+- **refine の計算 (`refine_fine`) は 1.65 s/step (512x7 で 2.0)、通信が 2.6 (3.0)。** スレッド化しても得は最大 1.5 s 程度。
+- **`cg_auto` の解き直し (30db6e70) は効いた**: `cg_auto_every=1` の poisson が 10.3 → 8.8 s/step になり、`cg_auto_every=20` (8.3) との差は試行の時間だけになった。
+  step 時間は 344397 と 344393 で同じ (60.9 と 61.2)。level 7–10 は 3 本とも MG のまま。
+- `feedback` が 1.29 → 1.49 (896x4)、0.76 → 0.87 (512x7) と増えた。原因は未調査 (前の行の待ちが移っただけの可能性)。
+- 残っている大きい行 (512x7): hydro - godunov 9.2、poisson 7.6、sf - reduce 6.3、hydro - rev ghostzones 5.3、cooling 3.5、refine - comm 3.0、rt - godunov 3.0。
 
 ### 2d-5. 512 ランク × 7 スレッド (flat-339876、2026-11-15、変更前のバイナリ、`KMP_BLOCKTIME=0`)
 
