@@ -488,7 +488,7 @@ subroutine star_formation_fg(ilevel)
       if (loc_vir > 0) then
         if (pop2_njeans > 0) then
           write(*,'(A,1PE11.3,A)') 'loc_vir = ', loc_vir, &
-            '  ==> Pop II forms only where (cs^2+sigma^2)/(G rho lamJ_min^2) * pi <= loc_vir (Jeans condition incl. velocity dispersion of the 27-cell cube)'
+            '  ==> Pop II forms only where (cs^2+sigma_1d^2)/(G rho lamJ_min^2) * pi <= loc_vir (Jeans condition incl. the 1D velocity dispersion of the 27-cell cube)'
         else
           write(*,'(A,1PE11.3,A)') 'loc_vir = ', loc_vir, &
             '  ==> Pop II forms only where alpha_vir(27-cell cube) <= loc_vir'
@@ -867,9 +867,11 @@ subroutine star_formation_fg(ilevel)
             vx2 = vx2 / m_in_cube
             vy2 = vy2 / m_in_cube
             vz2 = vz2 / m_in_cube
-            vdisp2 = (vx2 - vx**2) + (vy2 - vy**2) + (vz2 - vz**2)
+            ! TO MODIFIED 2026-11-21: 1D velocity dispersion, sigma_1d^2 = sigma_3d^2 / 3 (ks added the 3D
+            ! dispersion to the isothermal cs^2, which is a 1D quantity)
+            vdisp2 = ((vx2 - vx**2) + (vy2 - vy**2) + (vz2 - vz**2)) / 3d0
             vdisp2 = max(vdisp2, 0d0)
-            ! alpha_vir = 5 * (sigma^2 + c_s^2) * R / (G * M)
+            ! alpha_vir = 5 * (sigma_1d^2 + c_s^2) * R / (G * M)
             ! here 4 pi / 3 * R^3 = 27 * dx^3  --> R = (3/4 pi * 27 * dV)^(1/3)
             if (dpop3 <= 0 .and. pop2_njeans > 0) then
               lamJ_min = boxlen / (2.d0)**nlevelmax * pop2_njeans !ジーンズ長がこれ以上短い場合に星形成
@@ -878,7 +880,7 @@ subroutine star_formation_fg(ilevel)
             else
               alpha_vir = 9.305257d0*(vdisp2 + cI2) * dx_loc / (factG * m_in_cube)
             endif
-            ! write(*,*) 'sigma = ', sqrt(vdisp2)*scale_v*1.d-5, ' km/s cs = ', sqrt(cI2)*scale_v*1.d-5, ' km/s a_vir = ', alpha_vir
+            ! write(*,*) 'sigma_1d = ', sqrt(vdisp2)*scale_v*1.d-5, ' km/s cs = ', sqrt(cI2)*scale_v*1.d-5, ' km/s a_vir = ', alpha_vir
             if (alpha_vir > loc_vir) ok3(i) = .false.
           end if
         endif
@@ -1138,9 +1140,11 @@ subroutine star_formation_fg(ilevel)
             vx2 = vx2 / m_in_cube
             vy2 = vy2 / m_in_cube
             vz2 = vz2 / m_in_cube
-            vdisp2 = (vx2 - vx**2) + (vy2 - vy**2) + (vz2 - vz**2)
+            ! TO MODIFIED 2026-11-21: 1D velocity dispersion, sigma_1d^2 = sigma_3d^2 / 3 (ks added the 3D
+            ! dispersion to the isothermal cs^2, which is a 1D quantity)
+            vdisp2 = ((vx2 - vx**2) + (vy2 - vy**2) + (vz2 - vz**2)) / 3d0
             vdisp2 = max(vdisp2, 0d0)
-            ! alpha_vir = 5 * (sigma^2 + c_s^2) * R / (G * M)
+            ! alpha_vir = 5 * (sigma_1d^2 + c_s^2) * R / (G * M)
             ! here 4 pi / 3 * R^3 = 27 * dx^3  --> R = (3/4 pi * 27 * dV)^(1/3)
             if (pop2_njeans > 0) then
               lamJ_min = boxlen / (2.d0)**nlevelmax * pop2_njeans !ジーンズ長がこれ以上短い場合に星形成
@@ -1148,7 +1152,7 @@ subroutine star_formation_fg(ilevel)
             else
               alpha_vir = 9.305257d0*(vdisp2 + cI2) * dx_loc / (factG * m_in_cube)
             endif
-            ! write(*,*) 'sigma = ', sqrt(vdisp2)*scale_v*1.d-5, ' km/s cs = ', sqrt(cI2)*scale_v*1.d-5, ' km/s a_vir = ', alpha_vir
+            ! write(*,*) 'sigma_1d = ', sqrt(vdisp2)*scale_v*1.d-5, ' km/s cs = ', sqrt(cI2)*scale_v*1.d-5, ' km/s a_vir = ', alpha_vir
             vir_ok = (alpha_vir <= loc_vir)
           end if
           if (pop2_peak_only .and. .not. is_peak) ok(i) = .false.

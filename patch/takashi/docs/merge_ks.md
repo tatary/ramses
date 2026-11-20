@@ -376,6 +376,9 @@ MUSIC zoom、`kstest_long` の output_00003 (step 108、level 16 まで 33 万 o
   `pop3_model=6` の質量下限と同じ経路)。止まらずに走っていたランの結果は変わらない。殻の最大半径は
   1000 dx_min なので (b) は levelmax の低い箱 (DICE テスト: 箱の 4 倍) でだけ起きる。(a) は `loc_vir` の
   virial 条件を課していればまず起きない。
+- **`loc_vir` の速度分散は 1 次元** (2026-11-21): ks は 27 セルの立方体の 3 次元の分散 (x, y, z の分散の和) をそのまま
+  等温音速の 2 乗 (1 次元の量) に足していた。`sigma_1d^2 = sigma_3d^2 / 3` に直した (Pop III と Pop II / SFC 印の両方の判定)。
+  同じ `loc_vir` でも条件が緩くなる (乱流が支配的なセルで alpha_vir が最大 1/3)。`loc_vir <= 0` のランは変わらない。
 - `SFdata/pop3prof.*.dat` の Mdot の単位 (2026-11-19): ks はヘッダの `Mdot_cloud` と `Mdotshell` 列を `[Msun/yr]` と書きながら
   Myr で換算していた (値は Msun/Myr)。Msun/yr に直した (標準出力は元から Msun/yr)。ks の古い `pop3prof` と比べるときは 1e6 倍違う。
 - **SFC 印 (`pop2_SFC_marker`) の `logSFC` / `logSFC_1Dprof`** (2026-11-19、`create_SFC_markers`): 印には SFC の
