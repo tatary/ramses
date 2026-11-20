@@ -105,7 +105,7 @@ module amr_parameters
   logical::omp_poisson=.true.              ! OpenMP: thread the Poisson solvers (phi_fine_cg and the fine-level multigrid)
   logical::omp_cg=.false.                  ! OpenMP: also thread the CG iteration (needs omp_poisson); slower at ~2400 grids per rank (TODO.md 2d-4)
   logical::omp_sf=.true.                   ! OpenMP: thread star_formation (unit conversions and the rate of each cell; the Poisson draws stay serial)
-  logical::omp_rho=.true.                  ! OpenMP: thread the gas part of rho_fine (multipole_fine, cic_from_multipole)
+  logical::omp_rho=.true.                  ! OpenMP: thread rho_fine (multipole_fine, cic_from_multipole, particle CIC; the additions stay serial and ordered)
   logical::omp_flag=.true.                 ! OpenMP: thread the refinement flags (hydro_flag, smooth_fine)
   integer,parameter::omp_mg_mingrid=256    ! levels with fewer active grids on this rank are solved serially
   ! Recursive bisection tree parameters

@@ -957,13 +957,22 @@ star formation 3.6、cooling 3.5、rt - godunov 3.0、rt - ghostzones 3.1)。
   `smooth_fine` の 3 つのループ (`count_nbors` の `save` も外した)。どの束も自分のセルの `flag1` / `flag2` だけを書く。`nflag` は整数の和。
   若い星まわりの refinement (`userflag_fine` の小野さんの追加部分) は隣の grid のセルに書くので逐次のまま。`init_flag` / `test_flag` /
   `poisson_refine` / `ensure_ref_rules` も逐次 (手元では flag の 1 割強)。`rt_hydro_flag` は本番で使っていない (`rt_refine` 未設定) ので未対応。
-- **rho** (`omp_rho`、`rho_fine.f90` と `to_dice/rho_fine.f90` の両方; 3 ルーチンは両ファイルで同じ文面にした): `multipole_fine` は束ごとに
-  自分のセルの `unew` だけを書くのでそのまま並列。`cic_from_multipole` は隣のセルの `rho` に足し込むので 2 段にした: `cic_cell` は
-  足す先のセル番号と質量を返すだけにして 8 束 × スレッド数のブロックを並列に計算し、`rho` への足し込み (と levelmin の `multipole`) は
-  その後で元の順序のまま逐次に行う。足し込みを「各スレッドがブロック全体を走査して自分の担当セルだけ足す」形で並列にする版は
-  逐次より遅かった (0.36 → 0.45 s) ので不採用。**粒子の CIC (`rho_from_current_level` / `cic_amr`) は未対応** (同じ 2 段にできるが `rho` /
-  `rho_top` / `phi` の 3 配列に条件付きで足す)。手元のテストは粒子が多く rho の 8 割が粒子だが、本番はセル 4000 万に対して粒子が少ないので
-  ガスが主のはず (未確認)。
+- **rho** (`omp_rho`、`rho_fine.f90` と `to_dice/rho_fine.f90` の両方; `multipole_fine` / `cic_from_multipole` / `cic_cell` / `rho_from_current_level` は
+  両ファイルで同じ文面、`cic_amr` は DICE 固有の行だけ違う): `multipole_fine` は束ごとに自分のセルの `unew` だけを書くのでそのまま並列。
+  隣のセルに足し込む CIC (ガスの `cic_from_multipole` と粒子の `rho_from_current_level`、2026-11-20 に粒子も対応) は次の形:
+  - **スレッド化しないとき** (1–2 スレッド、`omp_rho=.false.`、grid が少ない level、OPENMP=0): `cic_cell` / `cic_amr` に `direct=.true.` を渡し、
+    元のコードと同じくその場で `rho` / `rho_top` / `phi` に足す。
+  - **3 スレッド以上**: 束を「スロット」(ガス 4 束、粒子 8 束) に分け、スロットを並列に計算する。`cic_cell` / `cic_amr` (`direct=.false.`) は足す先の
+    セル番号と値を返すだけで、呼び出し側が元の加算順のまま「(足す先のセルの担当スレッド, スロット)」ごとのリストに書き足す。その後、各スレッドが
+    自分の担当セル (セル番号 64 個ごとに同じ担当) の分だけをスロット順に足す。どのセルも逐次と同じ順序で項を受け取るので、スレッド数によらず bit 一致。
+    levelmin の `multipole` は逐次。粒子の束を作る連結リストの走査も逐次。
+  - 経緯: (1) 足し込みだけ逐次に残す 2 段 (計算 → バッファ → 逐次に足す) はガスで 2 倍止まり、粒子では 1 スレッドが 1.33 → 1.84 s と遅くなり 4 スレッドでも
+    0.99 s (元の粒子の CIC は 1 粒子 100 ns 程度と軽く、バッファ経由の 1 往復で仕事が 5 割増える。`save` を外したせいではない)。
+    (2) 「各スレッドがバッファ全体を走査して担当セルだけ足す」は逐次より遅い。(3) 担当別リストは、リスト長のカウンタを共有配列に置くと偽共有で
+    2 スレッド 1.89 s / 4 スレッド 1.35 s; カウンタをスレッド私有にし、担当の計算から除算を除いて今の形。
+  - 手元 (4 ランク、粒子が rho の 8 割を占めるテスト、rho の行全体): 変更前 1.33 s、1 スレッド 1.38、2 スレッド 1.39 (直接の経路)、4 スレッド 0.93。
+    **4 スレッドで 1.4 倍止まり** (リスト経由の上乗せ 5 割と、逐次の走査・通信が残る)。本番はガスが主のはずなので比率は違う (未測定)。
+  - 作業メモリ: リストは (スロットあたりの項数) × スレッド数² で、ガス 8192 項・粒子 2048 項 (phi は 2 倍) × 12 byte。7 スレッドで約 6 MB、14 スレッドで約 25 MB。
 - **star formation** (`omp_sf`、`star_formation.f90`; `star_formation_fg.f90` は未対応): 保存量 ↔ 原始量の変換の 2 つのループを並列化。
   主ループは 2 段にした: 各セルの判定 `ok` と `sfr_ff` を先に全セル分求め (sf_model 6 / 7 かつ `sf_virial=.false.` のとき並列; それ以外は
   `getnbor` が `save` を持つので逐次)、Poisson の乱数はその後で元の順序のまま逐次に引く。乱数列が変わらないので結果は変更前と同じ。
@@ -973,19 +982,19 @@ star formation 3.6、cooling 3.5、rt - godunov 3.0、rt - ghostzones 3.1)。
   `amr_step` に timer ラベル **`refine - comm`** (`build_comm` + 交換) を足した。**`refine` の行は今後 `refine_fine` だけ**になる
   (以前の `refine` = 新しい `refine` + `refine - comm`)。
 - 検証 (`run/a_warm4` の namelist を 10 step、4 ランク、level 6–8; 変更前 = HEAD 30db6e70 の worktree): OPENMP=1 + BITREPRO=1 の 1 / 4 スレッドは
-  変更前の 1 スレッドと 80 ファイル bit 一致 (`th_b1` / `th_r1` / `th_r4`)。星ができる設定 (sf_model=1、64 個) でも 60 ファイル一致
+  変更前の 1 スレッドと 80 ファイル bit 一致 (`th_b1` / `th_r1` / `th_r4`)。星ができる設定 (sf_model=1、64 個) でも 1 / 3 スレッドで 60 ファイル一致
   (`th_m1b` / `th_m1n1` / `th_m1n4`)。OPENMP=0 のビルドも変更前と 80 ファイル一致 (`rs_D` / `th_noomp`)。sf_model=6 はこの初期条件では
   条件を通るセルの `sfr_ff` がすべて 0 で星ができないので、デバッグ用ビルドで `sigs + scrit` を混ぜたチェックサムを取り、1 / 4 スレッドで
   45704 セル分が bit 一致することを確かめた (**sf_model=6 で実際に星ができるランでの確認はしていない**)。
 - ks 設定 (OPENMP=1、DICE なし = `rho_fine.f90` の方、`sf_fg`; `run/kstest_ts` の restart を 12 ランク 31 step、`th_ksb` / `th_ks1` / `th_ks2`):
-  1 スレッドは変更前のバイナリと 72 ファイル bit 一致。2 スレッドは `omp_hydro/omp_rt/omp_cooling/omp_poisson=.false.` (新しい 3 つだけスレッド化)
-  で 72 ファイル一致。全部スレッド化した 2 スレッドは 60 ファイル不一致だが、これは既存の成分がスレッド数で丸めを変えるため (今回の変更ではない)。
+  1 スレッドは変更前のバイナリと 72 ファイル bit 一致。2 スレッドと 3 スレッド (粒子の CIC のリスト経路を通る、`th_ks3`) は
+  `omp_hydro/omp_rt/omp_cooling/omp_poisson=.false.` (新しい 3 つだけスレッド化) で 72 ファイル一致。全部スレッド化した 2 スレッドは 60 ファイル不一致だが、これは既存の成分がスレッド数で丸めを変えるため (今回の変更ではない)。
   この zoom ランでは 2 スレッドでも flag 9.3 → 8.8 s、rho 18.5 → 19.1 s と縮まない (1 ランクの level あたりの grid が少なく、rho は粒子が主)。
 - 手元の時間 (4 ランク、他の成分もスレッド化、1 → 4 スレッド): `hydro_flag` 0.345 → 0.121 s、`smooth_fine` 0.192 → 0.082、flag 全体 0.44 → 0.16;
-  `cic_from_multipole` 0.357 → 0.18、`multipole_fine` 約 2 倍; star formation 0.110 → 0.047 (同じ機械で hydro - godunov は 2.8 倍)。
+  `multipole_fine` 約 2 倍、rho 全体 1.38 → 0.93; star formation 0.110 → 0.047 (同じ機械で hydro - godunov は 2.8 倍)。
   他の成分を逐次にして測るとスレッドが眠っていて伸びが小さく見える (flag 0.43 → 0.32) ので、測るときは全部スレッド化した状態で。
 - **クラスターで見るもの**: 896x4 と 512x7 (どちらも warm + `cg_auto_every=20`) で `flag`、`rho`、`star formation`、`refine`、`refine - comm` の行と step 時間。
-  512x7 が勝つなら 256x14 も試す価値がある。rho が縮まなければ粒子の CIC、`refine` (= `refine_fine`) が大きければ `authorize_fine` と走査のループが次の対象。
+  512x7 が勝つなら 256x14 も試す価値がある。`refine` (= `refine_fine`) が大きければ `authorize_fine` と走査のループが次の対象。
 
 ### 2d-5. 512 ランク × 7 スレッド (flat-339876、2026-11-15、変更前のバイナリ、`KMP_BLOCKTIME=0`)
 
