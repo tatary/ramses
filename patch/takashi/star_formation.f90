@@ -378,6 +378,8 @@ subroutine star_formation(ilevel)
               vx2 = vx2/dtot
               vy2 = vy2/dtot
               vz2 = vz2/dtot
+              ! 1D velocity dispersion (sigma_1d^2 = sigma_3d^2/3), as in Kretschmer & Teyssier 2020:
+              ! their alpha_vir and Mach number (M = sigma_1d/c_s) are both defined with sigma_1d.
               sigma2 = (vx2 + vy2 + vz2 - vx**2 - vy**2 - vz**2)/3d0
             else
               !!!!!!!!!!!!!!!!!!
@@ -618,6 +620,7 @@ subroutine star_formation(ilevel)
                 scrit = log(alpha0*(1 + 2*(mach**4)/(1 + mach**2)))
 #else
                 ! Best fit values to the Multi-ff KM model (Hydro)
+                ! sigma2 is the 1D dispersion: M = sigma_1d/c_s (Kretschmer & Teyssier 2020), not the 3D rms Mach number
                 mach = sqrt(sigma2/cs2)
                 sigs      = log(1.0d0+(b_turb**2)*mach**2)
                 !scrit     = log(((pi**2)/5)*(phi_x**2)*alpha0*(sigma2/cs2))
