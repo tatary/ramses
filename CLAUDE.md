@@ -37,7 +37,7 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
 - 別ディレクトリでビルドするときは Makefile をコピーして `../` を絶対パスに置換する。
 - `DEBUG=1` は `-ffpe-trap=...underflow...` を含み RT 初期化が SIGILL で落ちる。
   デバッグ時は `underflow` を外す。
-- `OPENMP=1` (TODO.md 2d): `&RUN_PARAMS` の `omp_hydro/omp_rt/omp_cooling/omp_poisson` で成分ごとに切れる (CG の反復は `omp_cg`、既定 .false.)。実行時は `OMP_STACKSIZE=128m` と
+- `OPENMP=1` (TODO.md 2d): `&RUN_PARAMS` の `omp_hydro/omp_rt/omp_cooling/omp_poisson/omp_flag/omp_rho/omp_sf` で成分ごとに切れる (CG の反復は `omp_cg`、既定 .false.)。実行時は `OMP_STACKSIZE=128m` と
   `ulimit -s unlimited` が必須。bit 比較は `BITREPRO=1` のビルド同士で。スレッド化したループに和を足すときは `reduction` 句ではなく
   スレッド番号順の部分和にする (合算順が実行ごとに変わり再現しなくなる; `phi_fine_cg.f90` の `part`)。`save` と宣言時初期化はスレッド共有になる。
 - `LIGHT_MPI_COMM=1` (通信バッファを軽くするフラグ、既定 0) では `reception(icpu,ilevel)` が別の型になる:

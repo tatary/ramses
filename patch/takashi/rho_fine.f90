@@ -690,12 +690,13 @@ subroutine multipole_fine(ilevel)
   !-------------------------------------------------------------------
   integer ::ind,i,ncache,igrid,ngrid,iskip,nx_loc
   integer ::idim,nleaf,nsplit,ix,iy,iz,iskip_son,ind_son,ind_grid_son,ind_cell_son
-  integer,dimension(1:nvector),save::ind_grid,ind_cell,ind_leaf,ind_split
-  real(dp),dimension(1:nvector,1:ndim),save::xx
-  real(dp),dimension(1:nvector),save::dd
+  integer,dimension(1:nvector)::ind_grid,ind_cell,ind_leaf,ind_split
+  real(dp),dimension(1:nvector,1:ndim)::xx
+  real(dp),dimension(1:nvector)::dd
   real(kind=8)::dx,dx_loc,scale,vol_loc,mm
   real(dp),dimension(1:3)::skip_loc
   real(dp),dimension(1:twotondim,1:3)::xc
+  logical::thr
 
   if(numbtot(1,ilevel)==0)return
   if(verbose)write(*,111)ilevel
@@ -719,21 +720,28 @@ subroutine multipole_fine(ilevel)
      if(ndim>2)xc(ind,3)=(dble(iz)-0.5D0)*dx
   end do
 
+  ! patch/takashi: both loops are threaded (omp_rho). A bundle of grids writes unew of
+  ! its own cells only and reads uold and the multipoles of its sons (level ilevel+1,
+  ! complete before this call); the work arrays are private (no save). rho_ana
+  ! (gravity_type<0) is a user routine of unknown thread safety: serial in that case.
+  ncache=active(ilevel)%ngrid
+  thr=omp_rho.and.ncache>=omp_mg_mingrid.and.gravity_type>=0
+
   ! Initialize fields to zero
-  do ind=1,twotondim
-     iskip=ncoarse+(ind-1)*ngridmax
-     do i=1,active(ilevel)%ngrid
-        unew(active(ilevel)%igrid(i)+iskip,1)=0.0D0
-     end do
-     do idim=1,ndim
-        do i=1,active(ilevel)%ngrid
-           unew(active(ilevel)%igrid(i)+iskip,idim+1)=0.0D0
+!$omp parallel if(thr) private(igrid,ngrid,i,ind,iskip,idim,nleaf,nsplit,ind_son,iskip_son) &
+!$omp & private(ind_grid_son,ind_cell_son,mm,ind_grid,ind_cell,ind_leaf,ind_split,xx,dd)
+!$omp do schedule(static)
+  do i=1,ncache
+     do idim=1,ndim+1
+        do ind=1,twotondim
+           unew(active(ilevel)%igrid(i)+ncoarse+(ind-1)*ngridmax,idim)=0.0D0
         end do
      end do
   end do
+!$omp end do
 
   ! Compute mass multipoles in each cell
-  ncache=active(ilevel)%ngrid
+!$omp do schedule(static)
   do igrid=1,ncache,nvector
      ngrid=MIN(nvector,ncache-igrid+1)
      do i=1,ngrid
@@ -818,6 +826,8 @@ subroutine multipole_fine(ilevel)
 
      end do
   enddo
+!$omp end do
+!$omp end parallel
 
   ! Update boundaries
   do idim=1,ndim+1
@@ -848,7 +858,12 @@ subroutine cic_from_multipole(ilevel)
   ! solver, the restriction is necessary in any case.
   !-------------------------------------------------------------------
   integer::ind,i,icpu,ncache,ngrid,iskip,ibound,igrid
-  integer,dimension(1:nvector),save::ind_grid
+  integer,dimension(1:nvector)::ind_grid
+  integer::nbatch,nblk,ib,ib1,ib2,ibl,ind_son,iskip_son,idim,j,ic
+  integer ,allocatable,dimension(:,:,:,:)::ibuf
+  real(dp),allocatable,dimension(:,:,:,:)::vbuf
+  logical::thr
+!$ integer::omp_get_max_threads
 
   if(numbtot(1,ilevel)==0)return
   if(verbose)write(*,111)ilevel
@@ -884,15 +899,59 @@ subroutine cic_from_multipole(ilevel)
 
   if(hydro)then
      ! Perform a restriction over split cells (ilevel+1)
+     ! patch/takashi (omp_rho): cic_cell computes the targets and masses of a block of
+     ! bundles in parallel into ibuf / vbuf; the additions to rho (and to the total
+     ! multipole at levelmin) are then done serially in the original order (bundle,
+     ! son cell, cloud corner, grid), so the result is bit-identical to the serial
+     ! code for any number of threads. (Adding in parallel, each thread scanning the
+     ! block for the cells it owns, was slower than the serial loop: TODO.md 2d-7.)
+     ! The block is kept small (8 bundles per thread, 0.2 MB) so that it stays in cache.
      ncache=active(ilevel)%ngrid
-     do igrid=1,ncache,nvector
-        ! Gather nvector grids
-        ngrid=MIN(nvector,ncache-igrid+1)
-        do i=1,ngrid
-           ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
+     nbatch=(ncache+nvector-1)/nvector
+     thr=omp_rho.and.ncache>=omp_mg_mingrid
+     nblk=1
+!$   if(thr)nblk=8*omp_get_max_threads()
+     nblk=max(1,min(nblk,nbatch))
+     allocate(ibuf(1:nvector,1:twotondim,1:twotondim,1:nblk))
+     allocate(vbuf(1:nvector,1:twotondim,1:twotondim,1:nblk))
+     do ib1=1,nbatch,nblk
+        ib2=min(ib1+nblk-1,nbatch)
+!$omp parallel do schedule(static) if(thr) private(ib,ibl,igrid,ngrid,i,ind_grid)
+        do ib=ib1,ib2
+           ibl=ib-ib1+1
+           igrid=(ib-1)*nvector+1
+           ! Gather nvector grids
+           ngrid=MIN(nvector,ncache-igrid+1)
+           do i=1,ngrid
+              ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
+           end do
+           call cic_cell(ind_grid,ngrid,ilevel,ibuf(1,1,1,ibl),vbuf(1,1,1,ibl))
         end do
-        call cic_cell(ind_grid,ngrid,ilevel)
+!$omp end parallel do
+        ! Total multipole and mass density (serial, original order)
+        do ib=ib1,ib2
+           ibl=ib-ib1+1
+           igrid=(ib-1)*nvector+1
+           ngrid=MIN(nvector,ncache-igrid+1)
+           do ind_son=1,twotondim
+              if(ilevel==levelmin)then
+                 iskip_son=ncoarse+(ind_son-1)*ngridmax
+                 do idim=1,ndim+1
+                    do j=1,ngrid
+                       multipole(idim)=multipole(idim)+unew(iskip_son+active(ilevel)%igrid(igrid+j-1),idim)
+                    end do
+                 end do
+              end if
+              do ind=1,twotondim
+                 do j=1,ngrid
+                    ic=ibuf(j,ind,ind_son,ibl)
+                    if(ic>0)rho(ic)=rho(ic)+vbuf(j,ind,ind_son,ibl)
+                 end do
+              end do
+           end do
+        end do
      end do
+     deallocate(ibuf,vbuf)
   end if
 
 111 format('   Entering cic_from_multipole for level',i2)
@@ -902,27 +961,33 @@ end subroutine cic_from_multipole
 !###########################################################
 !###########################################################
 !###########################################################
-subroutine cic_cell(ind_grid,ngrid,ilevel)
+subroutine cic_cell(ind_grid,ngrid,ilevel,indp_out,val_out)
   use amr_commons
   use poisson_commons
   use hydro_commons, ONLY: unew
   implicit none
   integer::ngrid,ilevel
   integer,dimension(1:nvector)::ind_grid
-  !
-  !
+  integer ,dimension(1:nvector,1:twotondim,1:twotondim)::indp_out
+  real(dp),dimension(1:nvector,1:twotondim,1:twotondim)::val_out
+  !-------------------------------------------------------------------
+  ! CIC of the pseudo particles (cell multipoles) of ngrid grids.
+  ! patch/takashi: this routine only computes the target cells and the
+  ! masses to add, indp_out / val_out (particle, cloud corner, son cell;
+  ! index 0 = no target); rho itself and the total multipole are updated
+  ! by the caller (cic_from_multipole) in the original order, so that the
+  ! computation can be threaded with a bit-identical result. No save.
+  !-------------------------------------------------------------------
   integer::i,j,idim,ind_cell_son,iskip_son,np,ind_son,nx_loc,ind
-  integer ,dimension(1:nvector),save::ind_cell
-  integer ,dimension(1:nvector,1:threetondim),save::nbors_father_cells
-  integer ,dimension(1:nvector,1:twotondim),save::nbors_father_grids
+  integer ,dimension(1:nvector)::ind_cell
+  integer ,dimension(1:nvector,1:threetondim)::nbors_father_cells
+  integer ,dimension(1:nvector,1:twotondim)::nbors_father_grids
   ! Particle-based arrays
-  logical ,dimension(1:nvector),save::ok
-  real(dp),dimension(1:nvector),save::mmm
-  real(dp),dimension(1:nvector),save::vol2
-  real(dp),dimension(1:nvector,1:ndim),save::x,dd,dg
-  integer ,dimension(1:nvector,1:ndim),save::ig,id,igg,igd,icg,icd
-  real(dp),dimension(1:nvector,1:twotondim),save::vol
-  integer ,dimension(1:nvector,1:twotondim),save::igrid,icell,indp,kg
+  real(dp),dimension(1:nvector)::mmm
+  real(dp),dimension(1:nvector,1:ndim)::x,dd,dg
+  integer ,dimension(1:nvector,1:ndim)::ig,id,igg,igd,icg,icd
+  real(dp),dimension(1:nvector,1:twotondim)::vol
+  integer ,dimension(1:nvector,1:twotondim)::igrid,icell,indp,kg
   real(dp),dimension(1:3)::skip_loc
   real(kind=8)::dx,dx_loc,scale,vol_loc
   logical::error
@@ -958,16 +1023,6 @@ subroutine cic_cell(ind_grid,ngrid,ilevel)
            x(j,idim)=unew(ind_cell_son,idim+1)/unew(ind_cell_son,1)
         end do
      end do
-
-     ! Compute total multipole
-     if(ilevel==levelmin)then
-        do idim=1,ndim+1
-           do j=1,np
-              ind_cell_son=iskip_son+ind_grid(j)
-              multipole(idim)=multipole(idim)+unew(ind_cell_son,idim)
-           end do
-        end do
-     endif
 
      ! Rescale particle position at level ilevel
      do idim=1,ndim
@@ -1130,18 +1185,15 @@ subroutine cic_cell(ind_grid,ngrid,ilevel)
         end do
      end do
 
-     ! Update mass density and number density fields
+     ! Target cells and masses (applied by the caller)
      do ind=1,twotondim
         do j=1,np
-           ok(j)=igrid(j,ind)>0
-        end do
-        do j=1,np
-           vol2(j)=mmm(j)*vol(j,ind)/vol_loc
-        end do
-        do j=1,np
-           if(ok(j))then
-              rho(indp(j,ind))=rho(indp(j,ind))+vol2(j)
+           if(igrid(j,ind)>0)then
+              indp_out(j,ind,ind_son)=indp(j,ind)
+           else
+              indp_out(j,ind,ind_son)=0
            end if
+           val_out(j,ind,ind_son)=mmm(j)*vol(j,ind)/vol_loc
         end do
      end do
 

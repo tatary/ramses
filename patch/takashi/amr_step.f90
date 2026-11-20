@@ -60,6 +60,9 @@ recursive subroutine amr_step(ilevel,icount)
           !--------------------------
           ! Build communicators
           !--------------------------
+          ! separate timer label for build_comm and the exchanges of the whole state (TODO.md 2d-7);
+          ! 'refine' is then refine_fine alone
+          call timer('refine - comm','start')
           call build_comm(i)
 
           !--------------------------
@@ -93,6 +96,7 @@ recursive subroutine amr_step(ilevel,icount)
         !--------------------------
         ! Refine grids
         !--------------------------
+        call timer('refine','start')
         call refine_fine(i)
       end do
     end if

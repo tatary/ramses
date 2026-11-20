@@ -872,11 +872,12 @@ subroutine smooth_fine(ilevel)
   ! Array flag2 is used as temporary workspace.
   ! -------------------------------------------------------------------
   integer::ismooth
-  integer::i,ncache,iskip,ngrid
+  integer::i,ncache,iskip,ngrid,nfl
+  logical::thr
   integer::igrid,ind
   integer,dimension(1:3)::n_nbor
-  integer,dimension(1:nvector),save::ind_grid,ind_cell
-  integer,dimension(1:nvector,0:twondim),save::igridn
+  integer,dimension(1:nvector)::ind_grid,ind_cell
+  integer,dimension(1:nvector,0:twondim)::igridn
 
   if(ilevel==nlevelmax)return
   if(numbtot(1,ilevel)==0)return
@@ -884,9 +885,15 @@ subroutine smooth_fine(ilevel)
   n_nbor(1:3)=(/1,2,2/)
   flag1(0)=0
   ncache=active(ilevel)%ngrid
+  ! The three loops over bundles of grids are threaded (omp_flag): each bundle writes
+  ! flag2 / flag1 of its own cells only, and the neighbour count reads flag1, which is
+  ! not written in that loop.
+  thr=omp_flag.and.ncache>=omp_mg_mingrid
   ! Loop over steps
   do ismooth=1,ndim
      ! Initialize flag2 to 0
+!$omp parallel if(thr) private(igrid,ngrid,i,ind,iskip,ind_grid,ind_cell,igridn)
+!$omp do schedule(static)
      do igrid=1,ncache,nvector
         ngrid=MIN(nvector,ncache-igrid+1)
         do i=1,ngrid
@@ -902,7 +909,9 @@ subroutine smooth_fine(ilevel)
            end do
         end do
      end do
+!$omp end do
      ! Count neighbors and set flag2 accordingly
+!$omp do schedule(static)
      do igrid=1,ncache,nvector
         ngrid=MIN(nvector,ncache-igrid+1)
         do i=1,ngrid
@@ -913,7 +922,11 @@ subroutine smooth_fine(ilevel)
            call count_nbors(igridn,ind,n_nbor(ismooth),ngrid)
         end do
      end do
+!$omp end do
+!$omp end parallel
      ! Set flag1=1 for cells with flag2=1
+     nfl=0
+!$omp parallel do schedule(static) reduction(+:nfl) if(thr) private(igrid,ngrid,i,ind,iskip,ind_grid,ind_cell)
      do igrid=1,ncache,nvector
         ngrid=MIN(nvector,ncache-igrid+1)
         do i=1,ngrid
@@ -930,11 +943,13 @@ subroutine smooth_fine(ilevel)
            do i=1,ngrid
               if(flag2(ind_cell(i))==1)then
                  flag1(ind_cell(i))=1
-                 nflag=nflag+1
+                 nfl=nfl+1
               end if
            end do
         end do
      end do
+!$omp end parallel do
+     nflag=nflag+nfl
      ! Update boundaries
      call make_virtual_fine_int(flag1(1),ilevel)
      if(simple_boundary)call make_boundary_flag(ilevel)
@@ -960,8 +975,8 @@ subroutine count_nbors(igridn,ind,n_nbor,nn)
   ! then cell is marked with flag2=1
   !----------------------------------------------------
   integer::i,in,iskip
-  integer,dimension(1:nvector),save::ind_cell,i_nbor
-  integer,dimension(1:nvector,1:twondim),save::indn
+  integer,dimension(1:nvector)::ind_cell,i_nbor
+  integer,dimension(1:nvector,1:twondim)::indn
   ! Compute cell number
   iskip=ncoarse+(ind-1)*ngridmax
   do i=1,nn
@@ -999,8 +1014,8 @@ subroutine count_nbors2(igridn,ind,n_nbor,nn)
   ! then cell is marked with flag1=1
   !----------------------------------------------------
   integer::i,in,iskip
-  integer,dimension(1:nvector),save::ind_cell,i_nbor
-  integer,dimension(1:nvector,1:twondim),save::indn
+  integer,dimension(1:nvector)::ind_cell,i_nbor
+  integer,dimension(1:nvector,1:twondim)::indn
   ! Compute cell number
   iskip=ncoarse+(ind-1)*ngridmax
   do i=1,nn

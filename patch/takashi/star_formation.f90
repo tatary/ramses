@@ -71,6 +71,10 @@ subroutine star_formation(ilevel)
   integer::irad
 #endif
   real(kind=8)::vx, vy, vz, vx2, vy2, vz2, dtot
+  ! omp_sf: star formation rate per free-fall time and the criterion of every cell of the level
+  real(dp),allocatable,dimension(:)::sfr_cell
+  logical ,allocatable,dimension(:)::ok_cell
+  logical::thr,thr_sfr
 
   ! TODO: when f2008 is obligatory - remove this and replace erfc_pre_f08 below by
   ! the f2008 intrinsic erfc() function:
@@ -149,7 +153,23 @@ subroutine star_formation(ilevel)
   !------------------------------------------------
   ! Convert hydro variables to primitive variables
   !------------------------------------------------
+  ! patch/takashi (omp_sf): the conversion loops (here and at the end) work cell by cell
+  ! and are threaded. The main loop is split in two: the star formation rate of every
+  ! cell (the expensive part: 27 neighbours, velocity dispersion) is computed first, in
+  ! parallel for sf_model 6 and 7 without sf_virial, and the Poisson draws follow serially in
+  ! the original order, so the random number sequence and the result do not depend on
+  ! the number of threads.
   ncache=active(ilevel)%ngrid
+  thr=omp_sf.and.ncache>=omp_mg_mingrid
+  thr_sfr=thr.and.(sf_model==6.or.sf_model==7).and.(.not.sf_virial)
+!$omp parallel do private(igrid,ngrid,i,ind,iskip,ivar,d,u,v,w,e,ind_grid,ind_cell) &
+#ifdef SOLVERmhd
+!$omp & private(bx1,by1,bz1,bx2,by2,bz2) &
+#endif
+#if NENER>0
+!$omp & private(irad) &
+#endif
+!$omp & schedule(static) if(thr)
   do igrid=1,ncache,nvector
     ngrid=MIN(nvector,ncache-igrid+1)
     do i=1,ngrid
@@ -196,6 +216,7 @@ subroutine star_formation(ilevel)
       end do
     end do
   end do
+!$omp end parallel do
 
 ! get values of uold for density and velocities in virtual boundaries
 #ifndef WITHOUTMPI
@@ -245,6 +266,16 @@ subroutine star_formation(ilevel)
   ndebris_tot=0
   ! Loop over grids
   ncache=active(ilevel)%ngrid
+  allocate(sfr_cell(1:max(1,twotondim*ncache)),ok_cell(1:max(1,twotondim*ncache)))
+!$omp parallel do schedule(static) if(thr_sfr) firstprivate(pcomp) &
+!$omp & private(T2,T_poly,alpha0,b_turb,cs2,cs2_poly,curlv,curlv2,curlva,curlvb,curlvc,d,d1,d2,d3) &
+!$omp & private(d4,d5,d6,divv,divv2,dtot,fl,flong,fr,ftot,i,ind,iskip,j,lapld,mach,nH,ncell,ngrid) &
+!$omp & private(phi_t,phi_x,scrit,sigma2,sigma2_comp,sigma2_sole,sigs,t_dyn,t_ff,tdec,theta,trgv,ul) &
+!$omp & private(ur,vx,vx2,vy,vy2,vz,vz2,zeta) &
+#ifdef SOLVERmhd
+!$omp & private(A,B,C,beta,emag,fbeta) &
+#endif
+!$omp & private(ind_grid,ind_cell,ind_cell2,ok,sfr_ff,nborcube,ind_nborcube,ind_nbor)
   do igrid=1,ncache,nvector
     ngrid=MIN(nvector,ncache-igrid+1)
     do i=1,ngrid
@@ -633,6 +664,34 @@ subroutine star_formation(ilevel)
           if(d<=var_cut_refine)ok(i)=.false.
         end do
       endif
+      ! Keep the result for the serial loop below
+      do i=1,ngrid
+        ok_cell((ind-1)*ncache+igrid+i-1)=ok(i)
+        if(ok(i).and.(sf_virial.or.(sf_model.gt.5)))then
+          sfr_cell((ind-1)*ncache+igrid+i-1)=sfr_ff(i)
+        else
+          sfr_cell((ind-1)*ncache+igrid+i-1)=eps_star
+        end if
+      end do
+    end do
+  end do
+!$omp end parallel do
+
+  ! Poisson draws, serial and in the original order
+  do igrid=1,ncache,nvector
+    ngrid=MIN(nvector,ncache-igrid+1)
+    do i=1,ngrid
+      ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
+    end do
+    do ind=1,twotondim
+      iskip=ncoarse+(ind-1)*ngridmax
+      do i=1,ngrid
+        ind_cell(i)=iskip+ind_grid(i)
+      end do
+      do i=1,ngrid
+        ok(i)=ok_cell((ind-1)*ncache+igrid+i-1)
+        sfr_ff(i)=sfr_cell((ind-1)*ncache+igrid+i-1)
+      end do
       ! Calculate number of new stars in each cell using Poisson statistics
       do i=1,ngrid
         nstar(i)=0
@@ -686,6 +745,8 @@ subroutine star_formation(ilevel)
       end do
     end do
   end do
+
+  deallocate(sfr_cell,ok_cell)
 
   !---------------------------------
   ! Check for free particle memory
@@ -886,6 +947,14 @@ subroutine star_formation(ilevel)
   ! Convert hydro variables back to conservative variables
   !---------------------------------------------------------
   ncache=active(ilevel)%ngrid
+!$omp parallel do private(igrid,ngrid,i,ind,iskip,ivar,d,u,v,w,e,ind_grid,ind_cell) &
+#ifdef SOLVERmhd
+!$omp & private(bx1,by1,bz1,bx2,by2,bz2) &
+#endif
+#if NENER>0
+!$omp & private(irad) &
+#endif
+!$omp & schedule(static) if(thr)
   do igrid=1,ncache,nvector
     ngrid=MIN(nvector,ncache-igrid+1)
     do i=1,ngrid
@@ -932,6 +1001,7 @@ subroutine star_formation(ilevel)
       end do
     end do
   end do
+!$omp end parallel do
 
   call sf_log_close(ilun)
 
