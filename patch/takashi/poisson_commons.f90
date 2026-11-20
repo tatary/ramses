@@ -38,8 +38,7 @@ module poisson_commons
   logical, allocatable, dimension(:) :: cg_failed     ! CG hit itermax once: never use CG again
   real(dp),allocatable, dimension(:) :: t_solve_mg    ! last local solve time with multigrid (<0: none)
   real(dp),allocatable, dimension(:) :: t_solve_cg    ! last local solve time with CG (<0: none)
-  logical, allocatable, dimension(:) :: cg_trial_due  ! next solve at this level tries the other method
-  logical, allocatable, dimension(:) :: cg_pending    ! trial done, waiting for the current method's time
+  logical, allocatable, dimension(:) :: cg_trial_due  ! next solve at this level also times the other method
   ! cg_precond: work arrays of the preconditioner (z and the intermediate y), marker of the own grids of the solve
   real(dp),allocatable,dimension(:)::cg_zw,cg_yw
   integer,allocatable,dimension(:)::cg_own,cg_cell

@@ -827,7 +827,7 @@ multigrid (level 7-10) が約 3.4 s。level 15 は 1 ランク平均 2400 grid (
   - 直すなら、初期値を「前回の解 + (今回の粗い level からの補間 − 前回の solve のときの補間)」にする。前回の補間値を覚える配列 (セルあたり実数 1 個)
     と、毎回の全 grid の補間 (set-up が従来並みに戻る) が要る。DICE でも反復がさらに減る可能性があるが未確認。
 
-### 2d-4c. 次にクラスターで流すテスト (2026-11-19 時点、未実行)
+### 2d-4c. 次にクラスターで流すテスト (2026-11-19 時点; 実行済み、結果は 2d-4e)
 
 バイナリは 95ee9930 のまま (作り直し不要)。場所は `synology1/dwarf/run/hu_lv15_heavy/hu_lv15_omp4_nops/`、`output_00051` から 3 step、
 896 ランク × 4 スレッド、`KmpBlockTime "1"` (`run_hybrid_intel.rb` の最後の行で namelist を選ぶ)。namelist は `xd_rt_pos.nml` (`omp_poisson=.true.`、
@@ -883,6 +883,63 @@ multigrid (level 7-10) が約 3.4 s。level 15 は 1 ランク平均 2400 grid (
 
   前処理は精度を落とさない (同じか少し良い; 細かいスケールの誤差を先に消すため)。7 / 15 step 目も同じ水準で、誤差は増えていない。
 - **未確認**: (1) クラスターでの反復数と時間。(2) `cg_auto` との組み合わせ。(3) zoom (level 14 で 176 反復) での効き。(4) スレッド化 (スレッドごとのブロックにすれば掃引を並列にできる)。
+
+### 2d-4e. 2d-4c のテスト結果 (2026-11-19 夜のジョブ、バイナリ 8511f0b9、2026-11-20 に整理)
+
+ログは `synology1/dwarf/run/hu_lv15_heavy/hu_lv15_omp4_nops/` (896x4) と `hu_lv15_omp7/` (512x7)。level 15 の RT subcycle は 896x4 の 4 本とも
+step 2 / 3 が 256 / 256 で揃っているので、step 2–3 の平均で比べる (`timer_ranks_*_n7576/8.dat` の差の半分、ランク平均)。
+
+| テスト | ジョブ | 設定 | step 2 / 3 (s) | poisson (s/step) | level 15 反復/solve | CG 合計 (3 step, s) | RT subcycle (step 1/2/3) |
+|---|---|---|---|---|---|---|---|
+| 2 | 343084 | 変更なし (342067 の再実行) | 71.9 / 69.9 | 16.3 | 52.1 | 40.9 | 499 / 256 / 256 |
+| 1 | 343082 | `cg_warm_start` | 65.2 / 64.8 | 10.3 | 26.9 | 23.8 | 499 / 256 / 256 |
+| 4 | 343085 | warm + `cg_auto_every=20` | 63.8 / 61.5 | 7.9 | 19.5 (step 2 / 3 は 13.5 / 16.6) | 18.5 | 604 / 256 / 256 |
+| 5 | 343086 | warm + `cg_precond=1`、ω=1.5 (`cg_auto_every=1`) | 63.6 / 62.2 | 8.6 | 11.1 | 18.2 | 495 / 256 / 256 |
+| 3 | 343087 | 512x7、warm + `omp_cg` | 73.5 / 65.4 | 10.4 | 26.0 | 22.8 | 656 / 388 / 256 |
+
+poisson 以外の行は 896x4 の 4 本で 0.1 s/step 以内で同じ (hydro - godunov 9.5–9.7、sf - reduce 8.3–8.4、hydro - rev ghostzones 6.5、refine 4.2、
+star formation 3.6、cooling 3.5、rt - godunov 3.0、rt - ghostzones 3.1)。
+
+- **warm start (1)**: 見込みどおり。level 15 の反復 52 → 27、poisson 16.3 → 10.3 s/step、step 時間 −8%。
+- **RT subcycle のばらつき (2)**: 同じ設定の再実行は 342067 / 342219 と完全に同じ (499 / 256 / 256、反復数も同じ) なので実行ごとの乱れではない。
+  設定を変えると (重力が許容誤差の範囲で変わると) step 1 の数が 495–656 と変わる。step 2 / 3 は 896x4 の今回の 4 本では揃ったが、
+  342065 / 342066 は 495 / 512、416 / 504、512x7 は step 2 が 388。RT の dt を決めるセルの状態が丸め程度の違いに敏感ということで、
+  3 step のテストでは TOTAL ではなく subcycle の揃った step 同士で比べるしかない。
+- **512x7 (3)**: subcycle の揃った step 3 で 65.4 s、896x4 の warm (343082) は 64.8 s。poisson も 10.4 と 10.3 s/step で同じ。7 スレッドの得は無いので
+  本番は 896x4 のまま。
+- **`cg_auto_every=20` (4) は見込み (0.5 s/step) よりずっと効いた: poisson 10.3 → 7.9 s/step。** 理由は MG の試行の時間そのものではなく、
+  **試行が warm start を乱すこと**。`cg_auto_every=1` (343082) では level 15 の反復 (64 solve ごとの平均) が coarse step のたびに
+  45 → 26 → 24 → 16、40 → 35 → 17 → 12 と上がり直す。step 2 では level 9–15 のすべてが coarse step の前半ずっと 50–80 反復で、
+  level 8 が 2 回目の solve (step の中間) をした直後に 10–25 に落ちる。試行の無い 343085 の step 2 / 3 でも step の最初の 1/8 (level 10 の 2 回目の
+  solve まで) は 20–35 反復で、その後 6–20。
+  - 推測 (未検証): 細かい level の境界値は粗い level の `phi_old` と `phi` の時間補間なので、粗い level の `phi − phi_old` に解法の違い
+    (試行で MG ↔ CG を入れ替えた分の許容誤差程度の差) が入ると、その level が次に解かれるまで細かい level の境界が fine step ごとに動き続ける。
+    1 step に 1–2 回しか解かない level 7 / 8 の試行が step の半分以上を乱す。試行の無い step の最初の 1/8 は、coarse step の頭で粗い level が
+    解き直された分 (本物の時間変化) と思われる。
+  - 343082 では step 2 の試行で level 8–11 が MG → CG に変わった (warm の CG は MG の解から 4 反復で収束するので試行だけ速く見える。
+    切り替えた後は 50–70 反復)。343085 は level 7–10 が MG のまま。**warm と `cg_auto` の組み合わせでは試行の時間が実際の時間を表さない。**
+  - 対策の候補: (a) 本番は `cg_auto_every` を既定の 20 以上にする (試行のある step だけ 343082 並み = +2.4 s)。(b) 試行の solve の後で選択中の解法で
+    解き直して解を揃える (試行のたびに 1 solve 余計にかかるが、判定がその場で済み `cg_pending` も要らなくなる)。(c) CG の時間は試行の 1 回ではなく
+    直近の数回の平均で比べる。手元 (`dice_rt_amr.nml` + `cg_levelmin=7`) で (b) を試す価値がある。
+- **(b) を実装 (2026-11-20、`poisson_auto.f90`、クラスター未測定)**: 試行のある solve は「選択していない解法で 1 回 (時間を測るだけ)」→
+  「選択中の解法でもう 1 回 (この解を残す)」と 2 回解き、その場で判定する。2 回目は同じ状態から始まる (初期値は `phi_old` か level-1 から作り、
+  `rho` は solve で変わらない) ので、残る解は試行の無いランと同じ。`cg_pending` は削除 (`poisson_commons` が変わるので `.o` / `.mod` を消してビルド)。
+  判定で解法が入れ替わった次の solve だけは従来どおり解が切り替わる。
+  - 検証 (`run/a_warm4` の namelist を 10 step、4 ランク、level 7 / 8、`cg_auto_every=1`、80 ファイル): `cg_auto` + `cg_auto_margin=1` (切り替えなし) は
+    `cg_auto=.false.` と bit 一致 (CG 選択 + MG 試行 = `rs_C` / `rs_D`、MG 選択 + CG 試行 = `rs_E` / `rs_F`)。既定の margin でも選択が変わらなければ
+    一致 (`rs_B`)。変更前のバイナリは 48 ファイルが不一致で、CG の反復は 36.8 / 39.8 (変更後と試行なしは 25.5 / 29.4) と、乱れも手元で再現した。
+  - 試行 1 回のコストは 1 solve 分 (本番 level 15 で MG 0.066 s、全 level 合わせて 0.5 s 程度)。`cg_auto_every=20` なら 1 step あたり 0.03 s。
+  - 残る点: MG 選択中の level の CG の試行は MG の解からの warm start になる (その level が CG に切り替わった後の反復数とは少し違う)。
+
+- **前処理 (5)**: level 15 の反復 26.9 → 11.1 (見込み 14)、1 反復は 0.58 → 0.97 ms (set-up を除くと 0.49 → 0.80 ms; ALLREDUCE の欄が
+  0.22 → 0.37 ms に増えるのは遅いランクの掃引を待つ分)。level 15 の CG 10.8 → 8.3 s、poisson 10.3 → 8.6 s/step、step 時間 −3% で見積もりどおり。
+  ただし `cg_auto_every=1` での比較。`cg_auto_every=20` と組み合わせた場合は未測定で、反復が同じ比 (0.41) で減るなら CG 18.5 → 14 s 前後
+  (poisson 6.5 s/step、step 時間でさらに −2%)。
+- poisson の CG 以外 (MG の level、levelmin、力) は 3 step で約 10 s (343085: poisson 28.8 − CG 18.5)。
+- `sf - reduce` が 8.3 s/step (13%) で hydro - godunov に次ぐ。`star formation` (計算) は 3.6、`sf - ghostzones` は 0.3 s/step。2d-4 の予想どおり
+  star formation の大半は集団通信の待ち (ランク間で 5–13 s/step とばらつく)。
+- **本番の設定 (提案)**: 896x4、`KmpBlockTime "1"`、`omp_poisson=.true.`、`cg_auto=.true.`、`cg_auto_every=20`、`cg_warm_start=.true.`、
+  `cg_precond` は使わない (得が 2–3% で実験的)。変更なしの 70.9 s/step に対して 62.7 s/step (−12%)。
 
 ### 2d-5. 512 ランク × 7 スレッド (flat-339876、2026-11-15、変更前のバイナリ、`KMP_BLOCKTIME=0`)
 
