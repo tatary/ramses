@@ -603,8 +603,10 @@ subroutine star_formation(ilevel)
                 ! Virial parameter
                 !alpha0    = (5.0d0*sigma2)/(pi*factG*d*dx_loc**2)
                 alpha0    = (1.1937*(sigma2+cs2))/(factG*d*dx_loc**2) ! 5/(4 pi/3)
-                ! Turbulent forcing parameter (Federrath 2008 & 2010)
-                b_turb    = 0.4
+                ! Turbulent forcing parameter (Federrath 2008 & 2010): &SF_PARAMS sf_b_turb (default 0.4).
+                ! Kretschmer & Teyssier 2020 give no value. Federrath's b is calibrated for the 3D rms Mach number;
+                ! for the 1D Mach number used here the natural (mixed) forcing b_3d = 0.4 corresponds to 0.4*sqrt(3) = 0.69.
+                b_turb    = sf_b_turb
 #ifdef SOLVERmhd
                 ! Best fit values to the Multi-ff KM model (MHD)
                 A         = 0.5d0*(uold(ind_cell(i),6)+uold(ind_cell(i),nvar+1))

@@ -195,6 +195,10 @@ module amr_parameters
   real(dp)::sf_trelax=0              ! Relaxation time for star formation (cosmo=.false. only)
   real(dp)::sf_tdiss=0               ! Dissipation timescale for subgrid turbulence in units of turbulent crossing time
   integer::sf_model=3                ! Virial star formation model
+  real(dp)::sf_b_turb=0.4            ! (single-precision literal on purpose: bit-identical to the earlier hard-coded 0.4)
+                                     ! sf_model=6: turbulent forcing parameter b in sigma_s^2 = ln(1 + b^2 M^2), with M = sigma_1d/c_s.
+                                     ! Federrath's b (1/3 solenoidal, ~0.4 natural mix, 1 compressive) is calibrated for the 3D rms
+                                     ! Mach number; with the 1D Mach number used here the same forcing is b*sqrt(3): 0.69 for the natural mix.
   integer::nlevel_collapse=3         ! Number of levels to follow initial dark matter collapse (cosmo=.true. only)
   real(dp)::mass_star_max=120        ! Maximum mass of a star in solar mass
   real(dp)::mass_sne_min=10          ! Minimum mass of a single supernova in solar mass
