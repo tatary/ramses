@@ -24,7 +24,8 @@ subroutine star_formation_fg(ilevel)
   use mpi_mod
   use sf_log
 #ifdef RT
-  use output_analysis, only: output_around_SFC,output_around_star,ugvtk_note_new_star,ugvtk_flush_new_stars
+  use output_analysis, only: output_around_SFC,output_around_star,ugvtk_note_new_star,ugvtk_flush_new_stars, &
+    ugvtk_batch_begin,ugvtk_batch_end
   use poisson_commons, only : phi
   use rt_parameters, ONLY: iIons,ixHI,ixHII,ixHeII,ixHeIII
   use sbs_imf
@@ -143,6 +144,7 @@ subroutine star_formation_fg(ilevel)
   integer,dimension(1:ncpu) :: p3cand_ncand_list !list for number of pop3 candidates in each cpu
   real(dp),dimension(1:Npop3_max,1:3) :: p3cand_pos_loc, p3cand_pos_glob !position of pop3 candidates
   integer :: iloc, iglob, jglob
+  integer :: idp_next, idp_first   ! ugvtk: idp the new Pop III will get (file name)
   integer :: p3cand_offset !offset between indices of local and global lists
   real(dp) :: r2, pop3_dist_min
   integer :: p3new_nform_loc, p3new_nform_tot !number of new pop3 formation in each/all cpu(s)
@@ -2209,15 +2211,23 @@ contains
     ! TO modified
     ! output around Pop III formaiton site
     !-------------------------------------------------------------
+    if (ugvtk) call ugvtk_batch_begin   ! TO ADDED 2026-11-21: ufront / particle density once for all the new Pop III
+    ! TO MODIFIED 2026-11-21: the file name carries the idp that add_pop3_particles (below) gives to the
+    ! star (the first = most massive one of a binary / multiple system), not the index within this step
+    idp_next = nstar_tot
     do iglob = 1, p3new_nform_tot
+      idp_first = idp_next + 1
+      if (.not. (p3new_Mpop3(iglob) > 0)) cycle   ! no star (candidate dropped in get_mdot_dependent_pop3_mass): no idp, no file
+      idp_next = idp_next + pop3_n_multi(p3new_Mpop3(iglob))
       if (p3_output_minmass < 0 .or. &
         p3new_Mpop3(iglob)*scale_msun .ge. p3_output_minmass) then
-        write(nchar,'(I8)') iglob
+        write(nchar,'(I0)') idp_first
         prefix = 'Pop3_'//TRIM(adjustl(nchar))
         !call output_around_star_ufront(prefix, p3new_pos_glob(:,iglob))
         call output_around_star(prefix, p3new_pos_glob(:,iglob), use_current_ufront=.true.)
       end if
     end do
+    if (ugvtk) call ugvtk_batch_end('new Pop III')
 
     !--------------------------------------------------------------
     ! add Pop III particles
@@ -2665,6 +2675,16 @@ contains
   ! - the radius of the sphere is determined so as to contain larger mass than the star
   ! - this subroutine is based partly on star_formation_in_SFC
 
+  ! number of star particles add_pop3_particles creates for a Pop III system of mass mpop3 (code units)
+  integer function pop3_n_multi(mpop3)
+    real(dp),intent(in) :: mpop3
+    real(dp),parameter :: M_multi_min = 5d0 !minimum mass in a multiple system
+    pop3_n_multi = 1
+    if (pop3_model == 5) pop3_n_multi = 2
+    !determine n (M_tot = Mn*(2**n-1)   -> n = log((M_tot/Mn+1))/log(2)
+    if (pop3_model == 6) pop3_n_multi = int(log(mpop3*scale_msun/M_multi_min + 1)/log(2d0))
+  end function pop3_n_multi
+
   subroutine add_pop3_particles
 
     integer,dimension(1:nvector)::cell_index,cell_levl,cc
@@ -2676,7 +2696,6 @@ contains
 
     !for multiple Pop III formation
     integer :: i_multi, n_multi
-    real(dp),parameter :: M_multi_min = 5d0 !minimum mass in a multiple system
     real(dp) :: M_i, M_n
 
     p3new_nstar_loc=0
@@ -2688,7 +2707,7 @@ contains
           !determine n (M_tot = Mn*(2**n-1)   -> n = log((M_tot/Mn+1))/log(2)
           !(KS MEMO) p3new_Mpop3(ip3) is guaranteed to be >= M_multi_min here, since M_tot below
           !M_multi_min is already zeroed out (skipped) in get_mdot_dependent_pop3_mass
-          n_multi = int(log(p3new_Mpop3(ip3)*scale_msun/M_multi_min + 1)/log(2d0))
+          n_multi = pop3_n_multi(p3new_Mpop3(ip3))
           M_n = p3new_Mpop3(ip3) / (2**n_multi-1)
         end if
 
@@ -4663,7 +4682,7 @@ contains
       MomRshell=MomRsh(1:Nrbin,1:SFC_n_tot))
 
     do iSFC = 1, SFC_n_tot
-      call output_around_SFC(iSFC, SFC_pos_glob(1:3,iSFC), use_current_ufront=.true.)  !formation nest, as for an SFC
+      call output_around_SFC(nstar_tot+1, SFC_pos_glob(1:3,iSFC), use_current_ufront=.true.)  !formation nest, as for an SFC (file name: idp of the marker created just below)
       nstar_tot = nstar_tot + 1
       pos1(1:3) = SFC_pos_glob(1:3,iSFC)
       call get_active_cell_index_highest_level(pos1(1:3),cell_levl1,cell_index1)
@@ -5002,7 +5021,7 @@ contains
 
       if (SFC_output_minmass < 0 .or. &
         mass*scale_msun >= SFC_output_minmass) then
-        call output_around_SFC(iSFC, SFC_pos_glob(1:3,iSFC),use_current_ufront=.true.)      !output info about SFC
+        call output_around_SFC(nstar_tot+1, SFC_pos_glob(1:3,iSFC),use_current_ufront=.true.)      !output info about SFC (file name: idp of the SFC particle created just below)
       end if
 
 

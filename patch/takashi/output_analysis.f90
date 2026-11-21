@@ -25,6 +25,20 @@ module output_analysis
   implicit none
 
   logical :: part_dens_update_done
+  logical :: ufront_prep_done = .false.   ! TO ADDED 2026-11-21: ufront already prepared for the current output event
+  ! time spent in output_uniform_data on this rank since the last report: prepare, search, gather, write (TO ADDED)
+  real(kind=8) :: ugvtk_time(4) = 0d0
+  integer :: ugvtk_nfile = 0
+  ! TO ADDED 2026-11-21: inside a batch (a loop over stars / SFCs at one instant: nothing changes between the
+  ! events) ufront and the particle density are prepared once for all events, not once per event
+  logical :: ugvtk_in_batch = .false.
+  ! TO ADDED 2026-11-21: which state the output reads (ks 2f3541a, extended).
+  !  .false. (calls from star_formation: formation nests): unew, valid right after the hydro update; uold of the
+  !          current level is in primitive form there.
+  !  .true.  (calls from output_analysis_data = amr_step, before set_unew: outputs at given ages): uold, conservative.
+  !          unew is not a valid state there: load_balance and make_grid_fine carry uold only, so cells of grids that
+  !          changed owner at the last load balance read unew ~ 0 (nH ~ 1e-15 cm-3, |v| ~ 1e3 km/s, negative T).
+  logical :: ugvtk_state_uold = .false.
 
   real(dp),allocatable,dimension(:,:) :: rhoprt   ! density from particles: 1 -> DM, 2 -> star (ks: amr_commons)
   real(dp),allocatable,dimension(:),public :: phi_sync_for_output   ! potential saved at the first subcycle (ks: poisson_commons)
@@ -38,7 +52,7 @@ module output_analysis
   private   ! default
   public output_uniform_data, systemcall_wrapper, output_around_SFC, output_around_star, output_analysis_data, &
     output_around_SFC_at_given_age, output_around_star_at_given_age, &
-    ugvtk_note_new_star, ugvtk_flush_new_stars, save_phi_sync_for_output
+    ugvtk_note_new_star, ugvtk_flush_new_stars, save_phi_sync_for_output, ugvtk_batch_begin, ugvtk_batch_end
 
 CONTAINS
 
@@ -64,6 +78,8 @@ CONTAINS
 
     call timer('output - analysis_data','start')
 
+    ugvtk_state_uold = .true.   ! TO ADDED 2026-11-21: amr_step, before set_unew: read uold (see the declaration)
+
     !initialization
     part_dens_update_done = .false. !particle density data will be updated before vtk outpu
 
@@ -77,6 +93,8 @@ CONTAINS
     if(SFC_output_at_given_age .and. sf_fg) then
       call output_around_SFC_at_given_age(dtnew(ilevel))
     end if
+
+    ugvtk_state_uold = .false.
 
   end subroutine output_analysis_data
 
@@ -129,7 +147,7 @@ CONTAINS
   ! of ks write_log_star_formation. star_formation_fg notes every new particle at creation
   ! (rank-local; only Pop III stars and the star with idp = idp_ugvtk are kept) and flushes at the
   ! collective points where ks called write_log_star_formation: all ranks gather the notes and
-  ! call output_around_star for each (prefix Pop3_<k> with the p3_output_minmass guard when
+  ! call output_around_star for each (prefix Pop3_<idp> with the p3_output_minmass guard when
   ! pop3_output, idp<idp_ugvtk> for the chosen star).
   !#######################################################################################
   subroutine ugvtk_note_new_star(ipart)
@@ -212,10 +230,11 @@ CONTAINS
     call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
     scale_msun = scale_d*scale_l**3/1.989d33
 
+    call ugvtk_batch_begin
     do k = 1, ntot
       if (pop3_output .and. ibuf(2*k) == 1) then
         if (p3_output_minmass < 0 .or. rbuf(4*k)*scale_msun >= p3_output_minmass) then
-          write(nchar,'(I8)') k
+          write(nchar,'(I0)') ibuf(2*k-1)   ! idp of the star (TO MODIFIED 2026-11-21; was the index within this step)
           prefix = 'Pop3_'//TRIM(adjustl(nchar))
           call output_around_star(prefix, rbuf(4*k-3:4*k-1), use_current_ufront=use_current_ufront)
         end if
@@ -226,6 +245,7 @@ CONTAINS
         call output_around_star(prefix, rbuf(4*k-3:4*k-1), use_current_ufront=use_current_ufront)
       end if
     end do
+    call ugvtk_batch_end('new stars')
     deallocate(rbuf, ibuf)
   end subroutine ugvtk_flush_new_stars
 
@@ -241,6 +261,8 @@ CONTAINS
   ! Output around star-forming cloud
   ! From level = max(levelmin, nlevelmax - l_range + 1) to nlevelmax
   ! File name is SFC[iSFC][suffix].[step].[level].vtk
+  ! iSFC = idp of the SFC / marker particle (TO MODIFIED 2026-11-21; ks: index among the SFCs of this step),
+  ! so the formation file and the age files of one SFC carry the same number
   !
   ! Note:
   !  This routine is supposed to be called by the star_formation routine,
@@ -301,14 +323,20 @@ CONTAINS
       is_use_current_ufront = .false.
     end if
 
-    !force particle dnesity update
-    part_dens_update_done = .false.
+    !force particle dnesity update (TO MODIFIED 2026-11-21: once per batch inside a batch)
+    if (.not. ugvtk_in_batch) then
+      part_dens_update_done = .false.
+      ufront_prep_done = .false.   ! prepare ufront once for the files of this event
+    end if
 
     !-----------------------------------------------------------------------------------
     ! revert uold at ilevel = nlevelmax to conservative vars (cf. star_formation.f90)
     !-----------------------------------------------------------------------------------
     ilevel = nlevelmax
     ncache=active(ilevel)%ngrid
+    ! TO MODIFIED 2026-11-21: only for the calls from star_formation. In the age outputs (amr_step) uold is already
+    ! conservative; ks converted it here all the same (harmless while the output read unew, wrong once it reads uold).
+    if (ugvtk_state_uold) ncache = 0
     do igrid=1,ncache,nvector
       ngrid=MIN(nvector,ncache-igrid+1)
       do i=1,ngrid
@@ -349,13 +377,13 @@ CONTAINS
     scale_tyr=scale_t/(365.*24.*3600.)
     if(myid.eq.1)then
       print '(A,I8,1P3E20.12)', &
-        'OUTPUT AROUND STAR-FORMING CLOUD: iSFC, pos(:) = ', &
+        'OUTPUT AROUND STAR-FORMING CLOUD: idp, pos(:) = ', &
         iSFC, pos(:)
     end if
     !--------------- KS DEBUG ---------------!
 
     !get prefix
-    write(nchar,'(I8)') iSFC
+    write(nchar,'(I0)') iSFC
     prefix = TRIM(prefix1) // TRIM(ADJUSTL(nchar))     !SFC[iSFC].
 
     !add suffix if exists
@@ -399,12 +427,19 @@ CONTAINS
       !call output_uniform_data(xmin,ymin,zmin,xmax,ymax,zmax,ilevel,prefix=prefix)
       call output_uniform_data(xmin,ymin,zmin,xmax,ymax,zmax,ilevel,prefix=prefix,use_current_ufront=is_use_current_ufront, l_range=l_range)   ! TO MODIFIED 2026-11-11
     end do
+    if (.not. ugvtk_in_batch) then   ! TO ADDED 2026-11-21: the prepared ufront is valid within one event / batch only
+      ufront_prep_done = .false.
+      call ugvtk_report_time(prefix)
+    end if
 
     !-----------------------------------------------------------------------------------
     ! convert uold at ilevel = nlevelmax again to primitive vars (cf. star_formation.f90)
     !-----------------------------------------------------------------------------------
     ilevel = nlevelmax
     ncache=active(ilevel)%ngrid
+    ! TO MODIFIED 2026-11-21: only for the calls from star_formation. In the age outputs (amr_step) uold is already
+    ! conservative; ks converted it here all the same (harmless while the output read unew, wrong once it reads uold).
+    if (ugvtk_state_uold) ncache = 0
     do igrid=1,ncache,nvector
       ngrid=MIN(nvector,ncache-igrid+1)
       do i=1,ngrid
@@ -503,8 +538,11 @@ CONTAINS
     ! if(nstep_coarse==nstep_coarse_old.and.nstep_coarse>0) return
 
 
-    !force particle dnesity update
-    part_dens_update_done = .false.
+    !force particle dnesity update (TO MODIFIED 2026-11-21: once per batch inside a batch)
+    if (.not. ugvtk_in_batch) then
+      part_dens_update_done = .false.
+      ufront_prep_done = .false.   ! prepare ufront once for the files of this event
+    end if
 
 
     !--------------- KS DEBUG ---------------!
@@ -571,6 +609,10 @@ CONTAINS
       !call output_uniform_data(xmin,ymin,zmin,xmax,ymax,zmax,ilevel,prefix=prefix)
       call output_uniform_data(xmin,ymin,zmin,xmax,ymax,zmax,ilevel,prefix=prefix, use_current_ufront=is_use_current_ufront, l_range=l_range)   ! TO MODIFIED 2026-11-11
     end do
+    if (.not. ugvtk_in_batch) then   ! TO ADDED 2026-11-21: the prepared ufront is valid within one event / batch only
+      ufront_prep_done = .false.
+      call ugvtk_report_time(prefix)
+    end if
 
 
   end subroutine output_around_star
@@ -592,6 +634,7 @@ CONTAINS
     integer,parameter :: SFCoutput_n_max = 100 !maximum number of SFC output
     integer :: SFCoutput_n_loc, SFCoutput_n_glob !number of SFC for output
     real(dp),dimension(1:3,1:SFCoutput_n_max) :: SFCoutput_pos_loc, SFCoutput_pos_glob !position of SFC for output
+    integer,dimension(1:SFCoutput_n_max) :: SFCoutput_id_loc, SFCoutput_id_glob !idp of SFC for output (file name)
     integer,dimension(1:ncpu) :: SFCoutput_n_list !list for number of SFC for output in each cpu
 
 
@@ -654,7 +697,10 @@ CONTAINS
 
         if (((current_time-dteff-birth_time).lt.t0).and.(t0.le.(current_time-birth_time))) then !age (previous step)  < output_time < age (current step)
           SFCoutput_n_loc = SFCoutput_n_loc + 1
-          SFCoutput_pos_loc(1:3,SFCoutput_n_loc) = xp(i,1:3)
+          if (SFCoutput_n_loc <= SFCoutput_n_max) then   ! (the total is checked below)
+            SFCoutput_pos_loc(1:3,SFCoutput_n_loc) = xp(i,1:3)
+            SFCoutput_id_loc(SFCoutput_n_loc) = int(idp(i))
+          end if
         end if
       end do
 
@@ -699,6 +745,11 @@ CONTAINS
         sbufr((iglob-1)*3+3) = SFCoutput_pos_glob(3,iglob)
       end do
       call MPI_ALLREDUCE(sbufr, rbufr, 3*SFCoutput_n_glob, MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+      sbufi(1:SFCoutput_n_glob) = 0
+      do iloc = 1, SFCoutput_n_loc
+        sbufi(iloc + offset) = SFCoutput_id_loc(iloc)
+      end do
+      call MPI_ALLREDUCE(sbufi, SFCoutput_id_glob, SFCoutput_n_glob, MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
       do iglob = 1, SFCoutput_n_glob
         SFCoutput_pos_glob(1,iglob) = rbufr((iglob-1)*3+1)
         SFCoutput_pos_glob(2,iglob) = rbufr((iglob-1)*3+2)
@@ -714,9 +765,11 @@ CONTAINS
           '** KS DEBUG ** (output_around_SFC_at_given_age) output vtk for SFCs at age of ', SFC_tout_Myr, ' Myr: ',  SFCoutput_n_glob
       end if
 
+      call ugvtk_batch_begin
       do iglob = 1, SFCoutput_n_glob
-        call output_around_SFC(iglob, SFCoutput_pos_glob(1:3,iglob), suffix = TRIM(SFC_tout_char))
+        call output_around_SFC(SFCoutput_id_glob(iglob), SFCoutput_pos_glob(1:3,iglob), suffix = TRIM(SFC_tout_char))
       end do
+      call ugvtk_batch_end('SFC'//TRIM(SFC_tout_char))
 
     end do
 
@@ -922,9 +975,7 @@ CONTAINS
     real(dp),allocatable,dimension(:,:,:) :: nH, TK, vx, vy, vz, Zmetal, yHI, yH2, yHII, yHeI, yHeII, yHeIII
     real(sp),allocatable,dimension(:,:,:) :: tmp_sp !single precision (to reduce file size)
 
-    integer,allocatable,dimension(:,:,:) :: ug_cell_index !active cell index
     integer,allocatable,dimension(:,:,:) :: ug_cell_level !active cell level (highest level but not larger than ilevel)
-    integer,allocatable,dimension(:,:,:) :: ug_cell_cpu !active cell cpu
     real(dp),allocatable,dimension(:,:,:,:) :: ug_ufront !output variable
     real(dp),allocatable,dimension(:,:,:,:) :: ug_Np     !photon density [cm-3]
     real(dp),allocatable,dimension(:,:,:) :: ug_phi     !graviational potential
@@ -932,10 +983,6 @@ CONTAINS
 
 
     real(dp),dimension(nvector,ndim)::pos
-    real(dp),allocatable,dimension(:,:,:,:):: pts !sampling points
-    integer,allocatable,dimension(:,:,:,:):: ipts !sampling points in integer
-    integer,allocatable,dimension(:,:,:):: iok  !1 for ug cells mapped to active cells
-    integer,dimension(nvector):: ind_ok  !active cell index of ug cells
 
     real(dp) :: xx(1:ndim), xc(1:ndim), dx
     real(dp) :: bscale, dx_ug, xmin_ug, ymin_ug, zmin_ug, xmax_ug, ymax_ug, zmax_ug
@@ -965,6 +1012,12 @@ CONTAINS
 
 
     integer,dimension(1:3) :: error_ijk !index at which counting error happens
+
+    ! TO ADDED 2026-11-21: points claimed by this rank and the gather on rank 1
+    integer :: npt, nvt, nmy, nmy_max, iv, ind_cell1, ntot_claim, nclaim_dup, nclaim_miss
+    integer,allocatable,dimension(:) :: my_ind, tmp_ind, all_ind, cnt, dsp, cntv, dspv
+    real(dp),allocatable,dimension(:,:) :: my_val, tmp_val, all_val
+    real(kind=8) :: t_ug0, t_ug1, t_ug2, t_ug3, t_ugp
 
     real(dp) :: xmin_from_cen, ymin_from_cen, zmin_from_cen !
 
@@ -1075,27 +1128,26 @@ CONTAINS
     !-----------------------------------------------------
     ! prepare data
     !-----------------------------------------------------
-    if (.not. is_use_current_ufront) then
-      ! upload higher level data to lower levels
-      do lev=nlevelmax,levelmin, -1   !descending order (for upload)
-        !set_ufront with flag_option = 2
-        ! -> ufront is similar to uold but with upload from higher levels
-        call set_ufront(lev,2)
-      end do
+    ! TO MODIFIED 2026-11-21: ufront is prepared once per output event (the nested files of one star / SFC),
+    ! not once per file; the callers reset ufront_prep_done. Nothing changes between the files of an event.
+    t_ugp = MPI_WTIME()
+    ! TO MODIFIED 2026-11-21 (ks 2f3541a): ks always overwrote the uold-based ufront (option 2) with the unew-based
+    ! one (option 3, in a block marked WARNING). Now one of the two, by the caller (ugvtk_state_uold; ks decides by
+    ! use_current_ufront, which is also .false. for some calls inside star_formation, where uold is primitive).
+    if (.not. ufront_prep_done) then
+      if (ugvtk_state_uold) then
+        ! uold, uploaded from the finer levels
+        do lev=nlevelmax,levelmin, -1   !descending order (for upload)
+          call set_ufront(lev,2)
+        end do
+      else
+        ! unew after the virtual boundary (reverse) communication
+        do lev=nlevelmax,levelmin, -1
+          call set_ufront(lev,3)
+        end do
+      end if
+      ufront_prep_done = .true.
     end if
-
-
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !! WARNING ***  WARNING ***  WARNING ***  WARNING ***  WARNING ***  WARNING *** !!
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1
-    do lev=nlevelmax,levelmin, -1   !descending order (for upload)
-      !set_ufront with flag_option = 2
-      ! -> ufront is similar to uold but with upload from higher levels
-      call set_ufront(lev,3)
-    end do
-!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    !! WARNING ***  WARNING ***  WARNING ***  WARNING ***  WARNING ***  WARNING *** !!
-    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1
 
 
 
@@ -1145,259 +1197,170 @@ CONTAINS
 
 
     !-----------------------------------------------------
-    ! initialization data array
+    ! TO MODIFIED 2026-11-21 (TODO.md 5): map the points to cells and collect the data on rank 1.
+    ! ks: every rank searched every point level by level (owner of the grid and a tree descent for each
+    ! point and level), with four MPI_ALLREDUCE over the whole cube per level, and then all ranks summed
+    ! the full data cubes with MPI_ALLREDUCE. Now: one tree descent per point (to ilevel at most); the rank
+    ! that owns the grid of the cell it reaches claims the point (this is the finest grid <= ilevel that
+    ! contains the point, the same cell as before) and sends only its own points to rank 1 (MPI_GATHERV).
+    ! The big arrays exist on rank 1 only. The values written are the same.
     !-----------------------------------------------------
-    !allocation/initialization
-    allocate(pts(Ni,Nj,Nk,ndim))
-    allocate(ipts(Ni,Nj,Nk,ndim))
-    allocate(iok(Ni,Nj,Nk))
-    allocate(ug_cell_index(Ni,Nj,Nk))
-    allocate(ug_cell_level(Ni,Nj,Nk))
-    allocate(ug_cell_cpu(Ni,Nj,Nk))
-    allocate(ug_ufront(Ni,Nj,Nk,nvar))
-    allocate(nH(Ni,Nj,Nk), TK(Ni,Nj,Nk), vx(Ni,Nj,Nk), vy(Ni,Nj,Nk), vz(Ni,Nj,Nk),&
-      Zmetal(Ni,Nj,Nk), yHI(Ni,Nj,Nk), yH2(Ni,Nj,Nk), yHII(Ni,Nj,Nk),&
-      yHeI(Ni,Nj,Nk), yHeII(Ni,Nj,Nk), yHeIII(Ni,Nj,Nk))
-    allocate(tmp_sp(Ni,Nj,Nk))
-
-    ug_cell_index(:,:,:)=0
-    ug_cell_level(:,:,:)=0
-    ug_cell_cpu(:,:,:)=0
-    ug_ufront(:,:,:,:) = 0d0
-    iok(:,:,:)=0
-
+    t_ug0 = MPI_WTIME()
+    npt = Ni*Nj*Nk
+    nvt = nvar + 1                      ! + level of the cell (rank 1 keeps the finest if a point is claimed twice)
 #ifdef RT
-    if (is_radiation) then
-      allocate(ug_Np(Ni,Nj,Nk,nGroups))   !Wraning: the order of index is different
-      ug_Np(:,:,:,:) = 0d0
-    end if
+    if (is_radiation) nvt = nvt + nGroups
 #endif
+    if (is_phi) nvt = nvt + 1
+    if (is_particle) nvt = nvt + 2
 
-    if (is_phi) then
-      allocate(ug_phi(Ni,Nj,Nk))
-      ug_phi(:,:,:) = 0d0
-    end if
+    nmy = 0
+    nmy_max = 4*nvector
+    allocate(my_ind(nmy_max), my_val(nvt,nmy_max))
 
-    if (is_particle) then
-      allocate(ug_rhoprt(Ni,Nj,Nk,2))
-      ug_rhoprt(:,:,:,:) = 0d0
-    end if
-
-
-    !-----------------------------------------------------
-    ! locally store data
-    !-----------------------------------------------------
-    !assign integer coordinates for uniform grid cells
-    do k = 1, Nk
-      k_ug = k+kmin-1
-      do j = 1, Nj
-        j_ug = j+jmin-1
-        do i = 1, Ni
-          i_ug = i+imin-1
-          !integer cordinates (at ilevel)
-          ipts(i,j,k,1) = i_ug
-          ipts(i,j,k,2) = j_ug
-          ipts(i,j,k,3) = k_ug
-          !print *, "i,j,k,x_ug,y_ug,z_ug: ", i,j,k,x_ug,y_ug,z_ug
-        end do
+    do ind0=1,npt,nvector
+      nloop=MIN(nvector,npt-ind0+1)
+      do ind1 = 1, nloop
+        ind = ind0+ind1-1
+        k=(ind-1)/(Ni*Nj) + 1
+        j=(ind-1-Ni*Nj*(k-1))/Ni + 1
+        i=(ind-1-Ni*(j-1)-Ni*Nj*(k-1)) + 1
+        pos(ind1,1) = (i+imin-1-0.5d0)*dx_ug   !cell centre at ilevel
+        pos(ind1,2) = (j+jmin-1-0.5d0)*dx_ug
+        pos(ind1,3) = (k+kmin-1-0.5d0)*dx_ug
+      end do
+      ! the tree descent first: a rank that does not hold the region stops at a coarse level
+      call get_cell_index(cell_index,cell_levl,pos,ilevel,nloop)
+      do ind1 = 1, nloop
+        lev = cell_levl(ind1)
+        if (lev < levelmin) cycle
+        ! owner of the level-lev grid that contains the point: cpu_map(father(grid)) is myid for the active grids
+        ! and the owner for the virtual ones (virtual_boundaries.f90), so no Hilbert key is needed (ks: get_cpu_of_pos)
+        ind_grid = mod(cell_index(ind1)-ncoarse-1,ngridmax)+1
+        if (cpu_map(father(ind_grid)) /= myid) cycle
+        if (nmy == nmy_max) then
+          nmy_max = 2*nmy_max
+          allocate(tmp_ind(nmy_max), tmp_val(nvt,nmy_max))
+          tmp_ind(1:nmy) = my_ind(1:nmy)
+          tmp_val(:,1:nmy) = my_val(:,1:nmy)
+          call move_alloc(tmp_ind, my_ind)
+          call move_alloc(tmp_val, my_val)
+        end if
+        nmy = nmy + 1
+        my_ind(nmy) = ind0+ind1-1
+        ind_cell1 = cell_index(ind1)
+        ! "+ 0d0": the sum over the ranks (MPI_SUM) used before turned -0 into +0
+        my_val(1:nvar,nmy) = ufront(ind_cell1,1:nvar) + 0d0          !hydro variables
+        iv = nvar
+#ifdef RT
+        if (is_radiation) then
+          do ig=1,nGroups
+            iNp=iGroups(ig)
+            my_val(iv+ig,nmy) = scale_Np * rt_c_fraction * rtuold(ind_cell1,iNp) + 0d0    !photon density (physical)
+          end do
+          iv = iv + nGroups
+        end if
+#endif
+        if (is_phi) then
+          my_val(iv+1,nmy) = phi_sync_for_output(ind_cell1) + 0d0    !graviational potential
+          iv = iv + 1
+        end if
+        if (is_particle) then
+          my_val(iv+1,nmy) = rhoprt(ind_cell1,1) + 0d0          !DM density
+          my_val(iv+2,nmy) = rhoprt(ind_cell1,2) + 0d0          !star density
+          iv = iv + 2
+        end if
+        my_val(nvt,nmy) = dble(lev)
       end do
     end do
-
-
-    !points in lower level
-    ncache=Ni*Nj*Nk
-    do lev = ilevel, levelmin, -1
-      bscale=2**lev/scale_u !number of cells (not grid) per user length unit at lev (TO MODIFIED merge_ks)
-      dx = 1d0/bscale   !cell width at lev
-
-      do ind0=1,ncache,nvector
-        nloop=MIN(nvector,ncache-ind0+1)
-
-        !search for ug cells that have not been mapped to active cells
-        nok=0
-        do ind1 = 1, nloop
-          ind = ind0+ind1-1
-          k=(ind-1)/(Ni*Nj) + 1
-          j=(ind-1-Ni*Nj*(k-1))/Ni + 1
-          i=(ind-1-Ni*(j-1)-Ni*Nj*(k-1)) + 1
-
-          ! print *, "(KS DEBUG) myid,lev =", myid,lev,", i,j,k,iok =", i,j,k,iok(i,j,k)
-
-          if (iok(i,j,k)==0) then
-            nok = nok+1
-            if (lev/=ilevel) ipts(i,j,k,:) = (ipts(i,j,k,:)-1)/2+1   !integer coordinate at one lower level
-            pts(i,j,k,:) = (ipts(i,j,k,:)-0.5d0)*dx               !center of cells at lev
-            !pts(i,j,k,:) = ((ipts(i,j,k,:)-1)/2**(ilevel-lev)+0.5d0)*dx !(define this ipts_lev for readablility; if memory size matters comment out above two lines and use this)
-            pos(nok,1:3)= pts(i,j,k,1:3)
-            ind_ok(nok)= ind
-            ! print *, "(KS DEBUG) nok = ", nok, "ipts = ", ipts(i,j,k,:), ", pts = ", pts(i,j,k,:)
-          end if
-        end do !ind1
-
-        ! do ind1 = 1, nok
-        !    print *, "(KS DEBUG) ind1, ilevel, pos(ind1, :) = ", ind1, ilevel, pos(ind1, :)
-        ! end do
-
-        !get cpu/cell_index/cell_levl for given pos
-        !call cmp_cpumap(pos,cc,nok)              !get cpu (obsolete)
-        !take care of grid poisition when searching for cpu
-        ! do ind1 = 1, nok
-        !    pos1(:) = pos(ind1,:)
-        !    call get_cpu_of_pos(pos1,lev,icpu)
-        !    !if (cc(ind1) /= icpu) print *, "(KS DEBUG) cmp_cpumap and get_cpu_of_pos give different cpus: pos, cc1, cc2", pos1(:), cc(ind1), icpu
-        !    cc(ind1) = icpu
-        ! end do
-
-
-        ! call get_cell_index(cell_index,cell_levl,pos,lev,nok) !get cell_index/cell_levl
-
-        !get active cpu/cell_index for given pos and lev
-        do ind1 = 1, nok
-          pos1(:) = pos(ind1,:)
-          call get_active_cell_index_this_level(pos1,lev,cell_index1)
-          !if (cc(ind1) /= icpu) print *, "(KS DEBUG) cmp_cpumap and get_cpu_of_pos give different cpus: pos, cc1, cc2", pos1(:), cc(ind1), icpu
-
-          if (cell_index1 >= 0)  then !when active grid at this level is found on this cpu
-
-            ind = ind_ok(ind1)
-            k=(ind-1)/(Ni*Nj) + 1
-            j=(ind-1-Ni*Nj*(k-1))/Ni + 1
-            i=(ind-1-Ni*(j-1)-Ni*Nj*(k-1)) + 1
-            iok(i,j,k)=1                           !set unity for active cell
-            ug_cell_index(i,j,k)=cell_index1  !index of active cell
-            ug_cell_level(i,j,k)=lev   !level of active cell
-            ug_cell_cpu(i,j,k)=myid          !cpu of active cell
-          end if
-        end do
-
-
-        ! !loop over ug cells that have not yet mapped to active cells
-        ! do ind1 = 1, nok
-        !   !    !--------------------- KS DEBUG ----------------------!
-        !   !       ind = ind_ok(ind1)
-        !   !       k=(ind-1)/(Ni*Nj) + 1
-        !   !       j=(ind-1-Ni*Nj*(k-1))/Ni + 1
-        !   !       i=(ind-1-Ni*(j-1)-Ni*Nj*(k-1)) + 1
-        !   !    if ((j==Nj/2) .and. (k==Nk/2)) then
-        !   !       print '(2(A,I5),A,3I5,2(A,I5) A,I8)', "(KS DEBUG) myid = ", myid, ", ind1 = ", ind1, ", i,j,k = ", i,j,k,  &
-        !   !            ", cc(ind1) = ", cc(ind1), ", cell_levl(ind1) = ", cell_levl(ind1), ", cell_index(ind1) = ", cell_index(ind1)
-        !   ! end if
-        !   !    !--------------------- KS DEBUG ----------------------!
-
-
-        !    !if (cc(ind1) == myid .and. cell_levl(ind1) == lev) then !if active cell exists at lev
-        !   if (cc(ind1) == myid) then !if active cell exists at lev
-        !     ind = ind_ok(ind1)
-        !     k=(ind-1)/(Ni*Nj) + 1
-        !     j=(ind-1-Ni*Nj*(k-1))/Ni + 1
-        !     i=(ind-1-Ni*(j-1)-Ni*Nj*(k-1)) + 1
-        !     iok(i,j,k)=1                           !set unity for active cell
-        !     ug_cell_index(i,j,k)=cell_index(ind1)  !index of active cell
-        !     !ug_cell_level(i,j,k)=cell_levl(ind1)   !level of active cell
-        !     ug_cell_level(i,j,k)=lev   !level of active cell
-        !     ug_cell_cpu(i,j,k)=cc(ind1)          !cpu of active cell
-
-
-        !     ! !------------------------- KS DEBUG -------------------------!
-        !     ! if ((j==Nj/2) .and. (k==Nk/2)) then
-        !     !    print '(A,I5,A,I5,A,3I5,A,I8,A,I8)', "(KS DEBUG) myid = ", myid, ", ind1 = ", ind1, ", i,j,k = ", i,j,k, &
-        !     !         ", cell_levl(ind1) = ", cell_levl(ind1), ", cell_index(ind1) = ", cell_index(ind1)
-        !     !    print '(A,I5,A,I5,A,3I5,A,1PE16.8)', "(KS DEBUG) myid = ", myid, ", ind1 = ", ind1, ", i,j,k = ", i,j,k, &
-        !     !         ", ufront(cell_index(ind1),1) = ", ufront(cell_index(ind1),1)
-        !     ! end if
-        !     ! !------------------------- KS DEBUG -------------------------!
-        !   end if
-        ! end do !ind1
-      end do !ind0
-
-      !MPI communication
-      !inheritate higher level data by taking MAX
-      call MPI_ALLREDUCE(MPI_IN_PLACE, iok, Ni*Nj*Nk, MPI_INTEGER, MPI_MAX, MPI_COMM_WORLD,info)
-      call MPI_ALLREDUCE(MPI_IN_PLACE, ug_cell_index, Ni*Nj*Nk, MPI_INTEGER, MPI_MAX, MPI_COMM_WORLD,info)
-      call MPI_ALLREDUCE(MPI_IN_PLACE, ug_cell_level, Ni*Nj*Nk, MPI_INTEGER, MPI_MAX, MPI_COMM_WORLD,info)
-      call MPI_ALLREDUCE(MPI_IN_PLACE, ug_cell_cpu, Ni*Nj*Nk, MPI_INTEGER, MPI_MAX, MPI_COMM_WORLD,info)
-    end do !lev
-
+    t_ug1 = MPI_WTIME()
 
     !-----------------------------------------------------
-    ! locally store variables
-    !-----------------------------------------------------
-    do k = 1, Nk
-      do j = 1, Nj
-        do i = 1, Ni
-          if (ug_cell_cpu(i,j,k) /= myid) cycle !store only the data if the corresponding cell belongs to myid
-
-          ! !------------------- KS DEBUG ---------------!
-          ! if ((j==Nj/2) .and. (k==Nk/2) ) then
-          !    ! print '(A,I5,A,3I5,A,3I8,I8)', "(KS DEBUG) myid = ", myid, ", i,j,k = ", i,j,k,&
-          !    !      ", iok, ug_cell_cpu, ug_cell_level, ug_cell_index,  = ", iok(i,j,k), ug_cell_cpu(i,j,k), ug_cell_level(i,j,k), ug_cell_index(i,j,k)
-          !    ind_grid_tmp=mod(ug_cell_index(i,j,k)-ncoarse-1,ngridmax)+1     ! grid to which cell belongs
-          !    ind_tmp = (ug_cell_index(i,j,k)-ncoarse-1)/ngridmax+1           ! cell position in grid
-          !    iz=(ind_tmp-1)/4
-          !    iy=(ind_tmp-1-4*iz)/2
-          !    ix=(ind_tmp-1-2*iy-4*iz)
-          !    xc_tmp(1)=(dble(ix)-0.5D0)*dx_ug
-          !    xc_tmp(2)=(dble(iy)-0.5D0)*dx_ug
-          !    xc_tmp(3)=(dble(iz)-0.5D0)*dx_ug
-          !    print '(A,I5,A,3I5,A,1P3E15.6,A,3I8)', "(KS DEBUG) myid = ", myid, ", i,j,k = ", i,j,k,&
-          !         ", cell_position = ", &
-          !    xg(ind_grid_tmp,1)+xc_tmp(1), xg(ind_grid_tmp,2)+xc_tmp(2), xg(ind_grid_tmp,3)+xc_tmp(3), &
-          !    ", ug_cell_index, ind_grid, ind  = ", ug_cell_index(i,j,k), ind_grid_tmp, ind_tmp
-
-          ! end if
-          ! !------------------- KS DEBUG ---------------!
-
-
-          ug_ufront(i,j,k,1:nvar) = ufront(ug_cell_index(i,j,k),1:nvar)           !hydro variables
-          !ug_ufront(i,j,k,1:nvar) = uold(ug_cell_index(i,j,k),1:nvar)           !hydro variables (KS DEBUG)
-
-          ! if (ug_ufront(i,j,k,1) <= 0) &
-          !      print *, "(KS DEBUG) non-positive density ilevel, i, j, k, u, myid, cell_level, cell_idx", ilevel, i,j,k, ug_ufront(i,j,k,1), myid, ug_cell_level(i,j,k), ug_cell_index(i,j,k)
-
-#ifdef RT
-          if (is_radiation) then
-            do ig=1,nGroups
-              iNp=iGroups(ig)
-              !ug_Np(i,j,k,ig) = scale_Np * rtuold(ug_cell_index(i,j,k),iNp)    !photon density (computed)
-              ! TO MODIFIED (merge_ks): rt_c_fraction is a scalar here (ks: per level, VSLA)
-              ug_Np(i,j,k,ig) = scale_Np * rt_c_fraction * rtuold(ug_cell_index(i,j,k),iNp)    !photon density (physical)
-            end do
-          end if
-#endif
-
-          if (is_phi) then
-            ug_phi(i,j,k) = phi_sync_for_output(ug_cell_index(i,j,k))    !graviational potential
-          end if
-
-          !particle density
-          if (is_particle) then
-            ug_rhoprt(i,j,k,1) = rhoprt(ug_cell_index(i,j,k),1)          !DM density
-            ug_rhoprt(i,j,k,2) = rhoprt(ug_cell_index(i,j,k),2)          !star density
-          end if
-
-        end do !k
-      end do !j
-    end do !i
-
-    !-----------------------------------------------------
-    ! gather local variables with MPI communications
+    ! gather the claimed points on rank 1
     ! warning: myid = 1 in Ramses corresponds to rank = 0 in MPI
     !-----------------------------------------------------
-    call MPI_ALLREDUCE(MPI_IN_PLACE, ug_ufront, Ni*Nj*Nk*nvar, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD,info)
+    if (myid == 1) then
+      allocate(cnt(ncpu), dsp(ncpu), cntv(ncpu), dspv(ncpu))
+    else
+      allocate(cnt(1), dsp(1), cntv(1), dspv(1))
+    end if
+    call MPI_GATHER(nmy, 1, MPI_INTEGER, cnt, 1, MPI_INTEGER, 0, MPI_COMM_WORLD, info)
+    if (myid == 1) then
+      dsp(1) = 0
+      do icpu = 2, ncpu
+        dsp(icpu) = dsp(icpu-1) + cnt(icpu-1)
+      end do
+      ntot_claim = dsp(ncpu) + cnt(ncpu)
+      cntv(:) = cnt(:)*nvt
+      dspv(:) = dsp(:)*nvt
+      allocate(all_ind(max(ntot_claim,1)), all_val(nvt,max(ntot_claim,1)))
+    else
+      allocate(all_ind(1), all_val(1,1))
+    end if
+    call MPI_GATHERV(my_ind, nmy, MPI_INTEGER, all_ind, cnt, dsp, MPI_INTEGER, 0, MPI_COMM_WORLD, info)
+    call MPI_GATHERV(my_val, nmy*nvt, MPI_DOUBLE_PRECISION, all_val, cntv, dspv, MPI_DOUBLE_PRECISION, 0, MPI_COMM_WORLD, info)
+    deallocate(my_ind, my_val)
+    t_ug2 = MPI_WTIME()
 
+    if (myid == 1) then
+      allocate(ug_cell_level(Ni,Nj,Nk))
+      allocate(ug_ufront(Ni,Nj,Nk,nvar))
+      allocate(nH(Ni,Nj,Nk), TK(Ni,Nj,Nk), vx(Ni,Nj,Nk), vy(Ni,Nj,Nk), vz(Ni,Nj,Nk),&
+        Zmetal(Ni,Nj,Nk), yHI(Ni,Nj,Nk), yH2(Ni,Nj,Nk), yHII(Ni,Nj,Nk),&
+        yHeI(Ni,Nj,Nk), yHeII(Ni,Nj,Nk), yHeIII(Ni,Nj,Nk))
+      allocate(tmp_sp(Ni,Nj,Nk))
+      ug_cell_level(:,:,:)=0
+      ug_ufront(:,:,:,:) = 0d0
 #ifdef RT
-    if (is_radiation) then
-      call MPI_ALLREDUCE(MPI_IN_PLACE, ug_Np, Ni*Nj*Nk*nGroups, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD,info)
-    end if
+      if (is_radiation) then
+        allocate(ug_Np(Ni,Nj,Nk,nGroups))   !Wraning: the order of index is different
+        ug_Np(:,:,:,:) = 0d0
+      end if
 #endif
+      if (is_phi) then
+        allocate(ug_phi(Ni,Nj,Nk))
+        ug_phi(:,:,:) = 0d0
+      end if
+      if (is_particle) then
+        allocate(ug_rhoprt(Ni,Nj,Nk,2))
+        ug_rhoprt(:,:,:,:) = 0d0
+      end if
 
-    if (is_phi) then
-      call MPI_ALLREDUCE(MPI_IN_PLACE, ug_phi, Ni*Nj*Nk, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD,info)
+      nclaim_dup = 0
+      do l = 1, ntot_claim
+        ind = all_ind(l)
+        k=(ind-1)/(Ni*Nj) + 1
+        j=(ind-1-Ni*Nj*(k-1))/Ni + 1
+        i=(ind-1-Ni*(j-1)-Ni*Nj*(k-1)) + 1
+        lev = nint(all_val(nvt,l))
+        if (ug_cell_level(i,j,k) /= 0) nclaim_dup = nclaim_dup + 1
+        if (lev <= ug_cell_level(i,j,k)) cycle   !claimed twice: keep the finest level
+        ug_cell_level(i,j,k) = lev
+        ug_ufront(i,j,k,1:nvar) = all_val(1:nvar,l)
+        iv = nvar
+#ifdef RT
+        if (is_radiation) then
+          ug_Np(i,j,k,1:nGroups) = all_val(iv+1:iv+nGroups,l)
+          iv = iv + nGroups
+        end if
+#endif
+        if (is_phi) then
+          ug_phi(i,j,k) = all_val(iv+1,l)
+          iv = iv + 1
+        end if
+        if (is_particle) then
+          ug_rhoprt(i,j,k,1:2) = all_val(iv+1:iv+2,l)
+          iv = iv + 2
+        end if
+      end do
+      nclaim_miss = count(ug_cell_level == 0)
+      if (nclaim_dup > 0 .or. nclaim_miss > 0) then
+        print '(A,I0,A,I0,A,I0,A)', ' (output_uniform_data) WARNING: of ', npt, ' points ', nclaim_miss, &
+          ' were claimed by no rank (written as 0) and ', nclaim_dup, ' by more than one (finest level kept)'
+      end if
     end if
+    deallocate(all_ind, all_val, cnt, dsp, cntv, dspv)
 
-    if (is_particle) then
-      call MPI_ALLREDUCE(MPI_IN_PLACE, ug_rhoprt, Ni*Nj*Nk*2, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD,info)
-    end if
 
     !-----------------------------------------------------
     ! convert data to cgs units
@@ -1813,24 +1776,13 @@ CONTAINS
 1000  continue
     end if
 
-    !deallocation
-    deallocate(pts,ug_ufront)
-    deallocate(nH, TK, vx, vy, vz, Zmetal, yHI, yH2, yHII, yHeI, yHeIII)
-    deallocate(tmp_sp)
-
-#ifdef RT
-    if (is_radiation) then
-      deallocate(ug_Np)
-    end if
-#endif
-
-    if (is_phi) then
-      deallocate(ug_phi)
-    end if
-
-    if (is_particle) then
-      deallocate(ug_rhoprt)
-    end if
+    ! the arrays of rank 1 (ug_*, nH, ...) are allocatable locals and are released on return
+    t_ug3 = MPI_WTIME()
+    ugvtk_time(1) = ugvtk_time(1) + (t_ug0 - t_ugp)
+    ugvtk_time(2) = ugvtk_time(2) + (t_ug1 - t_ug0)
+    ugvtk_time(3) = ugvtk_time(3) + (t_ug2 - t_ug1)
+    ugvtk_time(4) = ugvtk_time(4) + (t_ug3 - t_ug2)
+    ugvtk_nfile = ugvtk_nfile + 1
 
 
   end subroutine output_uniform_data
@@ -1840,6 +1792,36 @@ CONTAINS
   ! with the same skip conditions as the callers' loops (outside l_range, empty level, region larger
   ! than the box). Empty levels are the finest ones, so the range is contiguous.
   !#######################################################################################
+  ! TO ADDED 2026-11-21: one line per output event with the time rank 1 spent in output_uniform_data
+  ! (prepare = ufront and particle density, search = points -> cells, gather = MPI, write = units and file)
+  subroutine ugvtk_batch_begin
+    implicit none
+    ugvtk_in_batch = .true.
+    part_dens_update_done = .false.
+    ufront_prep_done = .false.
+  end subroutine ugvtk_batch_begin
+
+  subroutine ugvtk_batch_end(label)
+    implicit none
+    character(len=*), intent(IN) :: label
+    ugvtk_in_batch = .false.
+    part_dens_update_done = .false.
+    ufront_prep_done = .false.
+    call ugvtk_report_time(label)
+  end subroutine ugvtk_batch_end
+
+  subroutine ugvtk_report_time(prefix)
+    use amr_commons, only: myid
+    implicit none
+    character(len=*), intent(IN) :: prefix
+    if (myid == 1 .and. ugvtk_nfile > 0) then
+      print '(A,A,A,I0,A,4F9.3,A)', ' ugvtk ', TRIM(prefix), ': ', ugvtk_nfile, &
+        ' files; prepare / search / gather / write = ', ugvtk_time(1:4), ' s'
+    end if
+    ugvtk_time(:) = 0d0
+    ugvtk_nfile = 0
+  end subroutine ugvtk_report_time
+
   subroutine ugvtk_set_range(l_range, lmin_set, lmax_set)
     use amr_commons
     use amr_parameters
@@ -1863,20 +1845,25 @@ CONTAINS
   ! write error (the caller has deleted the temporary file).
   !#######################################################################################
   subroutine ugvtk_finish_file(tmpname, finalname, ok)
+    use iso_c_binding, only: c_null_char
     implicit none
     character(len=*), intent(IN) :: tmpname, finalname
     logical, intent(IN) :: ok
     logical :: exist
     integer :: info
+    interface
+      function c_rename(oldname, newname) bind(C, name='rename') result(ierr)
+        use iso_c_binding, only: c_int, c_char
+        character(kind=c_char), dimension(*), intent(IN) :: oldname, newname
+        integer(c_int) :: ierr
+      end function c_rename
+    end interface
     if (.not. ok) then
       print *, '(output_uniform_data) ERROR: writing '//TRIM(tmpname)//' failed (disk full?); file deleted, run continues'
       return
     end if
-#ifdef NOSYSTEM
-    call PXFRENAME(TRIM(tmpname), LEN(TRIM(tmpname)), TRIM(finalname), LEN(TRIM(finalname)), info)
-#else
-    call system('mv -f '//TRIM(tmpname)//' '//TRIM(finalname))
-#endif
+    ! TO MODIFIED 2026-11-21: rename(2) of the C library instead of system('mv -f ...') (a fork per file)
+    info = c_rename(TRIM(tmpname)//c_null_char, TRIM(finalname)//c_null_char)
     inquire(file=finalname, exist=exist)
     if (.not. exist) print *, '(output_uniform_data) ERROR: could not rename '//TRIM(tmpname)//' to '//TRIM(finalname)
   end subroutine ugvtk_finish_file

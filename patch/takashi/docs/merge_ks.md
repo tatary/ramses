@@ -588,8 +588,62 @@ ks のブロックを切り出して変換) で `patch/takashi/output_analysis.f
 - ks の `output_around_SFC` は star_formation 内の呼び出しを前提に nlevelmax の uold を原始変数とみなして保存量に戻して出力し、
   終わったら戻す。`output_around_SFC_at_given_age` (amr_step から、uold は保存量) もこれを通るので、出力の nlevelmax セルは
   `set_ufront(lev,2)` 経由なら誤変換になるが、無条件の `set_ufront(lev,3)` (unew) が後で上書きするので実害は出力には無く、
-  uold には往復の丸め差だけ残る。ks と同じ挙動のまま (TODO)。
+  uold には往復の丸め差だけ残る。→ 2026-11-21 に修正 (下の「ugvtk: 読む状態の修正と高速化」)。
 - 年齢ごとの出力は 1 step に最初に該当した年齢 1 つだけ (`exit`) なので、fine step (試験では ~0.3 Myr) より短い 10 kyr, 100 kyr は飛ぶ (ks と同じ)。
+
+### ugvtk: 読む状態の修正と高速化 (2026-11-21)
+
+**読む状態 (ks 2f3541a の移植 + 残っていた 2 経路)**。ks は uold ベースの ufront (`set_ufront(lev,2)`) を必ず unew ベース
+(`set_ufront(lev,3)`、「WARNING」で囲まれたループ) で上書きしていた。unew が状態として有効なのは level の流体更新から次の
+load balance / refine までなので、`amr_step` の冒頭 (`set_unew` の前) に走る年齢出力は壊れた値を読む。takashi では ks より
+ひどく、DICE の試験 (`idp425_*yr`) は 33 本全部が壊れていた (全セルで v = 2900–3700 km/s、T < 0、nH が 1 桁小さい; 移植時の
+検証は NaN の有無しか見ていなかった)。
+- 修正: module 変数 `ugvtk_state_uold`。`output_analysis_data` (amr_step) の中だけ真で uold (option 2、上位 level からの upload
+  付き) を読み、star_formation の中からの呼び出し (形成時の入れ子) は従来どおり unew (option 3) を読む。`output_around_SFC` の
+  uold の「原始変数 → 保存量」変換は `ugvtk_state_uold` が真のときはしない (amr_step では uold は最初から保存量)。
+- ks 2f3541a は `use_current_ufront` の真偽で分けたが、それだと (1) SFC の年齢出力が `output_around_SFC` の変換で最細 level の
+  速度・温度・金属・電離度を壊し、(2) star_formation の中の `use_current_ufront=.false.` の呼び出し (takashi では
+  `ugvtk_flush_new_stars`) が原始変数の uold を読む。ks 側にも同じ修正を入れた (`Ramses-FG/patch/ks/NOTES_pop2_model_comparison_2026-11-11.md` 末尾)。
+- 結果: 形成時の出力は変更前とバイト一致。年齢出力は変わる (DICE 試験: |v| 数十 km/s、T 1e4–6e5 K で、同じ step の形成時出力と
+  nH が一致)。年齢出力のある step でも uold に丸め差が入らなくなった。
+
+**高速化** (出力の中身は変えない; 形成時の出力で変更前とバイト一致を確認):
+1. ufront の準備 (全 level の `set_ufront`、通信あり) を 1 ファイルごと → 1 イベント (星 / SFC 1 個の入れ子) に 1 回。さらに
+   同じ瞬間に続けて出すループ (`ugvtk_flush_new_stars`、pop3_model 4–6 の形成時、SFC の年齢出力) は `ugvtk_batch_begin/end` で
+   囲み、ufront と粒子密度 (`set_particle_density`) を全イベントで 1 回にした。SFC の形成時の 2 か所はループの中で粒子を
+   作るので 1 個ごとのまま。
+2. 点 → セルの対応: ks は全ランクが level ごとに全点について「担当ランクの計算 (Hilbert キー)」と「木の探索」をし、level ごとに
+   立方体全体の `MPI_ALLREDUCE` を 4 回していた。今は 1 点につき木を 1 回たどり (ilevel まで)、着いたセルの格子の担当
+   (`cpu_map(father(igrid))`) が自分なら自分の点とする。通信なし。
+3. データの収集: 全ランクが立方体全体 (nvar + 光子 + phi + 粒子密度) を `MPI_ALLREDUCE` で足していたのを、自分の点だけを rank 1 に
+   `MPI_GATHERV` で送る形にした。大きな配列は rank 1 だけが確保する。rank 1 は「どのランクも名乗らなかった点 / 複数が名乗った点」を
+   数え、あれば WARNING を出す (試験では 0)。
+4. ファイルの rename を `system('mv -f ...')` (1 ファイルごとに fork) から C ライブラリの `rename` に。
+- rank 1 が 1 イベント (バッチ) ごとに ` ugvtk <名前>: N files; prepare / search / gather / write = ... s` を標準出力に出す。
+- 手元の時間: DICE 4 ランク、Pop III 846 個の形成時出力 (2538 ファイル、`NI_ugvtk=4`) で star formation の行が 73.9 → 1.2 s
+  (ラン全体 152 → 81 s)。星 1 個の年齢出力 (`NI_ugvtk=32`、36 ファイル) は 1.90 → 1.4 s (残りは 1 回分の準備)。ks zoom
+  (12 ランク、`NI_ugvtk=64`、11 ファイル) は 1 イベント 1.7 s (準備 0.30 / 探索 0.27 / 通信 0.26 / 書き出し 0.83; 変更前は未計測)。
+  ランク数に比例する無駄を削ったので本番規模で効くはずだが、クラスターでは未計測。
+- 検証 (変更前のバイナリとの比較、vtk + hydro/part/grav/rt/amr): DICE Pop III 846 個 2578 ファイル一致、同 `two_tier_balance=.true.`
+  2578 一致 (この設定では細かい側の格子が 0 で 2 段分割の検証としては弱い)、DICE 星 1 個 `NI_ugvtk=16/32` は高速化だけの版で 116 一致
+  (修正後は年齢出力 33 本だけ変わる)、ks zoom 71 一致。
+
+### ugvtk: ファイル名の番号を粒子の ID に (2026-11-21)
+
+- 変更前 (ks と同じ): `SFC<n>` / `Pop3_<n>` の `<n>` は「その step に出力する SFC / Pop III の中での通し番号」。step ごとに 1 から
+  振り直すので、形成時の `SFC1.<nstep>` と後の `SFC1_100kyr.<nstep>` が同じ SFC とは限らず、step 数から逆算するしかなかった。
+- 変更後: `<n>` を粒子の `idp` にした。`SFC<idp>.<nstep>.<level>.vtk` (形成時; SFC と `pop2_SFC_marker` の印)、
+  `SFC<idp>_100kyr.<nstep>.<level>.vtk` (年齢出力)、`Pop3_<idp>.<nstep>.<level>.vtk`。`<nstep>` (fine step の通し番号) は残す
+  (restart 時の `orphan_<nstep>/` 退避が使う)。`idp<idp_ugvtk>…` は元から ID。桁は `I0` (幅制限なし)。
+- 実装: SFC / 印の形成時は出力の直後に `nstar_tot+1` で粒子を作るので `output_around_SFC(nstar_tot+1, …)`。年齢出力は位置と一緒に
+  `idp` を集める。Pop III は pop3_model 1–3 が `ugvtk_flush_new_stars` の控え (`note_idp`)、4–6 は `add_pop3_particles` の前に出すので
+  同じ数え方 (`pop3_n_multi`: 単独 1、連星 2、多重 n) で先に ID を求める。連星・多重星は最初 (最も重い) の星の ID。
+  星ができなかった候補 (質量 0: 流入殻が箱の外、多重星の最小質量未満) は ID が無いので出さない (変更前は
+  `p3_output_minmass<0` のときだけ `Pop3_<n>` として出ていた)。
+- ks 側 (Ramses-FG) は変えていない (FG 系のランはこちらのコードでやり直す予定)。ks の出力と比べるときは名前が合わない。
+- 検証 (DICE 4 ランク、変更前のバイナリと比較): Pop III 846 個 (pop3_model 1) は 2538 本の中身が同じで ID は `New star added` の
+  ログと一致; pop3_model 6 (候補 90、うち星ができた 84 系、2–5 重) はファイルの ID = 各系の 1 番目の星の ID で、84 系 252 本の中身は変更前の対応するファイルと同じ; SFC (`pop2_model=4`、
+  `SFC_output_at_given_age`、8 step) は `SFC1 → SFC1_100kyr → SFC1_1Myr → …` と同じ ID で追える; ks zoom (12 ランク) は 11 本同じ。
 
 ### 検証 (4 ランク、sink 試験の namelist `tests/dice_rt_fg.nml` 相当、levelmin 6 / levelmax 8)
 
@@ -597,7 +651,7 @@ ks のブロックを切り出して変換) で `patch/takashi/output_analysis.f
 |---|---|
 | `ugvtk=.false.` (既定、18 step) | 完走、変更前 (fs2) と 112 ファイル bit 一致 |
 | `ugvtk=.true., idp_ugvtk=425, NI_ugvtk=16, p3_output_minmass=1d9` (18 step) | 完走 (186 s、off と同じ)、`ugvtk/idp425.<nstep>.{6,7,8}.vtk` (形成時) + `idp425_1kyr/_1Myr/…/_10Myr` 各 3 本 = 36 本 13 MB; 寸法 16³、原点 = 星の位置 − 8Δx、22 フィールド NaN なし (HII 領域で yHII→1、光子密度は星の周りで非零、phi_grav は phi_sync 経由、rhostar=0 は FAM_STAR 無し)。hydro/part/grav/rt の出力は off と bit 一致 (出力が物理を変えない) |
-| `ugvtk=.true., NI_ugvtk=4, p3_output_minmass=-1` (7 step、Pop III 846 個の形成時出力) | 完走 (158 s)、`Pop3_<k>` 846 個 × 3 level = 2538 本 20 MB、`.tmp` 残りなし |
+| `ugvtk=.true., NI_ugvtk=4, p3_output_minmass=-1` (7 step、Pop III 846 個の形成時出力) | 完走 (158 s)、`Pop3_<k>` (現在は `Pop3_<idp>`) 846 個 × 3 level = 2538 本 20 MB、`.tmp` 残りなし |
 | RT=0 ビルド | コンパイル OK (放射場なし、電離度は中性) |
 
 ## ks との比較ラン (2026-11-14): `namelist/ks/l5_14_test.nml`
