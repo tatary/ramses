@@ -1045,7 +1045,7 @@ subroutine create_output_dirs(filedir)
   character(LEN=80), intent(in):: filedir
 #ifdef NOSYSTEM
   character(LEN=80)::filedirini
-  integer :: info_sys
+  integer :: info_sys, islash
 #else
   character(LEN=80)::filecmd
   integer :: ierr
@@ -1058,8 +1058,14 @@ subroutine create_output_dirs(filedir)
   if (.not.withoutmkdir) then
     if (myid==1) then
 #ifdef NOSYSTEM
-      filedirini = filedir(1:13)
-      call PXFMKDIR(TRIM(filedirini),LEN(TRIM(filedirini)),O'755',info_sys)
+      ! parent of a two-level path (output_00001/group_001/): up to the first '/'.
+      ! (Upstream took filedir(1:13), which made an empty output_restar/ for
+      ! output_restart.tmp/.)
+      islash = index(filedir,'/')
+      if (islash>0 .and. islash<len_trim(filedir)) then
+        filedirini = filedir(1:islash)
+        call PXFMKDIR(TRIM(filedirini),LEN(TRIM(filedirini)),O'755',info_sys)
+      end if
       call PXFMKDIR(TRIM(filedir),LEN(TRIM(filedir)),O'755',info_sys)
 #else
       filecmd='mkdir -p '//TRIM(filedir)
