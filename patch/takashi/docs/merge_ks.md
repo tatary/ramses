@@ -796,3 +796,53 @@ R 型の過渡期にどれだけ効くか (セルの tau は本番のほうが�
   落ちる (`EmptyDataError`)、ks の出力は `hydro_file_descriptor.txt` が実態と違うので `yt.load(..., fields=[...])` で変数名を与える。
   ks は restart ファイルと namelist の `noutput` の一致を要求する (途中で `aout` を足すときは個数を保つ)。
 
+
+## get_27_neighbors: 低い側の隣を 1 セル飛ばしていたバグ (2026-11-22、Ramses-FG 56e45b5 から)
+
+- `star_formation.f90` の `get_27_neighbors` (1 セル版) と `get_27_neighbors_grid` (grid ベクトル版) は、対象が隣の grid にある
+  ときの子セル番号を `mod` + 「負の補正」で作っていた。`mod(-1,2) = -1` に対して補正が +1 (+2, +4) しか足さないので、
+  -1 の位置が子番号 0、つまり **-1 dx ではなく -2 dx のセル**になっていた。grid 内で ix (iy, iz) = 0 のセルでは、27 セルの箱が
+  低い側の隣接セルを含まず、その 1 つ先を含んでいた (8 個の子セルのうち 3 方向とも正しいのは (1,1,1) だけ)。
+- 修正: `child_pos = 1 + modulo(target_i,2) + 2*modulo(target_j,2) + 4*modulo(target_k,2)` (補正の 3 行は削除)。両方のルーチン。
+- **影響するのは FG だけではない**: 本番の DICE (`sf_model=6`) の速度分散 `sigma2` は `get_27_neighbors_grid` の箱で作る
+  (alpha_vir と Mach 数)。sf_fg では密度の極大の判定と `loc_vir` の速度分散・箱の質量 (Pop III / Pop II / SFC 候補 / marker)。
+  この修正を含むバイナリは、これまでの本番ラン (`hu_lv15` など) と星形成の条件が変わる。量的な影響は未評価。
+- 確認 (DICE 4 ランク、`sf_model=6`、最細 level): 27 セルの中心位置を中心セルからのずれ (dx 単位) で出す一時的な出力で、
+  修正前は ind=1 (0,0,0) のセルで低い側が x, y, z とも -2.00、ind=8 (1,1,1) は ±1.00; 修正後はどちらも -1 / 0 / +1 が 9 個ずつ。
+  手元の短いテスト (`sf_model=6` 6 step、FG の SFC 8 step) は完走し、出力は修正前と bit 一致 (どちらも箱の値で結果が変わる
+  星形成が起きない設定で、効果は見えていない)。
+
+### div v の符号 (局所 Pop II、pop2_model 2 / 3; 2026-11-22、同じ commit から)
+
+- `star_formation_fg.f90` の div v は公開版の block を写したもので、ul を隣 2、ur を隣 1 から取っていた。`getnbor` は
+  1,3,5 = 左 (-x,-y,-z)、2,4,6 = 右 (`getnborcells` の `ggg(ind,1)`: ind=1 (ix=0) の方向 1 は左隣の grid)。公開版は
+  `(ur-ul)**2` しか使わないので害が無いが、こちらは `divv` の符号を使うので **-div v** になり、`if(divv>0) ok=.false.` が
+  収束しているセルを落とし、発散しているセルを通していた。
+- 修正: ul を隣 1 / 3 / 5、ur を隣 2 / 4 / 6 から取る。`star_formation.f90` (公開版の経路、`divv**2` だけ使う) は触っていない。
+- 影響: pop2_model 2 / 3 の局所 Pop II だけ。SFC モデル (pop2_model 4 / 5)、SFC marker (div v の前の条件で決める)、Pop III は
+  div v を使わない。
+- 確認 (`tests/dice_rt_fg.nml`、pop2_model=2、4 ランク 6 step): 新しい星が 2695 → 280 個。回転円盤の初期条件で発散している
+  セルのほうが多く、修正前はそちらで星ができていた。崩壊する塊での星形成は手元では試していない。
+
+### 変換されていない隣セルと、27 セルの箱から取る div v (2026-11-22、Ramses-FG 453a780 から)
+
+- ks の問題は 2 種類: (a) 他ランクの ghost grid、(b) 親セル (隣の grid が無いときに返る 1 level 粗いセル)。どちらも `uold(2:4)` が
+  運動量のままで、速度として足されていた。**takashi では (a) は元から無い**: `star_formation` / `star_formation_fg` は level の
+  virtual grid も速度に変換している (`sf - ghostzones`)。残っていたのは (b) と、物理境界の grid (`cpu_map = 0`)。
+- 実装: `get_27_neighbors(ind_cell, neighbors, is_prim, ilevel)` と `get_27_neighbors_grid(…, neighbors, is_prim, ilevel)` が
+  `is_prim` を返す。同じ grid 内は真、隣の grid のセルは `cpu_map(親セル) > 0` (自ランクと ghost; ks は自ランクだけ真)、親セルは偽。
+  偽のセルは密度で割って速度にする。使う所: `star_formation.f90` の sf_model 6 / 7 の `sigma2`、`star_formation_fg.f90` の
+  Pop III と Pop II / SFC の箱 (2 か所)、div v。
+- div v (pop2_model 2 / 3): 6 面の隣を `getnbor` ではなく `get_27_neighbors` の箱 (13,15 / 11,17 / 5,23) から取る。隣の grid が無い面は、
+  `getnbor` だと自セル (その面の速度差 0)、箱だと親セル (1 dx 離れているものとして使う)。それまでの条件を通ったセルでだけ計算する。
+  `getnbor` は pop2_model 3 のポテンシャル極小の判定用に残る。
+- 確認 (DICE 4 ランク、levelmin 6 / levelmax 8):
+  - 通常の設定では反映前と bit 一致 (`sf_model=6` 6 step、`pop2_model=2` 6 step で星 280 個、SFC 8 step)。
+  - 理由: `get_27_neighbors_grid` が返す隣のうち親セルは 1.8% (109264 / 6127056) あるが、密度の条件を通るセル (n_star=1e-5 でも
+    112054 個) の箱には 1 個も入らない。質量で細分化する DICE では、level の端のセルは低密度で、星形成の候補は level の内側にある。
+    **本番の DICE でこの修正が効く場面はほぼ無い** (効くのは同じ日の `modulo` の修正のほう)。
+  - 経路の確認: `n_star=1e-9` にして全セルを評価させると、親セルを含む箱が 233136 個 (level 6 / 7 / 8)。速度分散は修正前の
+    0.25–1.00 倍 (幾何平均 0.72)。修正前は親セルの運動量 (密度 ≪ 1 なのでほぼ 0) を速度として足し、箱の平均速度との差で
+    分散を水増ししていた。
+  - FG の zoom (細分化が密度の峰を追う設定) での効果は未確認。
+

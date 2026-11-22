@@ -126,6 +126,9 @@ subroutine star_formation_fg(ilevel)
   integer :: ncell
   integer ,dimension(1:nvector,0:twondim)::ind_nbor
   integer ,dimension(threetondim)::ind_nborcube
+  logical ,dimension(threetondim)::nbor_prim   ! TO ADDED 2026-11-22: neighbour holds velocities (see get_27_neighbors)
+  real(dp),dimension(1:3)::vnb                 ! TO ADDED 2026-11-22: velocity of a neighbour
+  integer ::jl,jr,idim                         ! TO ADDED 2026-11-22: left / right face neighbours in the 27 list, direction
 
   !for checking potential local minimum
   real(dp)::phi1,phi2,phi3,phi4,phi5,phi6,phimin_nbor
@@ -841,7 +844,7 @@ subroutine star_formation_fg(ilevel)
           cI2 = uold(ind_cell(i),5)*(gamma-1.0) !等温音速 (!上の方ですでにuold(ind_cell(i),1)で割り算されているので注意)
           ncell = 1 ! we just want the neighbors of the current cell
           ind_cell2(1) = ind_cell(i)
-          call get_27_neighbors(ind_cell2, ind_nborcube, ilevel)
+          call get_27_neighbors(ind_cell2, ind_nborcube, nbor_prim, ilevel)
           vx = 0d0; vy = 0d0; vz = 0d0;
           vx2 = 0d0; vy2 = 0d0; vz2 = 0d0;
           m_in_cube = 0d0
@@ -850,12 +853,20 @@ subroutine star_formation_fg(ilevel)
           do j = 1, 27
             d1 = uold(ind_nborcube(j),1)
             dmax_nbor = max(dmax_nbor, d1)
-            vx = vx + d1*uold(ind_nborcube(j),2)*vol_loc
-            vy = vy + d1*uold(ind_nborcube(j),3)*vol_loc
-            vz = vz + d1*uold(ind_nborcube(j),4)*vol_loc
-            vx2 = vx2 + d1*vol_loc*(uold(ind_nborcube(j),2))**2
-            vy2 = vy2 + d1*vol_loc*(uold(ind_nborcube(j),3))**2
-            vz2 = vz2 + d1*vol_loc*(uold(ind_nborcube(j),4))**2
+            ! TO MODIFIED 2026-11-22 (Ramses-FG 453a780): velocity of the neighbour. uold holds velocities in the
+            ! level-ilevel cells converted above (active and virtual grids); a father cell (coarser level) still
+            ! holds the momentum, which was summed as if it were a velocity.
+            if (nbor_prim(j)) then
+              vnb(1:3) = uold(ind_nborcube(j),2:4)
+            else
+              vnb(1:3) = uold(ind_nborcube(j),2:4)/d1
+            end if
+            vx = vx + d1*vnb(1)*vol_loc
+            vy = vy + d1*vnb(2)*vol_loc
+            vz = vz + d1*vnb(3)*vol_loc
+            vx2 = vx2 + d1*vol_loc*vnb(1)**2
+            vy2 = vy2 + d1*vol_loc*vnb(2)**2
+            vz2 = vz2 + d1*vol_loc*vnb(3)**2
             m_in_cube = m_in_cube + d1*vol_loc
           end do
 
@@ -1059,22 +1070,33 @@ subroutine star_formation_fg(ilevel)
         if (pop2_model == 2 .or. pop2_model == 3) then
           ncell = 1 ! we just want the neighbors of that cell
           ind_cell2(1) = ind_cell(i)
-          call getnbor(ind_cell2,ind_nbor,ncell,ilevel)
-          d1           = uold(ind_nbor(1,1),1) ; d2 = uold(ind_nbor(1,2),1) ; d3 = uold(ind_nbor(1,3),1)
-          d4           = uold(ind_nbor(1,4),1) ; d5 = uold(ind_nbor(1,5),1) ; d6 = uold(ind_nbor(1,6),1)
+          if (pop2_model == 3) call getnbor(ind_cell2,ind_nbor,ncell,ilevel)   ! for the potential minimum below
           divv = 0d0
           !--------------------
           ! Divergence terms
           !--------------------
-          ul        = (d2*uold(ind_nbor(1,2),2) + d*uold(ind_cell(i),2))/(d2+d)
-          ur        = (d1*uold(ind_nbor(1,1),2) + d*uold(ind_cell(i),2))/(d1+d)
-          divv      = divv + (ur-ul)
-          ul        = (d4*uold(ind_nbor(1,4),3) + d*uold(ind_cell(i),3))/(d4+d)
-          ur        = (d3*uold(ind_nbor(1,3),3) + d*uold(ind_cell(i),3))/(d3+d)
-          divv      = divv + (ur-ul)
-          ul        = (d6*uold(ind_nbor(1,6),4) + d*uold(ind_cell(i),4))/(d6+d)
-          ur        = (d5*uold(ind_nbor(1,5),4) + d*uold(ind_cell(i),4))/(d5+d)
-          divv      = divv + (ur-ul)
+          ! TO MODIFIED 2026-11-22 (from Ramses-FG 56e45b5 and 453a780):
+          ! (1) Sign. The block copied from the public version took "ul" from the right neighbour and "ur" from
+          !     the left one (there only (ur-ul)**2 is used), so divv was -div v and the criterion below rejected
+          !     the CONVERGING cells. Now left = -x,-y,-z.
+          ! (2) The six face neighbours are taken from get_27_neighbors instead of getnbor. Where the neighbouring
+          !     grid does not exist getnbor returns the cell itself (zero velocity difference on that side);
+          !     get_27_neighbors returns the father cell (its value is used as if it sat one dx away), whose
+          !     uold is the momentum: divided by the density (nbor_prim).
+          ! Evaluated only for cells that passed the conditions so far (divv is used for nothing else).
+          ! Index in the 27 list: 1 + (i+1) + 3*(j+1) + 9*(k+1); -x,+x = 13,15; -y,+y = 11,17; -z,+z = 5,23.
+          if (ok(i)) then
+            call get_27_neighbors(ind_cell2, ind_nborcube, nbor_prim, ilevel)
+            do idim = 1, 3
+              jl = 14 - 3**(idim-1); jr = 14 + 3**(idim-1)
+              d1 = uold(ind_nborcube(jl),1); d2 = uold(ind_nborcube(jr),1)
+              ul = uold(ind_nborcube(jl),1+idim); if (.not. nbor_prim(jl)) ul = ul/d1
+              ur = uold(ind_nborcube(jr),1+idim); if (.not. nbor_prim(jr)) ur = ur/d2
+              ul = (d1*ul + d*uold(ind_cell(i),1+idim))/(d1+d)
+              ur = (d2*ur + d*uold(ind_cell(i),1+idim))/(d2+d)
+              divv = divv + (ur-ul)
+            end do
+          end if
           ! Velocity vector divergence
           divv      = divv/dx_loc
           !-----------------------------------------------------------------------------------
@@ -1107,7 +1129,7 @@ subroutine star_formation_fg(ilevel)
           cI2 = uold(ind_cell(i),5)*(gamma-1.0) !等温音速 (!上の方ですでにuold(ind_cell(i),1)で割り算されているので注意)
           ncell = 1 ! we just want the neighbors of the current cell
           ind_cell2(1) = ind_cell(i)
-          call get_27_neighbors(ind_cell2, ind_nborcube, ilevel)
+          call get_27_neighbors(ind_cell2, ind_nborcube, nbor_prim, ilevel)
           vx = 0d0; vy = 0d0; vz = 0d0;
           vx2 = 0d0; vy2 = 0d0; vz2 = 0d0;
           m_in_cube = 0d0
@@ -1116,12 +1138,20 @@ subroutine star_formation_fg(ilevel)
           do j = 1, 27
             d1 = uold(ind_nborcube(j),1)
             dmax_nbor = max(dmax_nbor, d1)
-            vx = vx + d1*uold(ind_nborcube(j),2)*vol_loc
-            vy = vy + d1*uold(ind_nborcube(j),3)*vol_loc
-            vz = vz + d1*uold(ind_nborcube(j),4)*vol_loc
-            vx2 = vx2 + d1*vol_loc*(uold(ind_nborcube(j),2))**2
-            vy2 = vy2 + d1*vol_loc*(uold(ind_nborcube(j),3))**2
-            vz2 = vz2 + d1*vol_loc*(uold(ind_nborcube(j),4))**2
+            ! TO MODIFIED 2026-11-22 (Ramses-FG 453a780): velocity of the neighbour. uold holds velocities in the
+            ! level-ilevel cells converted above (active and virtual grids); a father cell (coarser level) still
+            ! holds the momentum, which was summed as if it were a velocity.
+            if (nbor_prim(j)) then
+              vnb(1:3) = uold(ind_nborcube(j),2:4)
+            else
+              vnb(1:3) = uold(ind_nborcube(j),2:4)/d1
+            end if
+            vx = vx + d1*vnb(1)*vol_loc
+            vy = vy + d1*vnb(2)*vol_loc
+            vz = vz + d1*vnb(3)*vol_loc
+            vx2 = vx2 + d1*vol_loc*vnb(1)**2
+            vy2 = vy2 + d1*vol_loc*vnb(2)**2
+            vz2 = vz2 + d1*vol_loc*vnb(3)**2
             m_in_cube = m_in_cube + d1*vol_loc
           end do
 

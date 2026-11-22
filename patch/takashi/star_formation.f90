@@ -59,6 +59,10 @@ subroutine star_formation(ilevel)
   integer ,dimension(1:nvector,0:twondim)::ind_nbor
   integer ,dimension(threetondim)::ind_nborcube
   integer ,dimension(1:nvector,1:threetondim),save::nborcube
+  ! TO ADDED 2026-11-22 (Ramses-FG 453a780): neighbour holds velocities (see get_27_neighbors); velocity of a neighbour
+  logical ,dimension(threetondim)::nbor_prim
+  logical ,dimension(1:nvector,1:threetondim)::nborcube_prim
+  real(dp),dimension(1:3)::vnb
   logical ,dimension(1:nvector),save::ok,ok_new=.true.
   integer ,dimension(1:ncpu)::ntot_star_cpu,ntot_star_all
   character(LEN=80)::filename,filedir,fileloc,filedirini
@@ -275,7 +279,7 @@ subroutine star_formation(ilevel)
 #ifdef SOLVERmhd
 !$omp & private(A,B,C,beta,emag,fbeta) &
 #endif
-!$omp & private(ind_grid,ind_cell,ind_cell2,ok,sfr_ff,nborcube,ind_nborcube,ind_nbor)
+!$omp & private(ind_grid,ind_cell,ind_cell2,ok,sfr_ff,nborcube,ind_nborcube,ind_nbor,nbor_prim,nborcube_prim,vnb)
   do igrid=1,ncache,nvector
     ngrid=MIN(nvector,ncache-igrid+1)
     do i=1,ngrid
@@ -301,7 +305,7 @@ subroutine star_formation(ilevel)
         do i=1,ngrid
           if(ok(i) .and. uold(ind_cell(i),1)<=d0)ok(i)=.false.
         end do
-        if(any(ok(1:ngrid)))call get_27_neighbors_grid(ind_grid,ngrid,ind,nborcube,ilevel)
+        if(any(ok(1:ngrid)))call get_27_neighbors_grid(ind_grid,ngrid,ind,nborcube,nborcube_prim,ilevel)
       endif
       if(sf_virial .or. (sf_model .gt. 5))then
         do i=1,ngrid
@@ -358,18 +362,28 @@ subroutine star_formation(ilevel)
               ! covers the region when a same-level neighbor does not exist,
               ! instead of falling back to the central cell itself.
               if (sf_virial) then
-                call get_27_neighbors(ind_cell2,ind_nborcube,ilevel)
+                call get_27_neighbors(ind_cell2,ind_nborcube,nbor_prim,ilevel)
               else
                 ind_nborcube(1:threetondim) = nborcube(i,1:threetondim)
+                nbor_prim(1:threetondim) = nborcube_prim(i,1:threetondim)
               endif
               do j=1,threetondim
                 d1  = uold(ind_nborcube(j),1)
-                vx  = vx  + d1*uold(ind_nborcube(j),2)
-                vy  = vy  + d1*uold(ind_nborcube(j),3)
-                vz  = vz  + d1*uold(ind_nborcube(j),4)
-                vx2 = vx2 + d1*uold(ind_nborcube(j),2)**2
-                vy2 = vy2 + d1*uold(ind_nborcube(j),3)**2
-                vz2 = vz2 + d1*uold(ind_nborcube(j),4)**2
+                ! TO MODIFIED 2026-11-22: uold holds velocities only in the level-ilevel cells this routine
+                ! converted (active grids and the virtual grids of the level); a father cell (coarser level,
+                ! returned where the neighbouring grid does not exist) still holds the momentum, which was
+                ! summed as if it were a velocity.
+                if (nbor_prim(j)) then
+                  vnb(1:3) = uold(ind_nborcube(j),2:4)
+                else
+                  vnb(1:3) = uold(ind_nborcube(j),2:4)/d1
+                end if
+                vx  = vx  + d1*vnb(1)
+                vy  = vy  + d1*vnb(2)
+                vz  = vz  + d1*vnb(3)
+                vx2 = vx2 + d1*vnb(1)**2
+                vy2 = vy2 + d1*vnb(2)**2
+                vz2 = vz2 + d1*vnb(3)**2
                 dtot = dtot + d1
               end do
               vx = vx/dtot
@@ -1099,12 +1113,19 @@ end subroutine getnbor
 ! does not exist at the same level, it returns the index of a
 ! lower level cell that covers that region
 !##############################################################
-subroutine get_27_neighbors(ind_cell, neighbors, ilevel)
+subroutine get_27_neighbors(ind_cell, neighbors, is_prim, ilevel)
   use amr_commons
   implicit none
   integer, dimension(1:nvector), intent(IN) ::ind_cell
   integer, intent(IN) :: ilevel
   integer, dimension(threetondim), intent(OUT) :: neighbors
+  ! TO ADDED 2026-11-22 (Ramses-FG 453a780): is_prim(j) = .true. if neighbour j is a level-ilevel cell whose uold(2:4)
+  ! star_formation has converted to velocities: here the active grids AND the virtual grids of other ranks
+  ! (star_formation / star_formation_fg convert those too; ks converts the active grids only, so its is_prim is
+  ! .false. for ghost grids). .false. for father cells (coarser level, used where the neighbouring grid does not
+  ! exist) and for grids of the physical boundary regions (cpu_map = 0): their uold(2:4) is still the momentum,
+  ! so the caller must divide by the density.
+  logical, dimension(threetondim), intent(OUT) :: is_prim
   !logical, dimension(threetondim), intent(OUT) :: is_father
   integer :: ind_grid
   ! Working arrays
@@ -1153,6 +1174,7 @@ subroutine get_27_neighbors(ind_cell, neighbors, ilevel)
           child_pos = target_i + target_j * 2 + target_k * 4 + 1 ! back to (1-8)
           iskip = ncoarse + (child_pos - 1) * ngridmax
           neighbors(idx) = iskip + son(ind_father(1))
+          is_prim(idx) = .true.
         else
           ! neighbor is outside the current grid, need to find the appropriate father cell
           ! determine which father cell contains the target neighbor
@@ -1184,15 +1206,17 @@ subroutine get_27_neighbors(ind_cell, neighbors, ilevel)
 
           if (child_grid > 0) then
             ! get the child position within that father cell's grid
-            child_pos = 1 + mod(target_i, 2) + 2*mod(target_j, 2) + 4*mod(target_k, 2)
-            ! adjust for negative indices
-            if (target_i < 0) child_pos = child_pos - 1 + 2
-            if (target_j < 0) child_pos = child_pos - 2 + 4
-            if (target_k < 0) child_pos = child_pos - 4 + 8
+            ! TO MODIFIED 2026-11-22 (from Ramses-FG 56e45b5): modulo (non-negative) instead of mod + "adjustment".
+            ! mod(-1,2) = -1 in Fortran and the adjustment added only +1 (+2, +4) instead of +2 (+4, +8), so a
+            ! target at -1 got the child index 0 of the neighbouring grid, i.e. the cell at -2 dx instead of -1 dx:
+            ! for cells with ix (iy, iz) = 0 in their grid the 27-cell cube skipped the adjacent low-side cells.
+            child_pos = 1 + modulo(target_i, 2) + 2*modulo(target_j, 2) + 4*modulo(target_k, 2)
             iskip = ncoarse + (child_pos - 1) * ngridmax
             neighbors(idx) = iskip + child_grid
+            is_prim(idx) = (cpu_map(nbors_father_cells(1, father_idx)) > 0)
           else
             neighbors(idx) = nbors_father_cells(1, father_idx) ! use the father cell if no child exists
+            is_prim(idx) = .false.
             !is_father(idx) = .true.
           endif
         endif
@@ -1206,12 +1230,13 @@ end subroutine get_27_neighbors
 ! ind (1..8) of a vector of grids: same neighbour mapping, but
 ! the 3x3x3 father cells are gathered once per grid vector.
 !##############################################################
-subroutine get_27_neighbors_grid(ind_grid, ngrid, ind, neighbors, ilevel)
+subroutine get_27_neighbors_grid(ind_grid, ngrid, ind, neighbors, is_prim, ilevel)
   use amr_commons
   implicit none
   integer, dimension(1:nvector), intent(IN) :: ind_grid
   integer, intent(IN) :: ngrid, ind, ilevel
   integer, dimension(1:nvector,1:threetondim), intent(OUT) :: neighbors
+  logical, dimension(1:nvector,1:threetondim), intent(OUT) :: is_prim   ! as in get_27_neighbors
   integer, dimension(1:nvector) :: ind_father
   integer, dimension(1:nvector,1:threetondim) :: nbors_father_cells
   integer, dimension(1:nvector,1:twotondim) :: nbors_father_grids
@@ -1244,6 +1269,7 @@ subroutine get_27_neighbors_grid(ind_grid, ngrid, ind, neighbors, ilevel)
           iskip = ncoarse + (child_pos - 1) * ngridmax
           do n = 1, ngrid
             neighbors(n, idx) = iskip + ind_grid(n)
+            is_prim(n, idx) = .true.
           end do
         else
           ni = 1; nj = 1; nk = 1
@@ -1254,17 +1280,17 @@ subroutine get_27_neighbors_grid(ind_grid, ngrid, ind, neighbors, ilevel)
           if (target_k < 0) nk = 0
           if (target_k > 1) nk = 2
           father_idx = 1 + ni + 3*nj + 9*nk
-          child_pos = 1 + mod(target_i, 2) + 2*mod(target_j, 2) + 4*mod(target_k, 2)
-          if (target_i < 0) child_pos = child_pos - 1 + 2
-          if (target_j < 0) child_pos = child_pos - 2 + 4
-          if (target_k < 0) child_pos = child_pos - 4 + 8
+          ! TO MODIFIED 2026-11-22: modulo, as in get_27_neighbors (the low-side neighbour was the cell at -2 dx)
+          child_pos = 1 + modulo(target_i, 2) + 2*modulo(target_j, 2) + 4*modulo(target_k, 2)
           iskip = ncoarse + (child_pos - 1) * ngridmax
           do n = 1, ngrid
             child_grid = son(nbors_father_cells(n, father_idx))
             if (child_grid > 0) then
               neighbors(n, idx) = iskip + child_grid
+              is_prim(n, idx) = (cpu_map(nbors_father_cells(n, father_idx)) > 0)
             else
               neighbors(n, idx) = nbors_father_cells(n, father_idx)
+              is_prim(n, idx) = .false.
             endif
           end do
         endif
