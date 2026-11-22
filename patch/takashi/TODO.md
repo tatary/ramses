@@ -1019,6 +1019,20 @@ star formation 3.6、cooling 3.5、rt - godunov 3.0、rt - ghostzones 3.1)。
 - `feedback` が 1.29 → 1.49 (896x4)、0.76 → 0.87 (512x7) と増えた。原因は未調査 (前の行の待ちが移っただけの可能性)。
 - 残っている大きい行 (512x7): hydro - godunov 9.2、poisson 7.6、sf - reduce 6.3、hydro - rev ghostzones 5.3、cooling 3.5、refine - comm 3.0、rt - godunov 3.0。
 
+#### 256x14 (344731、2026-11-22、`hu_lv15_omp14/`、namelist は 344396 と同じ)
+
+32 ノード × 8 task × 14 スレッド (NUMA node 1 つに 1 task)。`output_00051` は Mera で 256 ランクに書き直したもの。
+
+- 壁時計 85.7 / 84.3 / 74.1 s。ただし **level 15 の RT subcycle が 486 / 512 / 394 回** (344396 は 511 / 256 / 256) で、そのままは比べられない。
+- RT に比例する行 (rt - godunov、cooling、rt - ghostzones、rt - rev ghostzones、rt - set unew、rt - upload fine) は step 2 / 3 で
+  25.6 / 19.2 s、subcycle あたり 0.050 / 0.049 s (512x7 は 11.2 s、0.044 s)。256 回に揃えると 12.5 s。
+- RT 以外は 58.3 / 54.5 s (512x7 は 46.5 s)。**RT を揃えた 1 step は 67–71 s 相当で、512x7 (57.9 s) より 16–22% 遅い。**
+- 遅くなった行 (512x7 → 256x14、s/step): poisson 7.6 → 11.5 (level 15 の CG 反復が平均 17.8 → 22.0 回、1 解法 0.022 → 0.029 s)、
+  refine 2.0 → 2.9、refine - comm 3.0 → 4.2、rho 2.5 → 3.6、courant 1.45 → 2.3、hydro - set uold 0.9 → 1.9、hydro upload fine 0.35 → 0.67、
+  flag 1.35 → 1.65、star formation 2.07 → 2.40。逐次のまま残っている部分が 1 ランクの grid 数 (2 倍) に比例して増え、スレッド化した部分は
+  14 スレッドで伸びきらない。速くなったのは feedback (0.87 → 0.50) と hydro - rev ghostzones (5.3 → 4.9) だけ。hydro - godunov は 9.2 → 9.5。
+- **結論: 256x14 は採らない。本番は 512x7。**
+
 ### 2d-5. 512 ランク × 7 スレッド (flat-339876、2026-11-15、変更前のバイナリ、`KMP_BLOCKTIME=0`)
 
 `hu_lv15_test_512/output_00051` (Mera で 512 ランクに書き直し) から 3 step、32 ノード × 16 task × 7 スレッド。比較は 896 × 4 の 339731。
