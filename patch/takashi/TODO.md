@@ -1258,6 +1258,16 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   (総和・min/max の相対差が最大 1e-9、大半は 1e-13 以下、セル数と log のエネルギーは同じ): restart ファイルは倍精度で値をそのまま持つので、
   再開後に演算の順序が変わる (粒子リストの並び、再開直後の load balance など) ためと考えられる。ディスクには書き込み中に最大 2 組 (本番で 24 GB × 2) が載る。
 
+- **2 段の出力ディレクトリ `output_XXXXX/group_YYYYY/` (2026-11-22 に修復)**: `IOGROUPSIZEREP` は namelist の変数ではなく
+  `amr_parameters.f90` の値 (既定 0 = 1 段、本番はこれ)。N にすると N ランクごとに `group_YYYYY/` に分ける。上流では 2019 年の
+  9988a054 (ディレクトリ作成を cpu 1 だけに) 以来、cpu 1 のグループしか作られず壊れていた。直した点: (1) `create_output_dirs` は
+  cpu 1 が上の段を作り、2 段のときは全ランクが自分のグループを作る (NOSYSTEM の `filedir(1:13)` 決め打ちもやめた: 空の
+  `output_restar/` ができていた原因)。(2) `read_params` (両方のコピー) の restart 用 info の存在確認が上の段しか見ていなかったので
+  `group_00001/` を見る。確認 (gfortran、`IOGROUPSIZEREP=2` にしたビルド、DICE RT 4 ランク): 書き出しが 1 段のランと bit 一致 (24 ファイル)、
+  `output_restart/group_*/` から `nrestart=-1` で再開した結果が、同じ dump を 1 段に並べ直して再開した結果と bit 一致 (44 ファイル)、
+  `nrestart=2` も同様 (24 ファイル)。既定 (1 段) は変更前と bit 一致。**未確認**: Intel (NOSYSTEM、`PXFMKDIR`) 側、sink と ugvtk を
+  使うランの 2 段出力、Mera.jl / yt が 2 段の output を読めるか。
+
 - **並列度を変えた restart (2026-10-29 確認)**: RAMSES 自身は書いたときと同じ ncpu でしか restart できないが、
   Mera.jl (v1.10) の `repartition` が output を別の ncpu 用に書き直せる。手元の 8 ランク output_00002 を
   4 ランクに書き直し、`compareramses` で octree・hydro/grav/rt の値・粒子 (id, x, v) が完全一致、

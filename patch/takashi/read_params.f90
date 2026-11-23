@@ -11,6 +11,7 @@ subroutine read_params
   !--------------------------------------------------
   integer::i,narg,levelmax
   character(LEN=80)::infile, info_file
+  character(LEN=16)::grpdir
   character(LEN=80)::cmdarg
   character(LEN=5)::nchar
   integer(kind=8)::ngridtot=0
@@ -265,16 +266,22 @@ subroutine read_params
 
   if (myid==1 .and. nrestart .gt. 0) then
     call title(nrestart,nchar)
-    info_file='output_'//TRIM(nchar)//'/info_'//TRIM(nchar)//'.txt'
+    ! with IOGROUPSIZEREP>0 the header files are in the group directory of cpu 1
+    ! (upstream looked in the top directory only, so such a set was never found)
+    grpdir='/'
+    if(IOGROUPSIZEREP>0) grpdir='/group_00001/'
+    info_file='output_'//TRIM(nchar)//TRIM(grpdir)//'info_'//TRIM(nchar)//'.txt'
     inquire(file=info_file, exist=info_ok)
     do while(.not. info_ok .and. nrestart .gt. 1)
       nrestart = nrestart - 1
       call title(nrestart,nchar)
-      info_file='output_'//TRIM(nchar)//'/info_'//TRIM(nchar)//'.txt'
+      info_file='output_'//TRIM(nchar)//TRIM(grpdir)//'info_'//TRIM(nchar)//'.txt'
       inquire(file=info_file, exist=info_ok)
     enddo
   else if (myid==1 .and. nrestart .lt. 0)  then
-    info_file='output_restart/info_restart.txt'
+    grpdir='/'
+    if(IOGROUPSIZEREP>0) grpdir='/group_00001/'
+    info_file='output_restart'//TRIM(grpdir)//'info_restart.txt'
     inquire(file=info_file, exist=info_ok)
   endif
 

@@ -1043,53 +1043,63 @@ subroutine create_output_dirs(filedir)
   use file_module, ONLY: mkdir
   implicit none
   character(LEN=80), intent(in):: filedir
-#ifdef NOSYSTEM
-  character(LEN=80)::filedirini
-  integer :: info_sys, islash
-#else
-  character(LEN=80)::filecmd
-  integer :: ierr
-#endif
+  !------------------------------------------------------------------
+  ! Create the directory filedir = 'top/' or 'top/group_XXXXX/' (IOGROUPSIZEREP>0).
+  ! cpu 1 creates the top directory; with a two-level path every rank then
+  ! creates its own group directory (an existing directory is not an error).
+  ! Upstream let only cpu 1 create its own path since 2019 (9988a054), so the
+  ! directories of the other groups were missing, and its NOSYSTEM branch took
+  ! the top directory as filedir(1:13) (an empty output_restar/ next to
+  ! output_restart.tmp/).
+  !------------------------------------------------------------------
+  character(LEN=80)::filedirtop
+  integer :: islash, ierr
+  logical :: twolevel
 #ifndef WITHOUTMPI
   integer :: info
 #endif
   integer, parameter :: mode = int(O'755')
 
   if (.not.withoutmkdir) then
-    if (myid==1) then
-#ifdef NOSYSTEM
-      ! parent of a two-level path (output_00001/group_001/): up to the first '/'.
-      ! (Upstream took filedir(1:13), which made an empty output_restar/ for
-      ! output_restart.tmp/.)
-      islash = index(filedir,'/')
-      if (islash>0 .and. islash<len_trim(filedir)) then
-        filedirini = filedir(1:islash)
-        call PXFMKDIR(TRIM(filedirini),LEN(TRIM(filedirini)),O'755',info_sys)
-      end if
-      call PXFMKDIR(TRIM(filedir),LEN(TRIM(filedir)),O'755',info_sys)
-#else
-      filecmd='mkdir -p '//TRIM(filedir)
-      ierr=1
-!      call system(filecmd,ierr)
-!      call EXECUTE_COMMAND_LINE(filecmd,exitstat=ierr,wait=.true.)
-      call mkdir(TRIM(filedir),mode,ierr)
-      if(ierr.ne.0 .and. ierr.ne.127)then
-        write(*,*) 'Error - Could not create ',TRIM(filedir),' error code=',ierr
+    islash = index(filedir,'/')
+    twolevel = islash>0 .and. islash<len_trim(filedir)
+    if (twolevel) then
+      filedirtop = filedir(1:islash)
+    else
+      filedirtop = filedir
+    end if
+    if (myid==1) call make_one_dir(filedirtop)
+    if (twolevel) then
 #ifndef WITHOUTMPI
-        call MPI_ABORT(MPI_COMM_WORLD,1,info)
-#else
-        stop
+      call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-      endif
-#endif
-    endif
+      call make_one_dir(filedir)
+    end if
   endif
-
 
 #ifndef WITHOUTMPI
   call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
 
+contains
+
+  subroutine make_one_dir(dir)
+    character(LEN=*), intent(in):: dir
+#ifdef NOSYSTEM
+    call PXFMKDIR(TRIM(dir),LEN(TRIM(dir)),O'755',ierr)
+#else
+    ierr=1
+    call mkdir(TRIM(dir),mode,ierr)
+    if(ierr.ne.0 .and. ierr.ne.127)then
+      write(*,*) 'Error - Could not create ',TRIM(dir),' error code=',ierr
+#ifndef WITHOUTMPI
+      call MPI_ABORT(MPI_COMM_WORLD,1,info)
+#else
+      stop
+#endif
+    endif
+#endif
+  end subroutine make_one_dir
 
 end subroutine create_output_dirs
 
