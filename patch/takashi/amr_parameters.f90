@@ -261,9 +261,10 @@ module amr_parameters
   integer :: pop2_model = 2  !1 -> rho cond, 2 -> + div v cond (fiducial), 3 -> + phi cond, 4 -> SFC (star-forming cloud), 5 -> SFC star-by-star
   real(dp) :: pop2_njeans = 4. !rho_th for pop2 formation determined by the condition lamJ = pop2_njeans*dxmin, n_star is used if pop2_njeans <= 0
   real(dp) :: Tpop2 = 1d4     !threshold T for pop2 formation (cf. T<1e4 in Ricotti+ 2016)
-  real(dp) :: loc_vir = -1.d0  ! local virial parameter threshold for star formation (no condition if negative)
+  ! loc_vir (velocity-dispersion condition of Pop II / Pop III) was removed on 2026-11-24 (Ramses-FG 00ab333: div v < 0 instead;
+  ! the Pop III density-peak test is always applied). A namelist that still sets loc_vir stops at start-up.
   logical :: pop2_peak_only = .false. ! Pop II forms only in cells that are the density maximum of their 27-cell cube
-  logical :: pop2_SFC_marker = .false. ! local Pop II models (pop2_model 1-3): massless FAM_SFC marker where the SFC condition is met (NOTES_pop2_model_comparison)
+  logical :: pop2_SFC_marker = .false. ! local Pop II models (pop2_model 1-3): massless FAM_SFC marker where the SFC condition (cell condition, div v < 0, density peak of the 27-cell cube; kind 1) or the star formation condition of the local model (kind 2) is met (NOTES_pop2_model_comparison)
   logical :: pop2_H2depSF = .false. !whether PopII SF efficiency is multiplied by the H2 abundance or not
   logical :: nonlocal_depletion = .false. !depleting gas at star formation from a finite spherical region instead of the cell including the particle
   logical :: nonlocal_depletion_batch = .true. !merge_ks: deplete the spheres of all new stars at once (collective calls independent of the number of stars); .false. = ks sequential version

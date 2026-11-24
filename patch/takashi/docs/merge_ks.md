@@ -846,3 +846,53 @@ R 型の過渡期にどれだけ効くか (セルの tau は本番のほうが�
     分散を水増ししていた。
   - FG の zoom (細分化が密度の峰を追う設定) での効果は未確認。
 
+
+## 速度分散の条件 (`loc_vir`) を外し、div v < 0 にする (2026-11-24、Ramses-FG 00ab333 から)
+
+Ramses-FG 側の判断 (ユーザー) をそのまま移した。理由は ks 側の `NOTES_pop2_model_comparison_2026-11-11.md` (2026-11-24 の節):
+27 セルの速度分散はほとんどが落下そのもので (形成地点 4 か所で線形の速度場を当てはめると約 6 割が等方的な収縮、ひずみの
+固有値はすべて負、残差 1-9%)、自由落下する箱は T = 0 でも条件を通れない。DICE の本番 (`sf_model=6`) で見た結果と同じ
+(`docs/sf_model6_sigma.md`)。
+
+新しい条件 (`star_formation_fg.f90`):
+
+| | 条件 |
+|---|---|
+| Pop III | セルの条件 (密度の閾値、Z、yH2 など) + 27 セルの密度の極大 (常に; 以前は `loc_vir > 0` のときだけ) + div v < 0 |
+| Pop II、`pop2_model` 2 / 3 | 熱的な Jeans 閾値 + T < Tpop2 + div v < 0 (3 はポテンシャルの極小も)。`pop2_peak_only` で極大も |
+| Pop II、`pop2_model` 4 / 5 (SFC) | 同上 (div v < 0 が新しく入った)。SFC の中心を極大に限るのは `pop2_peak_only` |
+| Pop II、`pop2_model` 1 | 変更なし (div v なし) |
+| SFC 印 (`pop2_SFC_marker`) | kind 1: セルの条件 + div v < 0 + 密度の極大 (以前は div v なし、極大、`loc_vir`)。kind 2: 局所モデルの星形成条件 (極大は不要) |
+
+- `loc_vir` は変数ごと削除した (ユーザーの指示、同じ日; Ramses-FG は読むだけ残している)。**`loc_vir=...` を書いた namelist は
+  起動時に止まる** (「Cannot match namelist object name」) ので行を消す。`namelist/ks/` の 3 本 (`l5_14_test.nml`、
+  `ngridmax_fire3.nml`、`ngridmax_music.nml`) からは消してある。
+- 同時に直したバグ: `ivar_refine > 0` のとき幾何条件が `d` を refinement のスカラーで上書きし、Pop II の div v が中心セルの
+  重みにそれを使っていた (面の値がほぼ隣の速度になる)。`dcell = uold(ind_cell,1)` を使い、幾何条件は `d` を上書きしない
+  (Pop III と Pop II)。`ivar_refine = 0` のランは変わらない。
+- 移していないもの:
+  - Ramses-FG 3f702b3 (テスト問題の星の二重計上): こちらは `add_star_particle_for_test` を移植していない。
+  - Ramses-FG 4c997c6 (実 SFC の粒子は印を妨げない)、78a3194 (年齢出力の idp を標準出力に): 未移植。
+- **印の kind 2 (Ramses-FG 14d37df、同じ日に移植)**: 局所モデルの星形成条件 (`ok(i)`) を満たすセルも印の候補にする。
+  極大でないセルで先に星ができ、そのフィードバックで極大のセルが SFC の条件を満たさなくなる (星はあるのに印も入れ子の
+  出力も無い) のを避けるため。同じ step の候補が `SFC_dist_min` 以内にあるときは kind 1 を優先し、次に密度の高いほうを残す。
+  有効な印から `SFC_dist_min` 以内のセルは候補に載せない (`collect_active_SFC` をセルのループの前に呼ぶ)。
+  標準出力の `** SFC marker **` の行末に `, kind = 1|2` が付く。SFC モデル (`pop2_model` 4 / 5) の経路は変えていない。
+
+確認 (`tests/dice_rt_fg.nml` 相当、4 ランク、変更前 = ca634401):
+
+| 試験 | 変更前 | 変更後 |
+|---|---|---|
+| 局所 Pop II (`pop2_model=2`、6 step) | 星 280 | 星 280、出力は bit 一致 (20 ファイル) |
+| SFC 印 (上 + `pop2_SFC_marker`、`SFC_dist_min_pc=5d3`) | 印 1 個 | 同じセルに印 1 個 (kind 1)、出力は bit 一致 |
+| SFC 印 (`SFC_dist_min_pc=1d3`) | — | 印 11 個 (kind 1 が 1 個、kind 2 が 10 個)、互いに 1 kpc 以上離れている。星 280 個は同じ |
+| Pop III (`Zpop3=1d1`、`pop3_model=1`、6 step、`loc_vir` 未設定) | 846 個 (極大も速度分散も見ない) | 2 個 (極大 + div v < 0) |
+| 同上、変更前に `loc_vir=1` | 2 個 (極大 + 速度分散)、変更後と同じ 2 セル | — |
+| SFC (`pop2_model=4`、8 step) | `logSFC` 16 行、星 214 | `logSFC` 8 行、星 292 |
+
+Pop III が 846 → 2 個に減るのは、極大の判定が `loc_vir > 0` のときだけだったのを常に課すようにしたため (試験の namelist は
+`loc_vir` を設定していない)。`loc_vir=1` で流していたランと比べれば条件は緩む向き (速度分散の条件が div v < 0 に替わる) だが、
+この試験では極大のセルが 2 つしかなく、どちらも両方の条件を通るので差は出ない。SFC は条件が変わるので結果も変わる。div v と極大の値そのものはこちらでは数値を突き合わせていない
+(ks 側で解析的な速度場の箱を使い、符号が 1728/1728 セルで一致することを確認済みの同じコード)。`ivar_refine > 0` の経路は
+こちらでも未確認。`tests/dice_rt_fg.nml` のコメントにある「Zpop3=1d1 で 846 個」を前提にした試験 (SN、sink、ugvtk) は
+星の数が変わる。

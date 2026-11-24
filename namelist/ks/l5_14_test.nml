@@ -101,7 +101,6 @@ g_star=1.3333333
 T2_star=0.0d0
 n_star=-1d0
 m_star=1d2
-loc_vir=-1d0                   ! ks の既定 (base_np16 は未設定)
 pop2_peak_only=.false.         ! ks の既定
 pop2_njeans=4d0
 Tpop2=1d3

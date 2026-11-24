@@ -105,7 +105,7 @@ subroutine read_hydro_params(nml_ok)
   namelist/sf_params/m_star,n_star,T2_star,g_star,del_star &
   & ,eps_star,jeans_ncells,sf_virial,sf_trelax,sf_tdiss,sf_model,sf_b_turb,sf_sigma_noconv,sf_alpha_meandens&
   & ,sf_log_properties,sf_imf,sf_compressive &
-  & ,sf_fg,pop2_model,pop2_njeans,Tpop2,loc_vir,pop2_peak_only,pop2_SFC_marker,pop2_H2depSF &  ! FG (patch/ks) star formation
+  & ,sf_fg,pop2_model,pop2_njeans,Tpop2,pop2_peak_only,pop2_SFC_marker,pop2_H2depSF &  ! FG (patch/ks) star formation
   & ,nonlocal_depletion,nonlocal_depletion_batch,nH_postSF &
   & ,pop3_model,Zpop3,dpop3,mpop3max,mpop3_SNprog,pop3_dist_min_pc,pop3_tMyr_suppress_newstar,p3_output_minmass &
   & ,SFC_dist_min_pc,SFC_nH_min,SFC_f_nH_min,SFC_fate,SFC_f_star,SFC_f_star_Zdep,SFC_f_rhocrop,SFC_f_rhoSF &

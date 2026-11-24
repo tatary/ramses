@@ -92,7 +92,7 @@ pop2_model=2                   ! 局所 Pop II (密度閾値は Jeans 長、T<Tp
 m_star=100.                    ! sf_fg では Pop II 粒子の質量 [Msun]
 pop2_njeans=30.
 Tpop2=1d5
-Zpop3=1d-5                     ! Zpop3=1d1 にすると全セルが Pop III 候補 (pop3_model=1: 120 Msun) になる
+Zpop3=1d-5                     ! Zpop3=1d1 にすると全セルが Pop III 候補 (pop3_model=1: 120 Msun) になる。2026-11-24 以降は密度の極大 + div v<0 が常に課され、6 step で 2 個 (以前 846 個)
 pop3_model=1
 dpop3=-1
 pop3_dist_min_pc=0.1
@@ -109,6 +109,7 @@ nonlocal_depletion=.false.     ! .true. で球からの枯渇 (ufront を確保)
 !SFC SFC_distribution='mass_weight'
 !SFC SFC_rsize_min_pc=1d0
 !SFC SFC_t_life=1d1
+! 注意 (2026-11-24): 以下の試験の星の数 (846 個など) は loc_vir の条件を外す前のもの。Pop III は極大 + div v<0 で大幅に減る (docs/merge_ks.md)。
 ! フィードバックの試験 (2026-11-13): nstepmax=14 にすると Pop III (Zpop3=1d1, pop3_model=1, 寿命 4 Myr) の SN が step 13 で起きる。
 ! &FEEDBACK_PARAMS に SN_reservoir=.true., Ncell_SN_max=8d0, pop3_ESN=3d52 で半径探索と球注入、
 ! fcool_stop=8d0 は NPSCAL を 1 つ増やしたビルドで (ivar_coolstop=nvar)。

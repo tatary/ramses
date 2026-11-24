@@ -114,7 +114,6 @@ g_star=1.3333333
 T2_star=0.0d0
 n_star=-1                      ! sf_fg では pop2_njeans>0 のとき未使用 (ks と同じ -1)
 m_star=1d2                     ! sf_fg では Pop II 粒子の質量 [Msun] (ks と同じ)
-loc_vir=1d0
 pop2_peak_only=.true.
 pop2_njeans=4d0
 Tpop2=1d4

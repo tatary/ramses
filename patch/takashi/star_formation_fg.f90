@@ -1,7 +1,8 @@
 !################################################################
 ! star_formation_fg: FG (first-galaxy) star formation of patch/ks (sf_fg=.true.)
-!   Pop II: pop2_model 1-3 local (Jeans threshold, Tpop2, div v, phi, loc_vir, pop2_peak_only),
-!           4/5 SFC (star-forming cloud, instantaneous burst, He+2019 efficiency; 5 = star by star)
+!   Pop II: pop2_model 1-3 local (Jeans threshold, Tpop2, div v < 0 for 2 and 3, phi minimum for 3, pop2_peak_only),
+!           4/5 SFC (star-forming cloud, instantaneous burst, He+2019 efficiency; 5 = star by star), also div v < 0;
+!           no velocity-dispersion condition since 2026-11-24 (loc_vir removed; Pop III: peak + div v < 0)
 !   Pop III: pop3_model 1-8 (Zpop3, yH2, candidate separation, mdot-dependent masses)
 !   non-local gas depletion (nonlocal_depletion, nH_postSF) through ufront (my_utils)
 ! Ported from patch/ks star_formation.f90 (merge_ks, docs/merge_ks.md). Differences from ks:
@@ -59,7 +60,7 @@ subroutine star_formation_fg(ilevel)
   integer ::igrid,ix,iy,iz,ind,i,j,n,iskip,istar,inew,nx_loc
   integer ::ntot,ntot_all,info,nstar_corrected,ideb,ndeb
   logical ::ok_free,ok_all
-  real(dp)::d,x,y,z,u,v,w,e,zg,vdisp,dgas
+  real(dp)::d,x,y,z,u,v,w,e,zg,dgas
   real(dp)::mstar,dstar,tstar,nISM,nCOM
   real(dp)::T2,nH,T_poly
   real(dp)::velc,uc,vc,wc,mass_load
@@ -77,7 +78,8 @@ subroutine star_formation_fg(ilevel)
   integer ,dimension(1:nvector),save::list_debris,ind_debris
   logical ,dimension(1:nvector),save::ok,ok_new=.true.,ok_true=.true.
   logical ,dimension(1:nvector)::ok_sfc ! TO ADDED 2026-11-11: SFC marker candidate cell (pop2_SFC_marker: the SFC-model condition in a local Pop II model)
-  logical :: ok_pre_divv, is_peak, vir_ok ! TO ADDED 2026-11-11
+  integer ,dimension(1:nvector)::kind_sfc ! TO ADDED 2026-11-24 (Ramses-FG 14d37df): 1 = SFC condition (div v < 0 + peak), 2 = star formation condition only
+  logical :: ok_pre_divv, is_peak, conv_ok ! TO ADDED 2026-11-11; TO MODIFIED 2026-11-24: conv_ok (ok_pre_divv and div v <= 0) replaces vir_ok
   integer ,dimension(1:ncpu)::ntot_star_cpu,ntot_star_all
 
   !! JP
@@ -127,7 +129,7 @@ subroutine star_formation_fg(ilevel)
   integer ,dimension(1:nvector,0:twondim)::ind_nbor
   integer ,dimension(threetondim)::ind_nborcube
   logical ,dimension(threetondim)::nbor_prim   ! TO ADDED 2026-11-22: neighbour holds velocities (see get_27_neighbors)
-  real(dp),dimension(1:3)::vnb                 ! TO ADDED 2026-11-22: velocity of a neighbour
+  real(dp)::dcell                              ! TO MODIFIED 2026-11-24: density of the central cell (vnb of 2026-11-22 removed with the sigma condition)
   integer ::jl,jr,idim                         ! TO ADDED 2026-11-22: left / right face neighbours in the 27 list, direction
 
   !for checking potential local minimum
@@ -137,7 +139,7 @@ subroutine star_formation_fg(ilevel)
   real(dp)::dmax_nbor
 
   !for calculation of the local virial parameter (TO ADDED)
-  real(dp) :: vx, vy, vz, vx2, vy2, vz2, vdisp2, m_in_cube, alpha_vir
+  ! TO MODIFIED 2026-11-24: variables of the local virial parameter (vx.., vdisp2, m_in_cube, alpha_vir) removed with the sigma condition
 
   !variables for suprresion of simultaneous pop3 formation by distance
   !  integer,parameter :: Npop3_max = 1000 !maximum number of pop3 stars including candidates
@@ -167,6 +169,11 @@ subroutine star_formation_fg(ilevel)
   real(dp),dimension(1:3,1:SFC_n_max) :: SFC_poscand_loc, SFC_poscand_glob !position of SFC candidates
   integer :: SFC_n_loc, SFC_n_tot !number of SFCs in each/all cpu(s)
   real(dp),dimension(1:3,1:SFC_n_max) :: SFC_pos_loc, SFC_pos_glob !position of SFCs
+  ! TO ADDED 2026-11-24 (Ramses-FG 14d37df): SFC markers: kind of a candidate (1 = SFC condition, i.e. div v < 0 and
+  ! density peak; 2 = star formation condition of the local model only) and its gas density (code units); kind of
+  ! the surviving markers
+  integer,dimension(1:SFC_n_max) :: SFC_kindcand_loc, SFC_kindcand_glob, SFC_kind_loc, SFC_kind_glob
+  real(dp),dimension(1:SFC_n_max) :: SFC_dcand_loc, SFC_dcand_glob
   real(dp) ::  SFC_dist_min, SFC_rsize_min
   integer :: iSFC
   integer,dimension(1:ncpu) :: SFC_nstar_list !list for number of SFC stars in each cpu
@@ -391,7 +398,7 @@ subroutine star_formation_fg(ilevel)
 
       ! TO ADDED 2026-11-11: SFC markers in the local Pop II models
       if (pop2_SFC_marker) then
-        write(*,'(A)') 'pop2_SFC_marker = .true.  -->  a massless FAM_SFC marker is created where the SFC formation condition (density peak, loc_vir, no div v) is met and no active SFC marker lies within SFC_dist_min_pc; formation nest and age outputs as for an SFC'
+        write(*,'(A)') 'pop2_SFC_marker = .true.  -->  a massless FAM_SFC marker is created where the SFC formation condition (cell condition, div v < 0, density peak; kind 1) or the star formation condition of the local model (kind 2) is met and no active SFC marker lies within SFC_dist_min_pc; formation nest and age outputs as for an SFC'
       else if (pop2_model == 4 .or. pop2_model == 5) then
         write(*,'(A)') 'pop2_SFC_marker = .false. (the SFC model has SFC particles anyway)'
       else
@@ -488,19 +495,12 @@ subroutine star_formation_fg(ilevel)
           ', mstar[Msun]',mstar*scale_msun
       end if
 
-      ! TO ADDED 2026-11-11: virial (velocity dispersion) condition and local peak condition for Pop II
-      ! (both acted on the Pop III flag before this date, i.e. never)
-      if (loc_vir > 0) then
-        if (pop2_njeans > 0) then
-          write(*,'(A,1PE11.3,A)') 'loc_vir = ', loc_vir, &
-            '  ==> Pop II forms only where (cs^2+sigma_1d^2)/(G rho lamJ_min^2) * pi <= loc_vir (Jeans condition incl. the 1D velocity dispersion of the 27-cell cube)'
-        else
-          write(*,'(A,1PE11.3,A)') 'loc_vir = ', loc_vir, &
-            '  ==> Pop II forms only where alpha_vir(27-cell cube) <= loc_vir'
-        end if
-      else
-        write(*,'(A)') 'loc_vir <= 0  ==> no virial condition for Pop II formation'
-      end if
+      ! TO ADDED 2026-11-11: local peak condition for Pop II (acted on the Pop III flag before this date, i.e. never)
+      ! TO MODIFIED 2026-11-24 (Ramses-FG 00ab333): the loc_vir (sigma) condition is removed; div v < 0 for Pop III and
+      ! for all pop2_model >= 2
+      ! (the parameter loc_vir itself is removed from the namelist)
+      write(*,'(A)') 'No velocity-dispersion condition for Pop II / Pop III (loc_vir removed 2026-11-24). Pop III: density threshold + density peak of the 27-cell cube (always) + div v < 0' // &
+        '; Pop II (pop2_model >= 2, incl. the SFC models 4, 5): thermal Jeans threshold + T < Tpop2 + div v < 0'
       if (pop2_peak_only) then
         write(*,'(A)') 'pop2_peak_only = .true.  ==> Pop II forms only in cells that are the density maximum of their 27-cell cube'
       else
@@ -633,6 +633,10 @@ subroutine star_formation_fg(ilevel)
   if (ilevel /= nlevelmax) return
 
   call sf_log_open(ilun_sf)
+
+  ! TO ADDED 2026-11-24 (Ramses-FG 14d37df): SFC markers: the list of active FAM_SFC particles is needed in the cell
+  ! loop (store_SFC_candidate drops the cells within SFC_dist_min of an active marker); collective call
+  if (pop2_SFC_marker) call collect_active_SFC   ! SFC_n_active, SFC_pos_active (pm_commons)
 
   !get list for pre-existing pop3 particles in all cpus (KS ADDED)
   call get_pop3_pos_list()
@@ -830,71 +834,46 @@ subroutine star_formation_fg(ilevel)
         !-------------- KS ADDED (BEGIN) -------------!
         ! Geometrical criterion (Pop IIと同様に、Pop IIIもzoom-in 領域外での星形成は抑制する)
         if(ivar_refine>0)then
-          d=uold(ind_cell(i),ivar_refine)
-          if(d<=var_cut_refine)ok3(i)=.false.
+          ! TO MODIFIED 2026-11-24 (Ramses-FG 00ab333): compared directly; d (the density elsewhere in this loop) is
+          ! no longer overwritten with the refinement scalar
+          if(uold(ind_cell(i),ivar_refine)<=var_cut_refine)ok3(i)=.false.
         endif
         !-------------- KS ADDED (END) -------------!
 
         !-------------- TO ADDED (BEGIN) -------------!
-        if (ok3(i) .and. loc_vir > 0) then
-
-          ! TO: check if the cell is self-gravitating
-          ! first we need to compute the local velocity dispersion
-          d = uold(ind_cell(i),1)
-          cI2 = uold(ind_cell(i),5)*(gamma-1.0) !等温音速 (!上の方ですでにuold(ind_cell(i),1)で割り算されているので注意)
+        ! TO MODIFIED 2026-11-24 (Ramses-FG 00ab333, user's decision): the velocity-dispersion condition
+        ! (pi (cs^2+sigma_1d^2)/(G rho lamJ_min^2) or alpha_vir of the 27-cell cube <= loc_vir) is removed, and
+        ! div v < 0 is required instead, as for Pop II. The sigma of the 27-cell cube is mostly the infall itself
+        ! (linear velocity field fitted to the cube at 4 formation sites of the ks runs: ~60 per cent isotropic
+        ! contraction, all strain eigenvalues negative, residual 1-9 per cent), and a free-falling cube cannot pass
+        ! the condition even at T = 0 (sigma_1d^2 = 2/3 H^2 dx^2 = 5.6 G rho dx^2 > G rho (4 dx)^2/pi).
+        ! The parameter loc_vir is removed from the namelist: the density-peak test of the 27-cell cube, formerly
+        ! applied only with loc_vir > 0, is always applied.
+        if (ok3(i)) then
           ncell = 1 ! we just want the neighbors of the current cell
           ind_cell2(1) = ind_cell(i)
           call get_27_neighbors(ind_cell2, ind_nborcube, nbor_prim, ilevel)
-          vx = 0d0; vy = 0d0; vz = 0d0;
-          vx2 = 0d0; vy2 = 0d0; vz2 = 0d0;
-          m_in_cube = 0d0
-          d = uold(ind_cell(i),1) ! density of the central cell
-          dmax_nbor = d
+          dcell = uold(ind_cell(i),1) ! density of the central cell
+          ! check if the cell is a local density peak
+          dmax_nbor = dcell
           do j = 1, 27
-            d1 = uold(ind_nborcube(j),1)
-            dmax_nbor = max(dmax_nbor, d1)
-            ! TO MODIFIED 2026-11-22 (Ramses-FG 453a780): velocity of the neighbour. uold holds velocities in the
-            ! level-ilevel cells converted above (active and virtual grids); a father cell (coarser level) still
-            ! holds the momentum, which was summed as if it were a velocity.
-            if (nbor_prim(j)) then
-              vnb(1:3) = uold(ind_nborcube(j),2:4)
-            else
-              vnb(1:3) = uold(ind_nborcube(j),2:4)/d1
-            end if
-            vx = vx + d1*vnb(1)*vol_loc
-            vy = vy + d1*vnb(2)*vol_loc
-            vz = vz + d1*vnb(3)*vol_loc
-            vx2 = vx2 + d1*vol_loc*vnb(1)**2
-            vy2 = vy2 + d1*vol_loc*vnb(2)**2
-            vz2 = vz2 + d1*vol_loc*vnb(3)**2
-            m_in_cube = m_in_cube + d1*vol_loc
+            dmax_nbor = max(dmax_nbor, uold(ind_nborcube(j),1))
           end do
-
-          !-----------------------------------------------------------------------------------
-          if (d < dmax_nbor) then ! check if the cell is a local density peak
-            ok3(i) = .false.  ! the cell is not a local density maximum
-          else
-            vx = vx / m_in_cube
-            vy = vy / m_in_cube
-            vz = vz / m_in_cube
-            vx2 = vx2 / m_in_cube
-            vy2 = vy2 / m_in_cube
-            vz2 = vz2 / m_in_cube
-            ! TO MODIFIED 2026-11-21: 1D velocity dispersion, sigma_1d^2 = sigma_3d^2 / 3 (ks added the 3D
-            ! dispersion to the isothermal cs^2, which is a 1D quantity)
-            vdisp2 = ((vx2 - vx**2) + (vy2 - vy**2) + (vz2 - vz**2)) / 3d0
-            vdisp2 = max(vdisp2, 0d0)
-            ! alpha_vir = 5 * (sigma_1d^2 + c_s^2) * R / (G * M)
-            ! here 4 pi / 3 * R^3 = 27 * dx^3  --> R = (3/4 pi * 27 * dV)^(1/3)
-            if (dpop3 <= 0 .and. pop2_njeans > 0) then
-              lamJ_min = boxlen / (2.d0)**nlevelmax * pop2_njeans !ジーンズ長がこれ以上短い場合に星形成
-              dpop2 = twopi/2.*cI2/factG/lamJ_min**2 !lamJ = lamJ_min となる密度 (1K, current aexp))
-              alpha_vir = twopi/2.*(cI2 + vdisp2)/(factG*d*(lamJ_min**2))
-            else
-              alpha_vir = 9.305257d0*(vdisp2 + cI2) * dx_loc / (factG * m_in_cube)
-            endif
-            ! write(*,*) 'sigma_1d = ', sqrt(vdisp2)*scale_v*1.d-5, ' km/s cs = ', sqrt(cI2)*scale_v*1.d-5, ' km/s a_vir = ', alpha_vir
-            if (alpha_vir > loc_vir) ok3(i) = .false.
+          if (dcell < dmax_nbor) ok3(i) = .false.  ! the cell is not a local density maximum
+          if (ok3(i)) then
+            ! div v from the six face neighbours of the 27 list (as in the Pop II block below)
+            divv = 0d0
+            do idim = 1, 3
+              jl = 14 - 3**(idim-1); jr = 14 + 3**(idim-1)
+              d1 = uold(ind_nborcube(jl),1); d2 = uold(ind_nborcube(jr),1)
+              ul = uold(ind_nborcube(jl),1+idim); if (.not. nbor_prim(jl)) ul = ul/d1
+              ur = uold(ind_nborcube(jr),1+idim); if (.not. nbor_prim(jr)) ur = ur/d2
+              ul = (d1*ul + dcell*uold(ind_cell(i),1+idim))/(d1+dcell)
+              ur = (d2*ur + dcell*uold(ind_cell(i),1+idim))/(d2+dcell)
+              divv = divv + (ur-ul)
+            end do
+            divv = divv/dx_loc
+            if (divv > 0d0) ok3(i) = .false. ! gas should be converging
           end if
         endif
         !-------------- TO ADDED (END) -------------!
@@ -1050,8 +1029,9 @@ subroutine star_formation_fg(ilevel)
 
         ! Geometrical criterion
         if(ivar_refine>0)then
-          d=uold(ind_cell(i),ivar_refine)
-          if(d<=var_cut_refine)ok(i)=.false.
+          ! TO MODIFIED 2026-11-24 (Ramses-FG 00ab333): compared directly; d is no longer overwritten with the
+          ! refinement scalar (the div v below used the overwritten d as the density of the cell)
+          if(uold(ind_cell(i),ivar_refine)<=var_cut_refine)ok(i)=.false.
         endif
 
         ! TO ADDED 2026-11-11: the conditions so far (without div v / potential) are those of the SFC model; kept for the SFC marker
@@ -1067,7 +1047,11 @@ subroutine star_formation_fg(ilevel)
         ! So construct values of velocity field on the 6 faces of the cell using simple linear interpolation
         ! from neighbouring cell values and differentiate.
         ! Get neighbor cells if they exist, otherwise use straight injection from local cell
-        if (pop2_model == 2 .or. pop2_model == 3) then
+        ! TO MODIFIED 2026-11-24 (Ramses-FG 00ab333, user's decision): div v < 0 also for the SFC models
+        ! (pop2_model 4, 5), in place of the velocity-dispersion condition (loc_vir) removed below; with
+        ! pop2_SFC_marker it is evaluated for every local model because the SFC condition of the markers contains it.
+        conv_ok = ok_pre_divv
+        if (pop2_model >= 2 .or. pop2_SFC_marker) then
           ncell = 1 ! we just want the neighbors of that cell
           ind_cell2(1) = ind_cell(i)
           if (pop2_model == 3) call getnbor(ind_cell2,ind_nbor,ncell,ilevel)   ! for the potential minimum below
@@ -1085,6 +1069,10 @@ subroutine star_formation_fg(ilevel)
           !     uold is the momentum: divided by the density (nbor_prim).
           ! Evaluated only for cells that passed the conditions so far (divv is used for nothing else).
           ! Index in the 27 list: 1 + (i+1) + 3*(j+1) + 9*(k+1); -x,+x = 13,15; -y,+y = 11,17; -z,+z = 5,23.
+          ! TO MODIFIED 2026-11-24 (Ramses-FG 00ab333): the weight of the central cell is its density (dcell). It was
+          ! d, which held the refinement scalar uold(ivar_refine) when ivar_refine > 0 (geometrical criterion
+          ! above), so the face values were almost the neighbour velocities.
+          dcell = uold(ind_cell(i),1)
           if (ok(i)) then
             call get_27_neighbors(ind_cell2, ind_nborcube, nbor_prim, ilevel)
             do idim = 1, 3
@@ -1092,8 +1080,8 @@ subroutine star_formation_fg(ilevel)
               d1 = uold(ind_nborcube(jl),1); d2 = uold(ind_nborcube(jr),1)
               ul = uold(ind_nborcube(jl),1+idim); if (.not. nbor_prim(jl)) ul = ul/d1
               ur = uold(ind_nborcube(jr),1+idim); if (.not. nbor_prim(jr)) ur = ur/d2
-              ul = (d1*ul + d*uold(ind_cell(i),1+idim))/(d1+d)
-              ur = (d2*ur + d*uold(ind_cell(i),1+idim))/(d2+d)
+              ul = (d1*ul + dcell*uold(ind_cell(i),1+idim))/(d1+dcell)
+              ur = (d2*ur + dcell*uold(ind_cell(i),1+idim))/(d2+dcell)
               divv = divv + (ur-ul)
             end do
           end if
@@ -1104,7 +1092,8 @@ subroutine star_formation_fg(ilevel)
           !-----------------------------------------------------------------------------------
 
           ! Divergence criterion (KS ADDED, cf. new public version of RAMSES as of 2020/03/25)
-          if(divv>0d0)ok(i)=.false. !! gas should be converging
+          if(divv>0d0)conv_ok=.false.
+          if(pop2_model >= 2 .and. divv>0d0)ok(i)=.false. !! gas should be converging
         end if
 
         !-----------------------------------------------------------------------------------
@@ -1120,77 +1109,33 @@ subroutine star_formation_fg(ilevel)
           if (phi(ind_cell(i)) >= phimin_nbor) ok(i)=.false. !! potential should be local minimum
         end if
 
-        ! TO MODIFIED 2026-11-11: the peak condition (pop2_peak_only) and the virial condition (loc_vir > 0) are separate;
-        ! with pop2_SFC_marker the cube is also evaluated for cells that failed only the div v / potential conditions
-        if ((ok(i) .or. (pop2_SFC_marker .and. ok_pre_divv)) .and. (loc_vir > 0 .or. pop2_peak_only .or. pop2_SFC_marker)) then
-          ! TO: check if the cell is self-gravitating
-          ! first we need to compute the local velocity dispersion
-          d = uold(ind_cell(i),1)
-          cI2 = uold(ind_cell(i),5)*(gamma-1.0) !等温音速 (!上の方ですでにuold(ind_cell(i),1)で割り算されているので注意)
+        ! TO MODIFIED 2026-11-11: the peak condition (pop2_peak_only) is a switch of its own;
+        ! with pop2_SFC_marker the cube is also evaluated for cells that failed only the potential condition
+        ! TO MODIFIED 2026-11-24 (Ramses-FG 00ab333, user's decision): the velocity-dispersion condition (loc_vir;
+        ! cs^2 -> cs^2 + sigma_1d^2 of the 27-cell cube in the Jeans condition) is removed for Pop II as well
+        ! (reasons in the Pop III block above). The cube is needed for the peak only.
+        if ((ok(i) .or. (pop2_SFC_marker .and. conv_ok)) .and. (pop2_peak_only .or. pop2_SFC_marker)) then
           ncell = 1 ! we just want the neighbors of the current cell
           ind_cell2(1) = ind_cell(i)
           call get_27_neighbors(ind_cell2, ind_nborcube, nbor_prim, ilevel)
-          vx = 0d0; vy = 0d0; vz = 0d0;
-          vx2 = 0d0; vy2 = 0d0; vz2 = 0d0;
-          m_in_cube = 0d0
           d = uold(ind_cell(i),1) ! density of the central cell
           dmax_nbor = d
           do j = 1, 27
-            d1 = uold(ind_nborcube(j),1)
-            dmax_nbor = max(dmax_nbor, d1)
-            ! TO MODIFIED 2026-11-22 (Ramses-FG 453a780): velocity of the neighbour. uold holds velocities in the
-            ! level-ilevel cells converted above (active and virtual grids); a father cell (coarser level) still
-            ! holds the momentum, which was summed as if it were a velocity.
-            if (nbor_prim(j)) then
-              vnb(1:3) = uold(ind_nborcube(j),2:4)
-            else
-              vnb(1:3) = uold(ind_nborcube(j),2:4)/d1
-            end if
-            vx = vx + d1*vnb(1)*vol_loc
-            vy = vy + d1*vnb(2)*vol_loc
-            vz = vz + d1*vnb(3)*vol_loc
-            vx2 = vx2 + d1*vol_loc*vnb(1)**2
-            vy2 = vy2 + d1*vol_loc*vnb(2)**2
-            vz2 = vz2 + d1*vol_loc*vnb(3)**2
-            m_in_cube = m_in_cube + d1*vol_loc
+            dmax_nbor = max(dmax_nbor, uold(ind_nborcube(j),1))
           end do
-
-          !-----------------------------------------------------------------------------------
-          ! TO MODIFIED 2026-11-11: this block (copied from the Pop III one) wrote its result into ok3 instead
-          ! of ok, so the Pop II peak/virial condition never acted (ok3 is already .false. here since Z > Zpop3),
-          ! and the formula was chosen by dpop3 (a Pop III parameter). Now: ok(i), and the Jeans-length form
-          ! (the thermal Jeans threshold with cs^2 -> cs^2 + sigma^2) whenever pop2_njeans > 0.
           ! The peak condition is applied only with pop2_peak_only (a star particle without accretion in every
           ! cell above the threshold is the definition of eps_ff in the local models; the peak makes sense for the
           ! SFC centre).
           is_peak = (d >= dmax_nbor) ! the cell is the density maximum of its 27-cell cube
-          vir_ok = .true.
-          if (loc_vir > 0) then
-            vx = vx / m_in_cube
-            vy = vy / m_in_cube
-            vz = vz / m_in_cube
-            vx2 = vx2 / m_in_cube
-            vy2 = vy2 / m_in_cube
-            vz2 = vz2 / m_in_cube
-            ! TO MODIFIED 2026-11-21: 1D velocity dispersion, sigma_1d^2 = sigma_3d^2 / 3 (ks added the 3D
-            ! dispersion to the isothermal cs^2, which is a 1D quantity)
-            vdisp2 = ((vx2 - vx**2) + (vy2 - vy**2) + (vz2 - vz**2)) / 3d0
-            vdisp2 = max(vdisp2, 0d0)
-            ! alpha_vir = 5 * (sigma_1d^2 + c_s^2) * R / (G * M)
-            ! here 4 pi / 3 * R^3 = 27 * dx^3  --> R = (3/4 pi * 27 * dV)^(1/3)
-            if (pop2_njeans > 0) then
-              lamJ_min = boxlen / (2.d0)**nlevelmax * pop2_njeans !ジーンズ長がこれ以上短い場合に星形成
-              alpha_vir = twopi/2.*(cI2 + vdisp2)/(factG*d*(lamJ_min**2))
-            else
-              alpha_vir = 9.305257d0*(vdisp2 + cI2) * dx_loc / (factG * m_in_cube)
-            endif
-            ! write(*,*) 'sigma_1d = ', sqrt(vdisp2)*scale_v*1.d-5, ' km/s cs = ', sqrt(cI2)*scale_v*1.d-5, ' km/s a_vir = ', alpha_vir
-            vir_ok = (alpha_vir <= loc_vir)
-          end if
           if (pop2_peak_only .and. .not. is_peak) ok(i) = .false.
-          if (.not. vir_ok) ok(i) = .false.
-          ! SFC marker candidate: the SFC-model condition (no div v) + density peak + virial condition
-          ok_sfc(i) = pop2_SFC_marker .and. ok_pre_divv .and. is_peak .and. vir_ok
+          ! SFC marker candidate: the SFC-model condition = cell condition + div v < 0 + density peak (kind 1;
+          ! TO MODIFIED 2026-11-24: div v < 0 (conv_ok) instead of the loc_vir condition),
+          ! or (Ramses-FG 14d37df) the star formation condition of the local model (ok(i), no peak needed; kind 2).
+          ! Otherwise a star can form in a non-peak cell first and its feedback can keep the peak from ever
+          ! meeting the SFC condition (stars but no marker and no nest output for that region).
+          kind_sfc(i) = 2
+          if (conv_ok .and. is_peak) kind_sfc(i) = 1
+          ok_sfc(i) = pop2_SFC_marker .and. (kind_sfc(i) == 1 .or. ok(i))
         endif
         !-------------- TO ADDED (END) -------------!
 
@@ -1492,7 +1437,8 @@ subroutine star_formation_fg(ilevel)
         ! SFC candidate list as in the SFC model, independently of the stochastic star formation above
         if (ok_sfc(i)) then
           call store_SFC_candidate(ind_cell(i), (/(xg(ind_grid(i),1)+xc(ind,1)-skip_loc(1))*scale, &
-            (xg(ind_grid(i),2)+xc(ind,2)-skip_loc(2))*scale, (xg(ind_grid(i),3)+xc(ind,3)-skip_loc(3))*scale/))
+            (xg(ind_grid(i),2)+xc(ind,2)-skip_loc(2))*scale, (xg(ind_grid(i),3)+xc(ind,3)-skip_loc(3))*scale/), &
+            kind_sfc(i), uold(ind_cell(i),1))
         end if
       enddo !i=1,ngrid
 
@@ -4538,8 +4484,9 @@ contains
     flg_rmv(:) = .false.
     ! TO ADDED 2026-11-11: SFC markers (local Pop II models): no new marker within SFC_dist_min of an active one
     ! (the SFC model needs no such check: the gas of a formed SFC is cropped)
+    ! TO MODIFIED 2026-11-24 (Ramses-FG 14d37df): the list of active markers is collected before the cell loop and
+    ! store_SFC_candidate already drops such cells (the candidate lists stay short); this loop is kept as a safeguard
     if (pop2_SFC_marker) then
-      call collect_active_SFC   ! SFC_n_active, SFC_pos_active (pm_commons): all FAM_SFC particles
       do iloc = 1, SFC_ncand_loc
         do jglob = 1, SFC_n_active
           r2 = sum((SFC_poscand_loc(1:3,iloc) - SFC_pos_active(1:3,jglob))**2)
@@ -4550,8 +4497,40 @@ contains
         end do
       end do
     end if
+    ! TO ADDED 2026-11-24 (Ramses-FG 14d37df): SFC markers: among the candidates of this step within SFC_dist_min of
+    ! each other the one with the highest priority survives: kind 1 (SFC condition) before kind 2 (star formation
+    ! condition), then the higher density, then the lower index (the SFC model below keeps its list-order rule)
+    if (pop2_SFC_marker) then
+      SFC_kindcand_glob(1:SFC_ncand_tot) = 0
+      SFC_dcand_glob(1:SFC_ncand_tot) = 0d0
+      do iloc = 1, SFC_ncand_loc
+        SFC_kindcand_glob(iloc+offset) = SFC_kindcand_loc(iloc)
+        SFC_dcand_glob(iloc+offset) = SFC_dcand_loc(iloc)
+      end do
+      call MPI_ALLREDUCE(MPI_IN_PLACE, SFC_kindcand_glob, SFC_ncand_tot, MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, info)
+      call MPI_ALLREDUCE(MPI_IN_PLACE, SFC_dcand_glob, SFC_ncand_tot, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, info)
+      do iloc = 1, SFC_ncand_loc
+        if (flg_rmv(iloc)) cycle
+        iglob = iloc + offset
+        do jglob = 1, SFC_ncand_tot
+          if (jglob == iglob) cycle
+          if (SFC_kindcand_glob(jglob) > SFC_kindcand_glob(iglob)) cycle
+          if (SFC_kindcand_glob(jglob) == SFC_kindcand_glob(iglob)) then
+            if (SFC_dcand_glob(jglob) < SFC_dcand_glob(iglob)) cycle
+            if (SFC_dcand_glob(jglob) == SFC_dcand_glob(iglob) .and. jglob > iglob) cycle
+          end if
+          ! candidate jglob has the higher priority
+          r2 = sum((SFC_poscand_glob(1:3,iglob) - SFC_poscand_glob(1:3,jglob))**2)
+          if (r2 < SFC_dist_min**2) then
+            flg_rmv(iloc) = .true.
+            exit
+          end if
+        end do
+      end do
+    end if
     ! check if SFC (upper in list) forms near current candidate
     do iloc = 1, SFC_ncand_loc
+      if (pop2_SFC_marker) exit   ! TO ADDED 2026-11-24 (Ramses-FG 14d37df): markers are handled above
       iglob = iloc + offset
       ! rejected candidates are included in this loop but it should not significantly affect the results
       ! because not all candidates are removed (KS MEMO)
@@ -4593,6 +4572,7 @@ contains
       if (.not. flg_rmv(iloc)) then
         SFC_n_loc = SFC_n_loc + 1           !number of SFC after removal
         SFC_pos_loc(:,SFC_n_loc) = SFC_poscand_loc(:,iloc) !position of SFC center
+        if (pop2_SFC_marker) SFC_kind_loc(SFC_n_loc) = SFC_kindcand_loc(iloc)   ! TO ADDED 2026-11-24
       end if
     end do
 
@@ -4627,6 +4607,14 @@ contains
       SFC_pos_glob(2,iglob) = rbufr((iglob-1)*3+2)
       SFC_pos_glob(3,iglob) = rbufr((iglob-1)*3+3)
     end do
+    ! TO ADDED 2026-11-24 (Ramses-FG 14d37df): kind of the surviving markers (global list, same order as SFC_pos_glob)
+    if (pop2_SFC_marker) then
+      SFC_kind_glob(1:SFC_n_tot) = 0
+      do iloc = 1, SFC_n_loc
+        SFC_kind_glob(iloc+offset) = SFC_kind_loc(iloc)
+      end do
+      call MPI_ALLREDUCE(MPI_IN_PLACE, SFC_kind_glob, SFC_n_tot, MPI_INTEGER, MPI_SUM, MPI_COMM_WORLD, info)
+    end if
 
     !KS DEBUG
     if (myid == 1) then
@@ -4642,9 +4630,17 @@ contains
   !----------------------------------------------------------------------
   ! TO ADDED 2026-11-11: put a cell on the SFC candidate list (SFC markers in the local Pop II models)
   !----------------------------------------------------------------------
-  subroutine store_SFC_candidate(icell, pos)
+  subroutine store_SFC_candidate(icell, pos, kind, dens)
     integer, intent(IN) :: icell
     real(dp), dimension(1:3), intent(IN) :: pos
+    integer, intent(IN) :: kind    ! TO ADDED 2026-11-24 (Ramses-FG 14d37df): 1 = SFC condition, 2 = star formation condition only
+    real(dp), intent(IN) :: dens   ! gas density of the cell (code units)
+    integer :: ja
+    ! a cell within SFC_dist_min of an active marker cannot get a marker: do not list it
+    ! (such cells stay candidates for SFC_t_life and would fill the lists; SFC_n_max is a hard limit)
+    do ja = 1, SFC_n_active
+      if (sum((pos(1:3) - SFC_pos_active(1:3,ja))**2) < SFC_dist_min**2) return
+    end do
     SFC_ncand_loc = SFC_ncand_loc + 1
     if (SFC_ncand_loc > SFC_n_max) then
       write(*,*)'Number of local SFC candidates exceeds the limit ',SFC_ncand_loc, SFC_n_max
@@ -4653,6 +4649,8 @@ contains
     end if
     SFC_indcellcand_loc(SFC_ncand_loc) = icell
     SFC_poscand_loc(1:3,SFC_ncand_loc) = pos(1:3)
+    SFC_kindcand_loc(SFC_ncand_loc) = kind
+    SFC_dcand_loc(SFC_ncand_loc) = dens
     ! (no message per candidate: in a local model the cells near an active marker stay candidates for SFC_t_life;
     !  SFC_from_candidate reports the counts and create_SFC_markers the new markers)
   end subroutine store_SFC_candidate
@@ -4745,8 +4743,9 @@ contains
           ", vp:", vp(ind_part1(1),:)*scale_l/scale_t/1d5, ", xp:", xp(ind_part1(1),:)
       end if
       if (myid == 1) then
-        print '(A,I5,A,I5,A,I10,A,1P3E20.12)', '** SFC marker **  iSFC/nSFC: ', iSFC, '/', SFC_n_tot, &
-          ', idp = ', nstar_tot, ', pos = ', SFC_pos_glob(1:3,iSFC)
+        ! TO MODIFIED 2026-11-24 (Ramses-FG 14d37df): kind = 1: SFC condition (div v < 0 + density peak); 2: star formation condition of the local model only
+        print '(A,I5,A,I5,A,I10,A,1P3E20.12,A,I2)', '** SFC marker **  iSFC/nSFC: ', iSFC, '/', SFC_n_tot, &
+          ', idp = ', nstar_tot, ', pos = ', SFC_pos_glob(1:3,iSFC), ', kind = ', SFC_kind_glob(iSFC)
       end if
 
       !------------------------------------------
