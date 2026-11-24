@@ -42,6 +42,8 @@ subroutine star_formation(ilevel)
   real(dp)::ul,ur,fl,fr,trgv,alpha0, mach
   real(dp)::sigma2,sigma2_comp,sigma2_sole,lapld,flong,ftot,pcomp=0.3d0
   real(dp)::divv,divv2,curlv,curlva,curlvb,curlvc,curlv2
+  real(dp)::d_alpha,xw2,vdotx,cnum,cden
+  real(dp),dimension(1:3)::xoff,xbar
   real(dp)::birth_epoch,factG
   real(kind=8)::mlost_all,mtot_all
 #ifndef WITHOUTMPI
@@ -275,7 +277,7 @@ subroutine star_formation(ilevel)
 !$omp & private(T2,T_poly,alpha0,b_turb,cs2,cs2_poly,curlv,curlv2,curlva,curlvb,curlvc,d,d1,d2,d3) &
 !$omp & private(d4,d5,d6,divv,divv2,dtot,fl,flong,fr,ftot,i,ind,iskip,j,lapld,mach,nH,ncell,ngrid) &
 !$omp & private(phi_t,phi_x,scrit,sigma2,sigma2_comp,sigma2_sole,sigs,t_dyn,t_ff,tdec,theta,trgv,ul) &
-!$omp & private(ur,vx,vx2,vy,vy2,vz,vz2,zeta) &
+!$omp & private(ur,vx,vx2,vy,vy2,vz,vz2,zeta,d_alpha,xw2,vdotx,cnum,cden,xoff,xbar) &
 #ifdef SOLVERmhd
 !$omp & private(A,B,C,beta,emag,fbeta) &
 #endif
@@ -356,6 +358,7 @@ subroutine star_formation(ilevel)
 
             vx = 0 ; vy = 0 ; vz = 0 ; vx2 = 0 ; vy2 = 0 ; vz2 = 0
             dtot = 0
+            d_alpha = d
             if (sf_model == 6 .or. sf_model == 7) then
               ! Mass-weighted velocity dispersion over the 3x3x3 cell cube.
               ! get_27_neighbors returns the coarser cell (one level down) that
@@ -395,6 +398,33 @@ subroutine star_formation(ilevel)
               ! 1D velocity dispersion (sigma_1d^2 = sigma_3d^2/3), as in Kretschmer & Teyssier 2020:
               ! their alpha_vir and Mach number (M = sigma_1d/c_s) are both defined with sigma_1d.
               sigma2 = (vx2 + vy2 + vz2 - vx**2 - vy**2 - vz**2)/3d0
+              ! sf_alpha_meandens: the virial parameter uses the mean density of the cube (the region over
+              ! which sigma is measured) instead of the density of the central cell.
+              if (sf_alpha_meandens) d_alpha = dtot/threetondim
+              ! sf_sigma_noconv: remove the isotropic converging flow from the dispersion. A radial flow
+              ! v - <v> = c (x - <x>) about the centre of mass of the cube is fitted by mass-weighted least
+              ! squares; if c < 0 (convergence) the variance it explains, c^2 <|x-<x>|^2>, is subtracted (the
+              ! residual of a one-parameter fit, so it is never negative). Expansion is kept.
+              ! A father cell standing in for missing neighbours is placed at the nominal offset.
+              if (sf_sigma_noconv) then
+                xbar = 0 ; xw2 = 0 ; vdotx = 0
+                do j=1,threetondim
+                  d1 = uold(ind_nborcube(j),1)
+                  if (nbor_prim(j)) then
+                    vnb(1:3) = uold(ind_nborcube(j),2:4)
+                  else
+                    vnb(1:3) = uold(ind_nborcube(j),2:4)/d1
+                  end if
+                  xoff(1) = mod(j-1,3)-1 ; xoff(2) = mod((j-1)/3,3)-1 ; xoff(3) = (j-1)/9-1
+                  xbar  = xbar  + d1*xoff
+                  xw2   = xw2   + d1*sum(xoff**2)
+                  vdotx = vdotx + d1*sum(vnb*xoff)
+                end do
+                xbar = xbar/dtot
+                cnum = vdotx/dtot - (vx*xbar(1) + vy*xbar(2) + vz*xbar(3))
+                cden = xw2/dtot - sum(xbar**2)
+                if (cnum < 0d0 .and. cden > 0d0) sigma2 = max(sigma2 - cnum**2/cden/3d0, 0d0)
+              end if
             else
               !!!!!!!!!!!!!!!!!!
               ! Divergence terms
@@ -616,10 +646,11 @@ subroutine star_formation(ilevel)
                CASE (6)
                 ! Virial parameter
                 !alpha0    = (5.0d0*sigma2)/(pi*factG*d*dx_loc**2)
-                alpha0    = (1.1937*(sigma2+cs2))/(factG*d*dx_loc**2) ! 5/(4 pi/3)
-                ! Turbulent forcing parameter (Federrath 2008 & 2010): &SF_PARAMS sf_b_turb (default 0.4).
+                alpha0    = (1.1937*(sigma2+cs2))/(factG*d_alpha*dx_loc**2) ! 5/(4 pi/3)
+                ! Turbulent forcing parameter (Federrath 2008 & 2010): &SF_PARAMS sf_b_turb (default 0.4*sqrt(3) = 0.69).
                 ! Kretschmer & Teyssier 2020 give no value. Federrath's b is calibrated for the 3D rms Mach number;
-                ! for the 1D Mach number used here the natural (mixed) forcing b_3d = 0.4 corresponds to 0.4*sqrt(3) = 0.69.
+                ! for the 1D Mach number used here the natural (mixed) forcing b_3d = 0.4 corresponds to 0.4*sqrt(3).
+                ! (The default was 0.4 until 2026-11-24.)
                 b_turb    = sf_b_turb
 #ifdef SOLVERmhd
                 ! Best fit values to the Multi-ff KM model (MHD)
@@ -644,7 +675,7 @@ subroutine star_formation(ilevel)
 #endif
                 sfr_ff(i) = (eps_star/2.0d0)*exp(3.0d0/8.0d0*sigs)*(2.0d0-erfc((sigs-scrit)/sqrt(2.0d0*sigs)))
                CASE (7) ! Hopkins 2013
-                alpha0    = (1.1937*(sigma2+cs2))/(factG*d*dx_loc**2) ! 5/(4 pi/3)
+                alpha0    = (1.1937*(sigma2+cs2))/(factG*d_alpha*dx_loc**2) ! 5/(4 pi/3)
                 if (d*scale_nH > 500) then
                   write(*,*) 'alpha0 = ', alpha0, ' sigma2 = ', sigma2, ' cs2 = ', cs2, 'nH = ', d*scale_nH
                 endif

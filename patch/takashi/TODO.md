@@ -1247,6 +1247,18 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   - 初期温度 0.5% (`rt_evol_single_cell` の冷却率・定数)、`x_MIN` (ks 1e-12 / takashi 1e-20) の差は残したまま。
   - 未移植で ks 側を off にして比べたもの: `flg_voffset_ini` (初速オフセット)、`fof_find`、`flg_thin_star_cell`、`pop2_SN_model`。
 
+## 3c. sf_model=6 の σ の定義 (2026-11-24、docs/sf_model6_sigma.md)
+
+- 本番の output_00038 で、星ができるセルの σ は主に収縮流を測っていた (星形成率の 99.8% が `div v < 0`)。
+- 足したもの: `sf_sigma_noconv`、`sf_alpha_meandens` (既定 .false.、既定では bit 一致)。`sf_b_turb` の既定値を 0.4 → 0.4√3 に変更
+  (**namelist に書いていないランは結果が変わる**; 以前の値は `sf_b_turb=0.40000000596046448`)。
+- やり残し:
+  - 本番の分解能で流していない。output 38 から 20-30 Myr 流して、星形成率・星のできる密度・SN の dt への影響を見る。
+    瞬間の見積もりでは 2 つのスイッチ + 新しい b で星形成率 28 倍 (自己調整でどこまで戻るかは不明)。
+  - father セルが入る箱 (level 境界) での `sf_sigma_noconv` は数値を確かめていない。
+  - 乱流エネルギー K の方程式 (KT20 式 4-7) は未実装。
+  - `sf_virial=.true.` の経路と `sf_model=8` には入れていない。
+
 ## 4. 運用上のメモ
 
 - **restart ファイルの保護 (2026-11-16、patch/ks から移植)**: `dump_restart` (`output_amr.f90`) は `output_restart.tmp/` に書き、全ランクが

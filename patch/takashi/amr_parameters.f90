@@ -195,8 +195,12 @@ module amr_parameters
   real(dp)::sf_trelax=0              ! Relaxation time for star formation (cosmo=.false. only)
   real(dp)::sf_tdiss=0               ! Dissipation timescale for subgrid turbulence in units of turbulent crossing time
   integer::sf_model=3                ! Virial star formation model
-  real(dp)::sf_b_turb=0.4            ! (single-precision literal on purpose: bit-identical to the earlier hard-coded 0.4)
-                                     ! sf_model=6: turbulent forcing parameter b in sigma_s^2 = ln(1 + b^2 M^2), with M = sigma_1d/c_s.
+  logical ::sf_sigma_noconv=.false.   ! sf_model 6/7: remove the isotropic converging flow from the 3x3x3 velocity dispersion
+  logical ::sf_alpha_meandens=.false. ! sf_model 6/7: virial parameter with the mean density of the 3x3x3 cube
+  real(dp)::sf_b_turb=0.6928203230275509d0 ! sf_model=6: turbulent forcing parameter b in sigma_s^2 = ln(1 + b^2 M^2), with M = sigma_1d/c_s.
+                                     ! Default = 0.4*sqrt(3): the natural (mixed) forcing b = 0.4 of Federrath et al. is defined for the
+                                     ! 3D rms Mach number, sigma_3d = sqrt(3) sigma_1d. Until 2026-11-24 the default was the
+                                     ! single-precision literal 0.4 (= 0.40000000596046448); set that value to reproduce older runs.
                                      ! Federrath's b (1/3 solenoidal, ~0.4 natural mix, 1 compressive) is calibrated for the 3D rms
                                      ! Mach number; with the 1D Mach number used here the same forcing is b*sqrt(3): 0.69 for the natural mix.
   integer::nlevel_collapse=3         ! Number of levels to follow initial dark matter collapse (cosmo=.true. only)
