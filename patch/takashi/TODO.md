@@ -1259,6 +1259,13 @@ grid 数だけでは CG/MG のどちらが速いか決まらない (CG の反復
   - 乱流エネルギー K の方程式 (KT20 式 4-7) は未実装。
   - `sf_virial=.true.` の経路と `sf_model=8` には入れていない。
 
+## 3d. ダスト (放射) 温度 TR と IR 群の判定 (2026-11-24、docs/dust_temperature.md)
+
+- `is_kIR_T` の TR を釣り合いの式で解くようにした (上流の 1 回の式は UV 支配の所で TR が 2-4 倍高い)。`rt_isIR_alt` の
+  IR 群の subcycle 判定は再放出を足した正味の変化で行う。旧来の式は残していない。DICE の本番では結果は実質変わらない。
+  IR 群へ移す量 (UV・可視のダスト吸収分と IR の再放出) は吸収後の光子数で数える (以前はガスが吸収した光子もダストの分に数えていた)。
+- やり残し: 群 1 に星の近赤外が入る、TR に CMB の下限が無い。本番の分解能・`rt_skip_convergence=.false.` での計算時間は未測定。
+
 ## 4. 運用上のメモ
 
 - **restart ファイルの保護 (2026-11-16、patch/ks から移植)**: `dump_restart` (`output_amr.f90`) は `output_restart.tmp/` に書き、全ランクが

@@ -418,6 +418,8 @@ CONTAINS
       real(dp),dimension(nGroups):: recRad, phAbs, phSc, dustAbs
       real(dp),dimension(nGroups):: dustSc, kAbs_loc,kSc_loc
       real(dp):: rho, TR, one_over_C_v, E_rad, dE_T, fluxMag, mom_fact
+      real(dp):: S_dust, T_lo, T_hi, T_new, kT, gT, dgT, dNp_IRadd   ! dust temperature balance, net IR change (TO ADDED 2026-11-24)
+      integer:: itTR
       real(dp):: G0, eff_peh, cdex, ncr
       logical::newAtomicCons=.true.
       real(dp):: f_shd, xH2_tmp, de_thin          ! LW self-shielding (ks)
@@ -498,15 +500,50 @@ CONTAINS
         if(is_kIR_T) then                           ! k_IR depends on T_rad
           ! For the radiation temperature,  weigh the energy in each group
           ! by its opacity over IR opacity (derived from IR temperature)
+          ! TO MODIFIED 2026-11-24: radiation (dust) temperature from the balance between the dust emission
+          ! and the absorption of all groups, with the IR opacity at that same temperature:
+          !   a T^4 kIR(T) = c_frac ( E_IR kIR(T) + sum_{i/=IR} k_i E_i ),  kIR(T) = kappaAbs(iIR) (T/10)^2 exp(-T/1e3)
+          ! The upstream one-step estimate (kIR at the temperature of the IR group alone, then
+          ! E_rad = E_IR + sum k_i/kIR E_i) is replaced: where the IR is not trapped (UV / optical heating
+          ! dominates) that kIR is too small and TR came out too high (production DICE run: median 10 K instead
+          ! of 4 K, kIR about 6 times too large). Where E_IR dominates the two agree.
+          ! g(T) = a T^4 - c_frac (E_IR + S/kIR(T)) increases with T up to 2000 K (maximum of kIR): safeguarded
+          ! Newton from the lower bound max(T_IR, UV-dominated solution without the exponential), which is the
+          ! root itself when T << 1000 K and E_IR is negligible (usually 2 evaluations). Without a root below
+          ! 2000 K (dust cannot balance the heating) the one-step form with kIR(2000 K) is used.
           E_rad = group_egy_erg(iIR) * dNp(iIR)
-          TR = max(0d0,(E_rad*rt_c_fraction/a_r)**0.25)   ! IR temperature
-          kAbs_loc(iIR) = kappaAbs(iIR) * (TR/10d0)**2
+          S_dust = 0d0
           do iGroup=1,nGroups
-            if(iGroup .ne. iIR)                                         &
-              E_rad = E_rad + kAbs_loc(iGroup) / kAbs_loc(iIR)       &
-              * group_egy_erg(iGroup) * dNp(iGroup)
+            if(iGroup .ne. iIR) S_dust = S_dust + kAbs_loc(iGroup) * group_egy_erg(iGroup) * dNp(iGroup)
           end do
-          TR = max(0d0,(E_rad*rt_c_fraction/a_r)**0.25) ! Rad. temperature
+          TR = max(0d0,(E_rad*rt_c_fraction/a_r)**0.25)   ! IR temperature
+          if(S_dust .gt. 0d0 .and. kappaAbs(iIR) .gt. 0d0) then
+            T_lo = max(TR, (1d2*rt_c_fraction*S_dust/(kappaAbs(iIR)*a_r))**(1d0/6d0))
+            T_hi = 2d3
+            kT = kappaAbs(iIR) * (T_hi/10d0)**2 * exp(-T_hi/1d3)
+            if(T_lo .ge. T_hi .or. a_r*T_hi**4 - rt_c_fraction*(E_rad + S_dust/kT) .le. 0d0) then
+              TR = max(T_lo, (rt_c_fraction*(E_rad + S_dust/kT)/a_r)**0.25)
+            else
+              TR = T_lo
+              do itTR=1,60
+                kT  = kappaAbs(iIR) * (TR/10d0)**2 * exp(-TR/1d3)
+                gT  = a_r*TR**4 - rt_c_fraction*(E_rad + S_dust/kT)
+                dgT = 4d0*a_r*TR**3 + rt_c_fraction*S_dust/kT*(2d0/TR - 1d-3)
+                if(gT .lt. 0d0) then
+                  T_lo = TR
+                else
+                  T_hi = TR
+                endif
+                T_new = TR - gT/dgT
+                if(.not.(T_new .gt. T_lo .and. T_new .lt. T_hi)) T_new = 0.5d0*(T_lo+T_hi)
+                if(abs(T_new-TR) .le. 1d-6*TR) then
+                  TR = T_new
+                  exit
+                endif
+                TR = T_new
+              end do
+            endif
+          endif
           if(rt_T_rad) then ! Use radiation temperature for everything
             dT2 = TR/mu ;   TK = TR
           endif
@@ -612,6 +649,29 @@ CONTAINS
             endif
           endif
 
+          ! TO MODIFIED 2026-11-24: with rt_isIR_alt the IR absorbed by dust is re-emitted in the same step and
+          ! the dust-absorbed UV / optical energy is moved to IR. dNp_IRadd is that amount [IR photons cm-3]:
+          !   sum_i dustAbs(i) ddt N_new(i) E_i/E_IR  (i = all groups, the IR group itself = re-emission),
+          ! with N_new the photon density after the implicit update below (same expression). The implicit update
+          ! N_new = (N + ddt S)/(1 + ddt phAbs) removes ddt phAbs N_new, of which ddt dustAbs N_new goes to dust,
+          ! so gas and dust share the absorbed photons in proportion to their rates and the IR group is
+          ! conserved exactly under absorption + re-emission. Formerly the density BEFORE absorption (dNp_noabs)
+          ! was used: photons absorbed by the gas were also counted as absorbed by dust (ionising photons in
+          ! neutral gas: up to ddt*dustAbs of their energy went to IR in addition to the ionisation), and the
+          ! re-emitted IR exceeded the absorbed IR by a factor 1 + ddt*phAbs.
+          ! dNp_IRadd is also used in the subcycle test of the IR group (net change; the test was made on the
+          ! absorption alone before).
+          dNp_IRadd = 0d0
+          if(rt_isIR_alt) then
+            do igroup=1,nGroups
+              dNp_IRadd = dNp_IRadd + dustAbs(igroup) * ddt(icell)               &
+                * MAX(smallNp,                                                   &
+                (ddt(icell)*(recRad(igroup)+dNpdt(igroup,icell))                 &
+                +dNp_save(igroup))                                               &
+                / (1d0+ddt(icell)*phAbs(igroup))) * group_egy_ratio(igroup)
+            end do
+          endif
+
           dmom(1:nDim)=0d0
           do igroup=1,nGroups  ! ------------------- Do the update of N and F
             dNp_save(igroup)= MAX(smallNp,                                      &
@@ -620,6 +680,9 @@ CONTAINS
               / (1d0+ddt(icell)*phAbs(igroup)))
 
             dUU = ABS(dNp_save(igroup)-Np(igroup,icell))                        &
+              /(Np(igroup,icell)+Np_MIN) * one_over_Np_FRAC
+            if(igroup .eq. iIR .and. rt_isIR_alt)                               &
+              dUU = ABS(dNp_save(igroup)+dNp_IRadd-Np(igroup,icell))            &
               /(Np(igroup,icell)+Np_MIN) * one_over_Np_FRAC
             if(.not.rt_skip_convergence) then
               if(.not. (dUU .le. 1d0)) then
@@ -679,14 +742,9 @@ CONTAINS
           dp_gas = dp_gas + dmom * rt_pressBoost        ! update gas momentum
 
           ! Add absorbed UV/optical energy to IR:----------------------------
-          if(rt_isIR_alt) then
-            do igroup=iIR+1,nGroups
-              dNp_save(iIR) = dNp_save(iIR) + dustAbs(igroup) * ddt(icell)          &
-                * dNp_noabs(igroup) * group_egy_ratio(igroup)
-            end do
-            dNp_save(iIR) = dNp_save(iIR) + dustAbs(iIR) * ddt(icell)          &
-              * dNp_noabs(iIR) ! dust re-emission
-          endif
+          ! TO MODIFIED 2026-11-24: dNp_IRadd (computed above from the photon densities after absorption)
+          ! = dust-absorbed UV / optical energy + dust re-emission of the absorbed IR
+          if(rt_isIR_alt) dNp_save(iIR) = dNp_save(iIR) + dNp_IRadd
           ! -----------------------------------------------------------------
 
         else !=========================== default mode =======================
