@@ -12,11 +12,19 @@ Every job decides at run time which namelist to use: xd_rt_rs.nml if output_rest
 exists, otherwise xd_rt.nml (first start). A lock directory (run.lock/) makes a job
 exit at once if another job of this directory is still running, so two jobs never
 write to the same outputs.
+
+ForceFirstNml = "Yes": the job that runs first reads xd_rt.nml even if output_restart/
+exists (e.g. a restart from a numbered output, nrestart=N, in a directory that still has
+an old output_restart/). Submitting creates the marker file force_first_nml; the first
+job that gets the lock removes it and uses xd_rt.nml, all later jobs choose as above.
+ForceFirstNml = "No": every job chooses by the presence of output_restart/.
 =end
 
 #Select your system.
 System = "xd"
 
+ForceFirstNml = "No"                              # "Yes": the first job to run reads xd_rt.nml regardless of output_restart/
+#ForceFirstNml = "Yes"
 NumberofQueue=10                                  # independent jobs (no dependency)
 BinaryName1 = "./ramses/bin/ramses3d"
 BinaryName2 = "./ramses/bin/ramses3d"
@@ -111,13 +119,28 @@ def write_script(str, snapnum, new)
     outputfile.print '  echo "stale lock of job $owner: taking over"', "\n"
     outputfile.print 'fi', "\n"
     outputfile.print 'echo $SLURM_JOB_ID > run.lock/jobid', "\n"
-    outputfile.print 'if [ -d output_restart ]; then nml=xd_rt_rs.nml; else nml=xd_rt.nml; fi', "\n"
+    # force_first_nml (written at submit time when ForceFirstNml = "Yes"): the first job to run takes xd_rt.nml
+    outputfile.print 'if [ -e force_first_nml ]; then', "\n"
+    outputfile.print '  rm -f force_first_nml; nml=xd_rt.nml; echo "force_first_nml found: forced to xd_rt.nml"', "\n"
+    outputfile.print 'elif [ -d output_restart ]; then nml=xd_rt_rs.nml; else nml=xd_rt.nml; fi', "\n"
     outputfile.print 'echo "namelist: $nml"', "\n"
     outputfile.print srun, " ", BinaryName1, ' $nml', "\n"
     outputfile.print 'if [ "$(cat run.lock/jobid 2>/dev/null)" = "$SLURM_JOB_ID" ]; then rm -rf run.lock; fi', "\n"
 
     outputfile.flush
     outputfile.close
+end
+
+if ForceFirstNml == "Yes"
+  `touch force_first_nml`
+  print "ForceFirstNml: the first job to run will read xd_rt.nml\n"
+elsif ForceFirstNml == "No"
+  if File.exist?("force_first_nml")
+    print "Warning: an old force_first_nml exists in this directory; remove it unless the first job should read xd_rt.nml\n"
+  end
+else
+  print "ForceFirstNml must be \"Yes\" or \"No\"\n"
+  exit(1)
 end
 
 (NumberofQueue).times{ |i|
