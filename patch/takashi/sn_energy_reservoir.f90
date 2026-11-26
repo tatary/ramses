@@ -40,13 +40,17 @@ contains
   ! TO MODIFIED: All ranks supply the same event list/decisions and energies in ERG.
   ! Volume weighting gives selected cells the same energy-density increment. Only owners
   ! write the reservoir; no reverse ghost accumulation is needed.
-  subroutine deposit_sn_reservoir(positions, energies, choices)
+  subroutine deposit_sn_reservoir(positions, energies, choices, coolstop)
     real(dp), intent(in) :: positions(:,:), energies(:)
     type(sn_radius_choice), intent(in) :: choices(:)
+    logical, intent(in), optional :: coolstop ! .false.: no cooling-stop request on the host (wind packets)
+    logical :: set_coolstop
     real(dp) :: origin(ndim), extent(ndim), scale, dx, width, volume
     real(dp) :: offset(ndim), lower(ndim), center(ndim), point(ndim), distance(ndim)
     integer :: lev, ind, idim, ig, cell, event
     logical :: periodic(ndim), selected, host !TO MODIFIED
+    set_coolstop=.true.
+    if(present(coolstop))set_coolstop=coolstop
     call init_sn_reservoir()
     if(.not.allocated(sn_pending))return
     if(size(positions,1)/=ndim.or.size(positions,2)/=size(energies).or.size(choices)/=size(energies)) &
@@ -94,7 +98,7 @@ contains
               sn_pending(cell)=sn_pending(cell)+energies(event)/choices(event)%stats%volume
             endif
             ! TO ADDED: Other heated cells retain any old timer but receive no new request.
-            if(host.and.fcool_stop>0.0_dp)sn_pending_coolstop(cell)=1.0_dp
+            if(host.and.fcool_stop>0.0_dp.and.set_coolstop)sn_pending_coolstop(cell)=1.0_dp
           enddo
         enddo
       enddo

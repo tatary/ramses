@@ -106,6 +106,10 @@ module pm_commons
   integer,dimension(1:SNinfo_nSNmax) :: SNinfo_idp
   real(dp),dimension(1:SNinfo_nSNmax) :: SNinfo_ESN    !pure SN energy [code units] (no winds)
   real(dp),dimension(1:3,1:SNinfo_nSNmax) :: SNinfo_pos
+  ! Wind packets of the current step on this rank (E_wind_batch > 0; feedback.f90 -> SN reservoir)
+  integer :: WINDinfo_n = 0
+  real(dp),dimension(1:SNinfo_nSNmax) :: WINDinfo_E    !packet energy [code units]
+  real(dp),dimension(1:3,1:SNinfo_nSNmax) :: WINDinfo_pos
 
   ! Customize here for particle tags within particle types (e.g. different kind of stars).
   ! Note that the type should be integer(1) (1 byte integers) for memory concerns.

@@ -103,7 +103,8 @@ cd bin && make -j1            # 並列 make はモジュール依存が書かれ
   (ufront)、`sbs_imf.f90`、`output_analysis.f90` (ugvtk: SFC/Pop III/指定星の周りの入れ子 VTK、`&OUTPUT_PARAMS` の `ugvtk=.true.` で有効)、`sf_log.f90` (星形成/SN ログの共通 writer)。
   テストは `tests/dice_rt_fg.nml`。フィードバック側: `feedback.f90` に Pop III SN と SFC 寿命、`&FEEDBACK_PARAMS` の
   `SN_reservoir` (SN 熱を冷却半径の球へ、`sn_*.f90` 3 本 + amr_step/refine_utils/load_balance/init_hydro/output_hydro のフック)、
-  `fcool_stop` (冷却停止タイマー、NPSCAL を 1 つ余計に取る)。sink/BH: `sf_fg` のとき `sink_particle_fg.f90` (ks の
+  `fcool_stop` (冷却停止タイマー、NPSCAL を 1 つ余計に取る)。 `E_wind_batch` [erg] (既定 0 = 無効): `msp0/mp0` 倍される若い星の星風エネルギーを
+  パケットにまとめ、半径 `Ncell_wind` (既定 4) × dx の球へ reservoir 経由で入れる (`docs/wind_batch.md`、`SN_reservoir` が必要)。sink/BH: `sf_fg` のとき `sink_particle_fg.f90` (ks の
   sink、全ルーチン `_fg` 付き、cloud 粒子は family 9 `FAM_CLOUD_FG` で `is_cloud` が sf_fg を見る) に amr_step/init_part/
   particle_tree/output_amr/newdt_fine/force_fine/read_params が振り分ける。`&SINK_PARAMS` の `bhpop3`, `BH_model`,
   `sink_mass_min_pop3BH` 等; BH の放射は `rt_spectra` の `set_BH_SED`/`BH_RT_feedback`。

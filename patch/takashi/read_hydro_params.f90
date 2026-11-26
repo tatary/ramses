@@ -93,7 +93,8 @@ subroutine read_hydro_params(nml_ok)
   & ,f_w,f_esn,mass_gmc,kappa_IR,delayed_cooling,momentum_feedback &
   & ,ir_feedback,ir_eff,t_diss,t_sne,mass_star_max,mass_sne_min &
   & ,f_esn_loop &
-  & ,pop3_ESN,SN_reservoir,SN_radius_search,Ncell_SN_max,fcool_stop   ! FG feedback (merge_ks)
+  & ,pop3_ESN,SN_reservoir,SN_radius_search,Ncell_SN_max,fcool_stop &  ! FG feedback (merge_ks)
+  & ,E_wind_batch,Ncell_wind
 
   ! Cooling / basic chemistry parameters
   namelist/cooling_params/cooling,metal,isothermal,haardt_madau,J21 &
@@ -583,6 +584,23 @@ subroutine read_hydro_params(nml_ok)
       nml_ok=.false.
     endif
     if(myid==1)write(*,*)'   ivar_coolstop = ',ivar_coolstop
+  endif
+  if(E_wind_batch>0d0)then
+    if(.not.SN_reservoir)then
+      if(myid==1)write(*,*)'E_wind_batch > 0 requires SN_reservoir=.true. (the packets go through the SN reservoir)'
+      nml_ok=.false.
+    endif
+    if(Ncell_wind<=0d0)then
+      if(myid==1)write(*,*)'Ncell_wind must be positive'
+      nml_ok=.false.
+    endif
+#ifndef STELLAR_POPULATION_MASS
+    if(myid==1)write(*,*)'E_wind_batch > 0 requires a build with STELLAR_POPULATION_MASS=1'
+    nml_ok=.false.
+#endif
+  else if(E_wind_batch<0d0)then
+    if(myid==1)write(*,*)'E_wind_batch must not be negative'
+    nml_ok=.false.
   endif
   if(SN_reservoir)then
     SN_radius_search=.true.

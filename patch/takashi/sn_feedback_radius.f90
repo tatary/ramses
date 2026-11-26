@@ -4,11 +4,12 @@ module sn_feedback_radius
   use amr_commons, only: dp, ndim, myid, nboundary, simple_boundary, boundary_type, &
     nstep, nstep_coarse, Ncell_SN_max
   use sn_sphere_stats, only: sphere_stats, sn_radius_choice, get_sn_host_stats_many, &
-    select_sn_feedback_radius, make_sn_candidate_radii, get_sn_sphere_stats_events, sn_radius_unresolved
+    select_sn_feedback_radius, make_sn_candidate_radii, get_sn_sphere_stats_events, sn_radius_unresolved, sn_radius_sphere
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
   implicit none
   private
   public :: evaluate_sn_feedback_radii, sn_radius_periodic_axes, report_sn_feedback_radii
+  public :: evaluate_fixed_sn_radii
   type :: event_candidates !TO ADDED: Candidate counts can differ between events.
     real(dp), allocatable :: radii(:)
   end type event_candidates
@@ -86,6 +87,38 @@ contains
         energy_erg(event),scale_l,scale_d,scale_nH,choices(event))
     enddo
   end subroutine evaluate_sn_feedback_radii
+
+  ! Batched winds (2026-11-26): a sphere of fixed radius ncell * host width around every event, no search.
+  ! Same conventions as evaluate_sn_feedback_radii (global event list on every rank, two collectives). The
+  ! sphere holds the leaf cells whose centres lie within the radius; an empty one falls back to the host cell.
+  subroutine evaluate_fixed_sn_radii(positions, ncell, state, choices)
+    real(dp), intent(in) :: positions(:,:), ncell, state(:,:)
+    type(sn_radius_choice), intent(out) :: choices(size(positions,2))
+    type(sphere_stats) :: hosts(size(positions,2)), spheres(size(positions,2))
+    real(dp) :: widths(size(positions,2)), radii(size(positions,2))
+    integer :: first(size(positions,2)+1), event
+    logical :: periodic(ndim)
+    choices=sn_radius_choice()
+    if(size(positions,2)==0)return
+    periodic=sn_radius_periodic_axes()
+    call get_sn_host_stats_many(positions,state,hosts,widths,periodic)
+    radii=ncell*widths
+    do event=1,size(positions,2)+1
+      first(event)=event
+    enddo
+    call get_sn_sphere_stats_events(positions,radii,first,state,spheres,periodic,compute_mu=.false.)
+    do event=1,size(positions,2)
+      choices(event)%radius=radii(event)
+      if(spheres(event)%volume>0.0_dp)then
+        choices(event)%single_cell=.false.
+        choices(event)%reason=sn_radius_sphere
+        choices(event)%stats=spheres(event)
+      else
+        choices(event)%single_cell=.true.
+        choices(event)%stats=hosts(event)
+      endif
+    enddo
+  end subroutine evaluate_fixed_sn_radii
 
   ! One rank emits one record per event to the ordinary RAMSES run log.
   ! reason: 0=sphere, 1=unresolved host, 2=no admissible candidate.

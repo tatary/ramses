@@ -16,6 +16,67 @@ module chemical_yields
       & 7.12d-4, 3.31d-4, 6.87d-5, 1.38d-3 /)
    real(dp), parameter :: agemax = 0.044d0 ! in Gyr
 end module chemical_yields
+!------------------------------------------------------------------------
+! Batched stellar winds (E_wind_batch > 0, 2026-11-26; docs/wind_batch.md)
+! Cumulative wind energy of a star particle per unit stellar-population mass, as a function of age and
+! metallicity only:  W(age, Z) = int_0^age 0.5 mdot(a) v(a)^2 f(a) da   [(km/s)^2],
+! with f = mp/mp0 the remaining mass fraction, d ln f/da = -(mdot + rate_CC * M_ej,CC) (the mass loss of
+! feedbk in the continuum limit; no SN Ia before agemax). The energy a particle has emitted up to an age is
+! msp0 * W, so the step in which it crosses a multiple of E_wind_batch follows from tp, zp and msp0 alone:
+! no stored state, nothing to write in the restart files.
+!------------------------------------------------------------------------
+module wind_batch
+   use chemical_yields
+   implicit none
+   integer, parameter :: nz_wb = 65, na_wb = 4401     ! log Z/Zsun in [0.01,3] (the clip of the wind fit), age in [0,agemax]
+   real(dp), allocatable :: wcum_wb(:,:)
+   real(dp) :: lz0_wb, dlz_wb, da_wb
+contains
+   subroutine init_wind_batch
+      real(dp) :: zz, age, mdot, vej, rcc, mcc, loss, loss_old, g, g_old, lnf
+      real(dp) :: met(1:nelements), yields(1:nelements)
+      integer :: iz, ia
+      if (allocated(wcum_wb)) return
+      allocate(wcum_wb(1:na_wb,1:nz_wb))
+      lz0_wb = log(0.01d0)
+      dlz_wb = (log(3.0d0)-lz0_wb)/dble(nz_wb-1)
+      da_wb = agemax/dble(na_wb-1)
+      do iz = 1, nz_wb
+         zz = exp(lz0_wb+dble(iz-1)*dlz_wb)
+         met = solar_abundances*zz
+         lnf = 0d0; loss_old = 0d0; g_old = 0d0
+         do ia = 1, na_wb
+            age = dble(ia-1)*da_wb
+            call get_wind_mass_loss_rate(age, met, mdot, vej)
+            call calculate_number_of_CC(age, rcc)
+            call get_CC_yields(age, yields, mcc)
+            loss = mdot+rcc*mcc
+            if (ia > 1) lnf = lnf-0.5d0*(loss_old+loss)*da_wb
+            g = 0.5d0*mdot*vej**2*exp(lnf)
+            if (ia == 1) then
+               wcum_wb(ia,iz) = 0d0
+            else
+               wcum_wb(ia,iz) = wcum_wb(ia-1,iz)+0.5d0*(g_old+g)*da_wb
+            endif
+            loss_old = loss; g_old = g
+         end do
+      end do
+   end subroutine init_wind_batch
+
+   ! W(age [Gyr], Z/Zsun) in (km/s)^2, bilinear in (age, log Z); monotonic in age, constant beyond agemax
+   function wind_cum_energy(age_Gyr, zz) result(w)
+      real(dp), intent(in) :: age_Gyr, zz
+      real(dp) :: w, xa, xz, fa, fz
+      integer :: ia, iz
+      if (.not. allocated(wcum_wb)) call init_wind_batch
+      xa = min(max(age_Gyr, 0d0), agemax)/da_wb
+      ia = min(int(xa), na_wb-2); fa = xa-dble(ia); ia = ia+1
+      xz = (log(min(max(zz, 0.01d0), 3.0d0))-lz0_wb)/dlz_wb
+      iz = min(max(int(xz), 0), nz_wb-2); fz = min(max(xz-dble(iz), 0d0), 1d0); iz = iz+1
+      w = (1d0-fz)*((1d0-fa)*wcum_wb(ia,iz)+fa*wcum_wb(ia+1,iz)) &
+         & +fz*((1d0-fa)*wcum_wb(ia,iz+1)+fa*wcum_wb(ia+1,iz+1))
+   end function wind_cum_energy
+end module wind_batch
 subroutine thermal_feedback(ilevel)
   use pm_commons
   use amr_commons
@@ -27,7 +88,7 @@ subroutine thermal_feedback(ilevel)
   ! FG feedback (merge_ks): SN radius search / energy reservoir
   use sn_sphere_stats, only: sn_radius_choice
   use sn_energy_reservoir, only: deposit_sn_reservoir
-  use sn_feedback_radius, only: evaluate_sn_feedback_radii, report_sn_feedback_radii
+  use sn_feedback_radius, only: evaluate_sn_feedback_radii, report_sn_feedback_radii, evaluate_fixed_sn_radii
 #endif
   implicit none
 #ifndef WITHOUTMPI
@@ -60,6 +121,7 @@ subroutine thermal_feedback(ilevel)
 
   call sf_log_open(ilun)
   SNinfo_nSN=0
+  WINDinfo_n=0
 
 
   if(numbtot(1,ilevel)==0)return
@@ -198,6 +260,43 @@ subroutine thermal_feedback(ilevel)
         deallocate(pos_glob,ESN_glob,idp_glob,choices)
      endif
   endif
+  !---------------------------------------------------------------------------
+  ! Batched winds (E_wind_batch > 0): the packets recorded by feedbk go into a sphere of radius
+  ! Ncell_wind * host dx through the SN reservoir (volume weighted, released before the next step of the level)
+  !---------------------------------------------------------------------------
+  if(E_wind_batch>0d0)then
+     nSN_list=0
+     nSN_list(myid)=WINDinfo_n
+#ifndef WITHOUTMPI
+     call MPI_ALLREDUCE(MPI_IN_PLACE,nSN_list,ncpu,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+     nSN_tot=sum(nSN_list)
+     if(nSN_tot>0)then
+        allocate(pos_glob(3,nSN_tot),ESN_glob(nSN_tot),choices(nSN_tot))
+        pos_glob=0d0; ESN_glob=0d0
+        ioff=sum(nSN_list(1:myid-1))
+        do iSN=1,WINDinfo_n
+           pos_glob(1:3,ioff+iSN)=WINDinfo_pos(1:3,iSN)
+           ESN_glob(ioff+iSN)=WINDinfo_E(iSN)
+        end do
+#ifndef WITHOUTMPI
+        call MPI_ALLREDUCE(MPI_IN_PLACE,pos_glob,3*nSN_tot,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+        call MPI_ALLREDUCE(MPI_IN_PLACE,ESN_glob,nSN_tot,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+        call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+        sn_scale_ene=scale_d*scale_l**3*scale_v**2
+        call evaluate_fixed_sn_radii(pos_glob,Ncell_wind,uold,choices)
+        call deposit_sn_reservoir(pos_glob,ESN_glob*sn_scale_ene,choices,coolstop=.false.)
+        if(myid==1)then
+           do iSN=1,nSN_tot
+              write(*,'(a,3(i0,1x),a,3(es12.4,1x))')'WIND_BATCH coarse/fine/level=',nstep_coarse,nstep,ilevel, &
+                   & 'E_erg/r_pc/M_sphere_Msun=',ESN_glob(iSN)*sn_scale_ene,choices(iSN)%radius*scale_l/3.0857d18, &
+                   & choices(iSN)%stats%mass*scale_d*scale_l**3/1.989d33
+           end do
+        endif
+        deallocate(pos_glob,ESN_glob,choices)
+     endif
+  endif
 #endif
 
   call sf_log_close(ilun)
@@ -217,6 +316,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel,ok3)
   use hydro_commons
   use random
   use chemical_yields
+  use wind_batch, only: wind_cum_energy
   use cooling_module, only: Y
   use constants, only: M_sun, Myr2sec, Gyr2sec, pc2cm
   implicit none
@@ -242,6 +342,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel,ok3)
   real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v, scale_mcgs
   real(dp):: scale_Msol, m_in_sol, scale_B_muG
   real(dp)::Msne, nSNCC, nSNIa, nSN_tot, Mej, Mej_winds, dE_winds, dMz, v_ej
+  real(dp)::a0_w, a1_w, e_thr_w, ec0_w, ec1_w, e_w   ! batched winds (E_wind_batch)
   ! Grid based arrays
   real(dp),dimension(1:nvector,1:ndim),save::x0
   integer ,dimension(1:nvector),save::ind_cell
@@ -555,6 +656,30 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel,ok3)
 #ifdef STELLAR_POPULATION_MASS
          if (t_age_Gyr .le. agemax) then
             dE_winds = dE_winds*msp0(ind_part(j))/mp0(ind_part(j))
+         endif
+         ! Batched winds: the scaled wind energy does not go into the host cell. A packet is recorded for every
+         ! multiple of E_wind_batch that the cumulative energy msp0 * W(age, Z) crosses during this step, and
+         ! the remainder when the particle reaches agemax (module wind_batch).
+         if (E_wind_batch > 0d0) then
+            if (t_age_Gyr .le. agemax) dE_winds = 0d0
+            a1_w = (current_time-birth_time)*tsec/Gyr2sec
+            a0_w = max(a1_w-dteff(j)*tsec/Gyr2sec, 0d0)
+            if (a0_w < agemax .and. msp0(ind_part(j)) > 0d0) then
+               e_thr_w = E_wind_batch/(scale_mcgs*scale_v**2)
+               ec0_w = msp0(ind_part(j))*wind_cum_energy(a0_w, metallicities(1)/solar_abundances(1))*(1d5/scale_v)**2
+               ec1_w = msp0(ind_part(j))*wind_cum_energy(a1_w, metallicities(1)/solar_abundances(1))*(1d5/scale_v)**2
+               e_w = (aint(ec1_w/e_thr_w)-aint(ec0_w/e_thr_w))*e_thr_w
+               if (a1_w >= agemax) e_w = e_w+(ec1_w-aint(ec1_w/e_thr_w)*e_thr_w)
+               if (e_w > 0d0) then
+                  if (WINDinfo_n >= SNinfo_nSNmax) then
+                     write(*,*)'wind packet buffer full on rank',myid
+                     call clean_stop
+                  endif
+                  WINDinfo_n = WINDinfo_n+1
+                  WINDinfo_E(WINDinfo_n) = e_w
+                  WINDinfo_pos(1:3,WINDinfo_n) = xp(ind_part(j),1:3)
+               endif
+            endif
          endif
 #endif
 

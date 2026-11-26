@@ -306,6 +306,11 @@ module amr_parameters
   logical  :: SN_reservoir = .false.   ! store the SN heat and release it into a cooling-radius sphere (volume weighted) before the next refinement
   logical  :: SN_radius_search = .false. ! evaluate/log the SN injection radii (set by SN_reservoir)
   real(dp) :: Ncell_SN_max = 4d0   ! radius search cap: r_max = Ncell_SN_max * host dx
+  ! Batched stellar winds (2026-11-26, docs/wind_batch.md): the wind energy of young star particles (the part scaled
+  ! by msp0/mp0, age <= agemax) is released in packets of E_wind_batch into a sphere of radius Ncell_wind * host dx
+  ! (volume weighted, through the SN reservoir) instead of into the host cell every step.
+  real(dp) :: E_wind_batch = 0d0   ! [erg] packet size; 0: off (wind energy into the host cell every step)
+  real(dp) :: Ncell_wind = 4d0     ! radius of the wind sphere in units of the host cell width
   real(dp) :: fcool_stop = -1d0    ! >0: cooling is disabled for fcool_stop x sound-crossing time after a SN (needs a free passive scalar: ivar_coolstop=nvar)
   integer  :: ivar_coolstop = -1   ! index of the cooling-stop timer scalar (set in read_hydro_params when fcool_stop>0)
   ! FG sink / BH (sink_particle_fg.f90, &SINK_PARAMS, only with sf_fg; merge_ks 2026-11-13)
