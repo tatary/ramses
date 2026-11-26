@@ -103,7 +103,8 @@ t_sne  = 10.0                   ! dummy
 yield  = 0.1                    ! dummy
 SN_reservoir=.true.             ! SN heat into a cooling-radius sphere (also logs SN_RADIUS lines)
 Ncell_SN_max=8d0                ! radius search cap: r_max = Ncell_SN_max * host dx (default 4)
-E_wind_batch=1d48
+E_wind_batch=1d48               ! young-star wind energy in 1e48 erg packets into a sphere (docs/wind_batch.md)
+Ncell_wind=4d0                  ! radius of the wind sphere in host dx (default 4)
 /
 
 &RT_PARAMS
