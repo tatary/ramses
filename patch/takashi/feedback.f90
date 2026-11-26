@@ -1626,7 +1626,9 @@ subroutine get_wind_mass_loss_rate(t_age_Gyr, metallicities, mdot, v_ejecta)
    endif
    f_agb = 0.1
    t_agb = 0.8
-   x_agb = t_agb/max(t, 1.e-4)
+   ! AGB term: stellar age in Gyr (tt). It used to read the simulation time t (code units, from amr_commons
+   ! via chemical_yields), which suppressed the AGB mass loss by a factor 30-60 (2026-11-26).
+   x_agb = t_agb/max(tt, 1.d-4)
    x_agb = x_agb * x_agb
    mdot = mdot + f_agb * (x_agb**0.8) * (exp(-min(50.,x_agb*x_agb*x_agb)) &
       & + 1./(100. + x_agb))
