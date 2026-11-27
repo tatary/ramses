@@ -4,7 +4,7 @@
 # NPSCAL=3 (NVAR=12: metal, zoom scalar, ks の cooling flag の予約; ks の Makefile_0X.xd_intel と同じ)、
 # QUADHILBERT=1 (levelmax 21 > 19 のため; Mera の repartition は非対応)、EXEC=ramses_ks。
 # 使い方 (bin/ の DICE ビルドと .o/.mod が混ざるので別ディレクトリで):
-#   mkdir -p bin_ks && cp bin/Makefile.xd_ks_intel bin_ks/Makefile && cd bin_ks && make -j1
+#   mkdir -p bin_ks && cp bin/Makefile.xd_ks_intel bin_ks/Makefile && cp bin/make_intel_ks.sh bin_ks/make_intel_ks.sh && cd bin_ks && make_intel_ks.sh
 # (../patch, ../amr などの相対パスは bin/ の隣のディレクトリならそのまま通る)
 # namelist: namelist/ks/ngridmax_fire3.nml、job script: jobfiles/xd/ks/ngridmax_intel.sh (flat)
 # OPENMP = 1 なので hybrid でもこのまま使う (oneAPI: mpiifx -qopenmp)。MUSIC 初期条件の本番 (2026-11-27):

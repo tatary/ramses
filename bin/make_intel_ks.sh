@@ -1,0 +1,22 @@
+#!/bin/bash
+
+. /work/opt/local/bin/enable-oneapi.sh
+
+#rm -rf ~/work/GIZMO_Tables
+#cp -r ~/GIZMO_Tables ~/work/
+
+#module add gsl/2.4_intel-18.0
+#module add fftw3
+#module add fftw/2.1.5.9
+#module add gsl/115
+#module add cray-hdf5/1.8.16
+
+#module switch PrgEnv-cray PrgEnv-gnu
+#module add gsl/2.4_gnu-7.3
+#module add fftw/2.1.5.9
+#module add cray-hdf5/1.10.1.1
+
+
+module list > m.log 2>& 1
+
+make -j1  >> m.log 2>& 1
