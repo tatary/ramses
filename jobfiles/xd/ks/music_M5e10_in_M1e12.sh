@@ -76,8 +76,18 @@ ln -sfn $SED SED
 mkdir -p cloudy && ln -sfn $CHTAB cloudy/cloudy_excess_metal_cooling.bin
 
 # restart: patch/takashi は restart_hrs ごとに output_restart/ を書き (前の組は output_restart.prev/ に残る)、
-# nrestart=-1 でそこから再開する
-if [ -d output_restart ]; then NRESTART=-1; else NRESTART=0; fi
+# nrestart=-1 でそこから再開する。
+# 番号付きの output から再開するときは、投入前に実行ディレクトリで `echo 12 > restart_from` とする (output_00012 から)。
+# restart_from はこの job が新しい output_restart/ を書くまで残すので、最初の dump の前に落ちても
+# 次の job がまた output_00012 から始める (古い output_restart/ は使わない)。書けたら restart_from.done に改名する。
+if [ -f restart_from ]; then
+    NRESTART=$(tr -d ' \n' < restart_from)
+    [[ "$NRESTART" =~ ^[0-9]+$ ]] && [ $((10#$NRESTART)) -ge 1 ] || die "restart_from must hold an output number (got '$NRESTART')"
+    NRESTART=$((10#$NRESTART))
+    RSDIR=$(printf "output_%05d" $NRESTART)
+    [ -d $RSDIR ] || die "restart_from: no $RSDIR"
+    echo "restart_from: restarting from $RSDIR"
+elif [ -d output_restart ]; then NRESTART=-1; else NRESTART=0; fi
 
 NMLFILE=namelist.nml
 cp $NMLBASE $NMLFILE
@@ -92,4 +102,8 @@ sync
 # --cpus-per-task と --hint は header から srun に確実には引き継がれないので繰り返す
 srun --cpus-per-task=$NTHREADS --hint=nomultithread --cpu-bind=cores ./$RAMSES $NMLFILE 2>&1 | tee -a $STDOUT
 date 2>&1 | tee -a $STDOUT
+# restart_from は、この job が output_restart/ を書き終えたら役目を終える (次からは nrestart=-1)
+if [ -f restart_from ] && [ -d output_restart ] && [ output_restart -nt restart_from ]; then
+    mv -f restart_from restart_from.done
+fi
 unlock
