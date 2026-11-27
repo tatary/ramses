@@ -5,6 +5,11 @@
 
 # Do we want a debug build? 1=Yes, 0=No
 DEBUG = 0
+# Compile with OpenMP (godunov_fine prototype, TODO.md 2d); run with OMP_STACKSIZE=64m
+OPENMP = 0
+# Disable floating-point contraction (FMA) so that two builds of logically identical code
+# give bit-identical results (regression checks only; a few % slower)
+BITREPRO = 0
 # Compiler flavor: GNU or INTEL
 COMPILER = GNU
 # Size of vector cache
@@ -107,6 +112,12 @@ ifeq ($(COMPILER),GNU)
       FFLAGS += -DWITHOUTMPI
    endif
    F90 += -frecord-marker=4 -fbacktrace -ffree-line-length-none -fimplicit-none
+   ifeq ($(OPENMP),1)
+      F90 += -fopenmp
+   endif
+   ifeq ($(BITREPRO),1)
+      F90 += -ffp-contract=off
+   endif
    ifeq ($(DEBUG),1)
       F90 += -O0 -fbounds-check -Wuninitialized -Wall
       FFLAGS += -ffpe-trap=zero,underflow,overflow,invalid -finit-real=nan
@@ -126,6 +137,12 @@ ifeq ($(COMPILER),INTEL)
       FFLAGS += -DWITHOUTMPI
    endif
    F90 += -fp-model source
+   ifeq ($(OPENMP),1)
+      F90 += -qopenmp
+   endif
+   ifeq ($(BITREPRO),1)
+      F90 += -fp-model strict
+   endif
    ifeq ($(DEBUG),1)
       F90 += -warn all -O0 -g -traceback -check bounds
       FFLAGS += -fpe0 -ftrapuv -init=zero -init=snan -init=arrays
@@ -156,7 +173,7 @@ endif
 LIBS = $(LIBMPI) $(LIBS_GRACKLE) $(LIBS_TURB)
 #############################################################################
 # Sources directories are searched in this exact order
-VPATH = $(DICE_MHD):$(DICE):$(PATCH):../$(SOLVER):../aton:
+VPATH = $(DICE_MHD):$(DICE):$(PATCH)/$(SOLVER):$(PATCH):../$(SOLVER):../aton:
 ifeq ($(RT),1)
    VPATH += ../rt:
 endif
@@ -166,7 +183,7 @@ endif
 VPATH += ../hydro:../pm:../poisson:../amr:../io
 #############################################################################
 # All objects
-MODOBJ = mpi_mod.o amr_parameters.o amr_commons.o random.o pm_parameters.o sink_feedback_parameters.o \
+MODOBJ = mpi_mod.o amr_parameters.o posix_fs.o amr_commons.o random.o pm_parameters.o sink_feedback_parameters.o \
          pm_commons.o poisson_parameters.o dump_utils.o constants.o file_module.o
 ifeq ($(GRACKLE),1)
    MODOBJ += grackle_parameters.o
@@ -174,7 +191,7 @@ endif
 MODOBJ += poisson_commons.o hydro_parameters.o hydro_commons.o \
           cooling_module.o bisection.o sparse_mat.o clfind_commons.o \
           gadgetreadfile.o write_makefile.o write_patch.o write_gitinfo.o \
-          sink_sn_feedback.o
+          sink_sn_feedback.o my_utils.o sbs_imf.o sf_log.o
 ifeq ($(RT),1)
    MODOBJ += rt_parameters.o rt_hydro_commons.o coolrates_module.o \
              rt_spectra.o rt_cooling_module.o rt_flux_module.o
@@ -182,6 +199,10 @@ endif
 ifeq ($(USE_TURB),1)
    MODOBJ += turb_parameters.o turb_commons.o
 endif
+# FG feedback (merge_ks): SN radius search / energy reservoir modules (after hydro/rt modules)
+MODOBJ += sn_sphere_stats.o sn_feedback_radius.o sn_energy_reservoir.o
+# ugvtk output (merge_ks): uses my_utils, poisson/hydro/rt modules
+MODOBJ += output_analysis.o
 
 AMROBJ = read_params.o init_amr.o init_time.o init_refine.o tracer_utils.o adaptive_loop.o \
          amr_step.o update_time.o output_amr.o flag_utils.o \
@@ -190,14 +211,14 @@ AMROBJ = read_params.o init_amr.o init_time.o init_refine.o tracer_utils.o adapt
          eos.o units.o light_cone.o movie.o memory.o end.o
 # Particle-Mesh objects
 PMOBJ = init_part.o output_part.o rho_fine.o synchro_fine.o move_fine.o \
-        newdt_fine.o particle_tree.o add_list.o remove_list.o star_formation.o \
-        sink_particle.o feedback.o clump_finder.o clump_merger.o output_clump.o \
+        newdt_fine.o particle_tree.o add_list.o remove_list.o star_formation.o star_formation_fg.o \
+        sink_particle.o sink_particle_fg.o feedback.o clump_finder.o clump_merger.o output_clump.o \
         flag_formation_sites.o init_sink.o output_sink.o \
         unbinding.o merger_tree.o move_tracer.o init_tracer.o \
         read_sink_feedback_params.o sink_rt_feedback.o \
         stellar_particle.o init_stellar.o output_stellar.o
 # Poisson solver objects
-POISSONOBJ = init_poisson.o phi_fine_cg.o interpol_phi.o force_fine.o \
+POISSONOBJ = init_poisson.o phi_fine_cg.o poisson_auto.o interpol_phi.o force_fine.o \
              multigrid_coarse.o multigrid_fine_commons.o multigrid_fine_fine.o \
              multigrid_fine_coarse.o gravana.o boundary_potential.o rho_ana.o \
              output_poisson.o
@@ -234,12 +255,12 @@ ATON_OBJ = observe.o init_radiation.o rad_init.o rad_boundary.o rad_stars.o \
 ramses:	$(MODOBJ) $(AMRLIB) ramses.o
 	$(F90) $(MODOBJ) $(AMRLIB) ramses.o -o $(EXEC)$(NDIM)d $(LIBS)
 	rm write_makefile.f90
-	rm write_patch.f90
+	rm -f write_patch.f90
 ramses_aton: $(MODOBJ) $(ATON_MODOBJ) $(AMRLIB) $(ATON_OBJ) ramses.o
 	$(F90) $(MODOBJ) $(ATON_MODOBJ) $(AMRLIB) $(ATON_OBJ) ramses.o \
 		-o $(EXEC)$(NDIM)d $(LIBS) $(LIBCUDA)
 	rm write_makefile.f90
-	rm write_patch.f90
+	rm -f write_patch.f90
 #############################################################################
 write_gitinfo.o: FORCE
 	$(F90) $(FFLAGS) -DPATCH=\'$(PATCH)\' -DGITBRANCH=\'$(GITBRANCH)\' \
@@ -248,8 +269,8 @@ write_gitinfo.o: FORCE
 write_makefile.o: FORCE
 	../utils/scripts/cr_write_makefile.sh $(MAKEFILE_LIST)
 	$(F90) $(FFLAGS) -c write_makefile.f90 -o $@
-write_patch.o: FORCE
-	../utils/scripts/cr_write_patch.sh $(PATCH)
+write_patch.o: $(wildcard $(patsubst %,%/*.f90,$(subst :, ,$(PATCH))))
+	$(PATCH)/cr_write_patch.sh $(PATCH)
 	$(F90) -O0 -c write_patch.f90 -o $@
 %.o:%.F
 	$(F90) $(FFLAGS) -c $^ -o $@ $(LIBS_OBJ) $(LIBS_OBJ_TURB)

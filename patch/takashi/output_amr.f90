@@ -59,6 +59,10 @@ subroutine dump_all
   if(myid==1)then
     filename=TRIM(filedir)//'info_'//TRIM(nchar)//'.txt'
     call output_info(filename)
+    if(two_tier_balance)then   ! two-tier key tables
+      filename=TRIM(filedir)//'info_twotier_'//TRIM(nchar)//'.txt'
+      call output_two_tier_info(filename)
+    end if
     filename=TRIM(filedir)//'makefile.txt'
     call output_makefile(filename)
     filename=TRIM(filedir)//'patches.txt'
@@ -78,6 +82,10 @@ subroutine dump_all
     if(sink)then
       filename=TRIM(filedir)//'sink_'//TRIM(nchar)//'.csv'
       call output_sink_csv(filename)
+      if(sf_fg)then ! ks text table (sink_XXXXX.info)
+        filename=TRIM(filedir)//'sink_'//TRIM(nchar)//'.info'
+        call output_sink_fg(filename)
+      end if
     endif
     if(stellar)then
       filename=TRIM(filedir)//'stellar_'//TRIM(nchar)//'.csv'
@@ -146,6 +154,14 @@ subroutine dump_all
     filename=trim(filedir)//'part_'//trim(nchar)//'.out'
     filename_desc=TRIM(filedir)//'part_file_descriptor.txt'
     call backup_part(filename, filename_desc)
+    if(sink.and.sf_fg)then ! FG sink (ks layout): every rank writes sink_XXXXX.out<rank> (identical; yt needs
+      filename=TRIM(filedir)//'sink_'//TRIM(nchar)//'.out' ! every domain's file, reads domain 1) + descriptor
+      call backup_sink_fg(filename)
+      if(myid==1)then
+        filename=TRIM(filedir)//'sink_file_descriptor.txt'
+        call file_descriptor_sink_fg(filename)
+      end if
+    end if
 #ifndef WITHOUTMPI
     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
@@ -221,6 +237,7 @@ subroutine dump_restart
   use turb_commons
 #endif
   use mpi_mod
+  use posix_fs, only: fs_mkdir, fs_rename, fs_rmtree
   implicit none
 #if ! defined (WITHOUTMPI) || defined (NOSYSTEM)
   integer::info
@@ -234,6 +251,8 @@ subroutine dump_restart
   logical::file_exist
   integer::iunit2
   character::byte_char
+  character(LEN=80)::tmpdir,prevdir,finaldir
+  integer::ierr_fs
 
   if(nstep_coarse==nstep_coarse_old.and.nstep_coarse>0)return
   if(nstep_coarse==0.and.nrestart>0)return
@@ -248,12 +267,31 @@ subroutine dump_restart
   !if(aexp>=aout_next)aout_next=aout_next+delta_aout
   output_done=.true.
 
+  !--------------------------------------------------------------------------
+  ! Protected restart dump (ported from patch/ks, 2026-11-16): write into
+  ! output_restart.tmp/ and rename it to output_restart/ only after every rank
+  ! has finished (end of this routine), so that output_restart/ always holds a
+  ! complete and consistent set even if the job is killed in the middle of the
+  ! dump. The previous set is kept as output_restart.prev/ until the next dump
+  ! starts. Directory operations use posix_fs (libc through ISO_C_BINDING).
+  !--------------------------------------------------------------------------
+  finaldir='output_restart'
+  tmpdir  ='output_restart.tmp'
+  prevdir ='output_restart.prev'
+  if(myid==1)then
+    ierr_fs=fs_rmtree(prevdir)   ! at most two sets (current + tmp) on disk while writing
+    ierr_fs=fs_rmtree(tmpdir)    ! leftovers of a dump that was killed half way
+    ierr_fs=fs_mkdir(tmpdir)
+    if(ierr_fs/=0) write(*,*)'WARNING: dump_restart: could not create ',TRIM(tmpdir)
+  endif
+#ifndef WITHOUTMPI
+  call MPI_BARRIER(MPI_COMM_WORLD,info)
+#endif
   if(IOGROUPSIZEREP>0) then
     call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
-    !filedir='output_'//TRIM(nchar)//'/group_'//TRIM(ncharcpu)//'/'
-    filedir='output_restart/group_'//TRIM(ncharcpu)//'/'
+    filedir=TRIM(tmpdir)//'/group_'//TRIM(ncharcpu)//'/'
   else
-    filedir='output_restart/'
+    filedir=TRIM(tmpdir)//'/'
   endif
 
   call create_output_dirs(filedir)
@@ -308,6 +346,10 @@ subroutine dump_restart
   if(myid==1)then
     filename=TRIM(filedir)//'info_restart.txt'
     call output_info(filename)
+    if(two_tier_balance)then   ! two-tier key tables
+      filename=TRIM(filedir)//'info_twotier_restart.txt'
+      call output_two_tier_info(filename)
+    end if
     filename=TRIM(filedir)//'makefile.txt'
     call output_makefile(filename)
     filename=TRIM(filedir)//'patches.txt'
@@ -327,6 +369,10 @@ subroutine dump_restart
     if(sink)then
       filename=TRIM(filedir)//'sink_restart.csv'
       call output_sink_csv(filename)
+      if(sf_fg)then ! ks text table
+        filename=TRIM(filedir)//'sink_restart.info'
+        call output_sink_fg(filename)
+      end if
     endif
     if(stellar)then
       filename=TRIM(filedir)//'stellar_restart.csv'
@@ -395,6 +441,14 @@ subroutine dump_restart
     filename=trim(filedir)//'part_restart.out'
     filename_desc=TRIM(filedir)//'part_file_descriptor.txt'
     call backup_part(filename, filename_desc)
+    if(sink.and.sf_fg)then ! FG sink: sink_restart.out<rank> from every rank + descriptor (rank 1)
+      filename=TRIM(filedir)//'sink_restart.out'
+      call backup_sink_fg(filename)
+      if(myid==1)then
+        filename=TRIM(filedir)//'sink_file_descriptor.txt'
+        call file_descriptor_sink_fg(filename)
+      end if
+    end if
 #ifndef WITHOUTMPI
     if(synchro_when_io) call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
@@ -453,6 +507,23 @@ subroutine dump_restart
 #endif
   if(myid==1.and.print_when_io) write(*,*)'End output timer'
 
+  ! every rank has closed its files: publish the new set. Both renames are atomic
+  ! and instantaneous. If the job dies between them, output_restart.prev/ (old)
+  ! and output_restart.tmp/ (new) are both complete.
+  if(myid==1)then
+    ierr_fs=fs_rename(finaldir,prevdir)   ! fails harmlessly if output_restart/ does not exist yet
+    ierr_fs=fs_rename(tmpdir,finaldir)
+    if(ierr_fs/=0)then
+      write(*,*)'ERROR: dump_restart: could not rename ',TRIM(tmpdir),'/ to ',TRIM(finaldir),'/'
+      write(*,*)'       the complete new restart set is still in ',TRIM(tmpdir),'/'
+    else
+      write(*,*)'Restart files written to ',TRIM(finaldir),'/  (previous set kept in ',TRIM(prevdir),'/)'
+    endif
+  endif
+#ifndef WITHOUTMPI
+  call MPI_BARRIER(MPI_COMM_WORLD,info)
+#endif
+
 end subroutine dump_restart
 !#########################################################################
 !#########################################################################
@@ -468,6 +539,7 @@ subroutine backup_amr(filename)
   integer::dummy_io,info2
 #endif
   character(LEN=80)::filename
+  character(LEN=128)::ordering_mark   ! two-tier
 
   integer::nx_loc,ny_loc,nz_loc,ilun
   integer::ilevel,ibound,ncache,istart,i,igrid,idim,ind,iskip
@@ -549,7 +621,13 @@ subroutine backup_amr(filename)
   ! Write free memory
   write(ilun)headf,tailf,numbf,used_mem,used_mem_tot
   ! Write cpu boundaries
-  write(ilun)ordering
+  ! two-tier: mark the file so that binaries without two_tier_balance stop at restart
+  if(two_tier_balance.and.ordering/='bisection')then
+    ordering_mark=TRIM(ordering)//'2t'
+  else
+    ordering_mark=ordering
+  end if
+  write(ilun)ordering_mark
   if(ordering=='bisection') then
     write(ilun)bisec_wall(1:nbinodes)
     write(ilun)bisec_next(1:nbinodes,1:2)
@@ -640,6 +718,17 @@ subroutine backup_amr(filename)
       end if
     end do
   end do
+  ! two-tier: trailing records, read by read_two_tier_record (init_amr.f90)
+  if(two_tier_balance.and.ordering/='bisection')then
+    write(ilun)two_tier_ls
+    write(ilun)bound_key_f(0:ndomain)
+    write(ilun)two_tier_nfoot   ! fine footprints, the intervals in the file of cpu 1 only
+    if(myid==1.and.two_tier_nfoot>0)then
+      write(ilun)foot_lo(1:two_tier_nfoot)
+      write(ilun)foot_hi(1:two_tier_nfoot)
+      write(ilun)foot_first(0:ndomain)
+    end if
+  end if
   close(ilun)
 
   ! Send the token
@@ -665,6 +754,7 @@ subroutine output_info(filename)
   use mpi_mod
   implicit none
   character(LEN=80)::filename
+  real(qdp)::key_lo,key_hi            ! two-tier hull
 
   integer::nx_loc,ny_loc,nz_loc,ilun,icpu,idom,ierr
   real(dp)::scale
@@ -732,7 +822,12 @@ subroutine output_info(filename)
   else
     write(ilun,'("   DOMAIN   ind_min                 ind_max")')
     do idom=1,ndomain
-      write(ilun,'(I8,1X,E23.15,1X,E23.15)')idom,bound_key(idom-1),bound_key(idom)
+      if(two_tier_balance)then   ! two-tier: hull of the coarse and fine intervals of the cpu owning domain idom
+        call two_tier_cpu_hull(mod(idom-1,ncpu)+1,key_lo,key_hi)
+        write(ilun,'(I8,1X,E23.15,1X,E23.15)')idom,key_lo,key_hi
+      else
+        write(ilun,'(I8,1X,E23.15,1X,E23.15)')idom,bound_key(idom-1),bound_key(idom)
+      end if
     end do
   endif
 
@@ -757,9 +852,9 @@ subroutine output_header(filename)
   integer::ilun
   character(LEN=80)::fileloc
 #ifdef LONGINT
-  integer(i8b)::npart_family_loc(-5:5), npart_family(-5:5), npart_all_loc, npart_all
+  integer(i8b)::npart_family_loc(-NFAMILIES:NFAMILIES), npart_family(-NFAMILIES:NFAMILIES), npart_all_loc, npart_all
 #else
-  integer::npart_family_loc(-5:5), npart_family(-5:5), npart_all_loc, npart_all
+  integer::npart_family_loc(-NFAMILIES:NFAMILIES), npart_family(-NFAMILIES:NFAMILIES), npart_all_loc, npart_all
 #endif
   integer :: ifam, ipart
 
@@ -778,16 +873,17 @@ subroutine output_header(filename)
     if (levelp(ipart) > 0) then
       npart_all_loc = npart_all_loc + 1
       ifam = typep(ipart)%family
-      npart_family_loc(ifam) = npart_family_loc(ifam) + 1
+      ! families outside 1..NFAMILIES (e.g. FAM_UNDEF=127) are counted as 'undefined' below
+      if(abs(ifam)<=NFAMILIES) npart_family_loc(ifam) = npart_family_loc(ifam) + 1
     end if
   end do
 
 #ifndef WITHOUTMPI
 #ifdef LONGINT
-  call MPI_ALLREDUCE(npart_family_loc,npart_family,11,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
+  call MPI_ALLREDUCE(npart_family_loc,npart_family,2*NFAMILIES+1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
   call MPI_ALLREDUCE(npart_all_loc,npart_all,1,MPI_INTEGER8,MPI_SUM,MPI_COMM_WORLD,info)
 #else
-  call MPI_ALLREDUCE(npart_family_loc,npart_family,11,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+  call MPI_ALLREDUCE(npart_family_loc,npart_family,2*NFAMILIES+1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
   call MPI_ALLREDUCE(npart_all_loc,npart_all,1,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
 #endif
 #else
@@ -797,9 +893,17 @@ subroutine output_header(filename)
 
   if (myid == 1) then
     write(ilun, '(a1,a12,a10)') '#', 'Family', 'Count'
-    do ifam = -NFAMILIES, NFAMILIES
-      write(ilun, '(a13, i10)') &
-        trim(particle_family_keys(ifam)), npart_family(ifam)
+    ! The table keeps the 11 rows of the upstream layout (readers such as Mera parse it by
+    ! position); with sf_fg the rows 3-5 carry the ks names and the extra families 6-8 are
+    ! listed in a separate block after the particle fields.
+    do ifam = -5, 5
+      if(sf_fg)then
+        write(ilun, '(a13, i10)') &
+          trim(particle_family_keys_fg(ifam)), npart_family(ifam)
+      else
+        write(ilun, '(a13, i10)') &
+          trim(particle_family_keys(ifam)), npart_family(ifam)
+      end if
     end do
     write(ilun, '(a13, i10)') &
       'undefined', npart_all - sum(npart_family)
@@ -824,6 +928,15 @@ subroutine output_header(filename)
       write(ilun,'(a)',advance='no')'mpop '
 #endif
     endif
+    if(sf_fg)then
+      ! families 6-8 of the FG star formation (not part of the 11-row table above)
+      write(ilun,*)
+      write(ilun, '(a1,a12,a10)') '#', 'FG family', 'Count'
+      do ifam = 6, NFAMILIES
+        write(ilun, '(a13, i10)') &
+          trim(particle_family_keys_fg(ifam)), npart_family(ifam)
+      end do
+    end if
     close(ilun)
 
   endif
@@ -930,46 +1043,94 @@ subroutine create_output_dirs(filedir)
   use file_module, ONLY: mkdir
   implicit none
   character(LEN=80), intent(in):: filedir
-#ifdef NOSYSTEM
-  character(LEN=80)::filedirini
-  integer :: info_sys
-#else
-  character(LEN=80)::filecmd
-  integer :: ierr
-#endif
+  !------------------------------------------------------------------
+  ! Create the directory filedir = 'top/' or 'top/group_XXXXX/' (IOGROUPSIZEREP>0).
+  ! cpu 1 creates the top directory; with a two-level path every rank then
+  ! creates its own group directory (an existing directory is not an error).
+  ! Upstream let only cpu 1 create its own path since 2019 (9988a054), so the
+  ! directories of the other groups were missing, and its NOSYSTEM branch took
+  ! the top directory as filedir(1:13) (an empty output_restar/ next to
+  ! output_restart.tmp/).
+  !------------------------------------------------------------------
+  character(LEN=80)::filedirtop
+  integer :: islash, ierr
+  logical :: twolevel
 #ifndef WITHOUTMPI
   integer :: info
 #endif
   integer, parameter :: mode = int(O'755')
 
   if (.not.withoutmkdir) then
-    if (myid==1) then
-#ifdef NOSYSTEM
-      filedirini = filedir(1:13)
-      call PXFMKDIR(TRIM(filedirini),LEN(TRIM(filedirini)),O'755',info_sys)
-      call PXFMKDIR(TRIM(filedir),LEN(TRIM(filedir)),O'755',info_sys)
-#else
-      filecmd='mkdir -p '//TRIM(filedir)
-      ierr=1
-!      call system(filecmd,ierr)
-!      call EXECUTE_COMMAND_LINE(filecmd,exitstat=ierr,wait=.true.)
-      call mkdir(TRIM(filedir),mode,ierr)
-      if(ierr.ne.0 .and. ierr.ne.127)then
-        write(*,*) 'Error - Could not create ',TRIM(filedir),' error code=',ierr
+    islash = index(filedir,'/')
+    twolevel = islash>0 .and. islash<len_trim(filedir)
+    if (twolevel) then
+      filedirtop = filedir(1:islash)
+    else
+      filedirtop = filedir
+    end if
+    if (myid==1) call make_one_dir(filedirtop)
+    if (twolevel) then
 #ifndef WITHOUTMPI
-        call MPI_ABORT(MPI_COMM_WORLD,1,info)
-#else
-        stop
+      call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
-      endif
-#endif
-    endif
+      call make_one_dir(filedir)
+    end if
   endif
-
 
 #ifndef WITHOUTMPI
   call MPI_BARRIER(MPI_COMM_WORLD,info)
 #endif
 
+contains
+
+  subroutine make_one_dir(dir)
+    character(LEN=*), intent(in):: dir
+#ifdef NOSYSTEM
+    call PXFMKDIR(TRIM(dir),LEN(TRIM(dir)),O'755',ierr)
+#else
+    ierr=1
+    call mkdir(TRIM(dir),mode,ierr)
+    if(ierr.ne.0 .and. ierr.ne.127)then
+      write(*,*) 'Error - Could not create ',TRIM(dir),' error code=',ierr
+#ifndef WITHOUTMPI
+      call MPI_ABORT(MPI_COMM_WORLD,1,info)
+#else
+      stop
+#endif
+    endif
+#endif
+  end subroutine make_one_dir
 
 end subroutine create_output_dirs
+
+!#########################################################################
+subroutine output_two_tier_info(filename)
+  use amr_commons
+  implicit none
+  character(LEN=80)::filename
+  !----------------------------------------------------------------------
+  ! two-tier decomposition (both key tables) in a text file next to
+  ! info_XXXXX.txt (ported from patch/ks; read by tools/lb_two_tier_estimate.py there)
+  !----------------------------------------------------------------------
+  integer::ilun,idom
+  character(LEN=80)::fileloc
+  if(verbose)write(*,*)'Entering output_two_tier_info'
+  ilun=11
+  fileloc=TRIM(filename)
+  open(unit=ilun,file=fileloc,form='formatted')
+  write(ilun,'("ncpu        =",I11)')ncpu
+  write(ilun,'("ndomain     =",I11)')ndomain
+  write(ilun,'("levelmin    =",I11)')levelmin
+  write(ilun,'("levelmax    =",I11)')nlevelmax
+  write(ilun,'("two_tier_ls =",I11)')two_tier_ls
+  write(ilun,'("test_shift  =",I11)')two_tier_test_shift
+  write(ilun,'("nfootprint  =",I11)')two_tier_nfoot
+  write(ilun,'("ordering type=",A80)')ordering
+  write(ilun,'("   DOMAIN   cpu_coarse   coarse_min              coarse_max              cpu_fine   fine_min                fine_max                nfoot")')
+  do idom=1,ndomain
+    write(ilun,'(I8,1X,I12,1X,E23.15,1X,E23.15,1X,I10,1X,E23.15,1X,E23.15,1X,I8)')idom,mod(idom-1,ncpu)+1, &
+    & bound_key(idom-1),bound_key(idom),two_tier_fine_cpu(idom),bound_key_f(idom-1),bound_key_f(idom), &
+    & foot_first(idom)-foot_first(idom-1)
+  end do
+  close(ilun)
+end subroutine output_two_tier_info

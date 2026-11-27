@@ -163,7 +163,7 @@ endif
 LIBS = $(LIBMPI) $(LIBS_GRACKLE) $(LIBS_TURB)
 #############################################################################
 # Sources directories are searched in this exact order
-VPATH = $(DICE):$(PATCH):../$(SOLVER):../aton:
+VPATH = $(DICE):$(PATCH)/$(SOLVER):$(PATCH):../$(SOLVER):../aton:
 ifeq ($(RT),1)
    VPATH += ../rt:
 endif
@@ -204,7 +204,7 @@ PMOBJ = init_part.o output_part.o rho_fine.o synchro_fine.o move_fine.o \
         read_sink_feedback_params.o sink_rt_feedback.o \
         stellar_particle.o init_stellar.o output_stellar.o
 # Poisson solver objects
-POISSONOBJ = init_poisson.o phi_fine_cg.o interpol_phi.o force_fine.o \
+POISSONOBJ = init_poisson.o phi_fine_cg.o poisson_auto.o interpol_phi.o force_fine.o \
              multigrid_coarse.o multigrid_fine_commons.o multigrid_fine_fine.o \
              multigrid_fine_coarse.o gravana.o boundary_potential.o rho_ana.o \
              output_poisson.o
@@ -241,12 +241,12 @@ ATON_OBJ = observe.o init_radiation.o rad_init.o rad_boundary.o rad_stars.o \
 ramses:	$(MODOBJ) $(AMRLIB) ramses.o
 	$(F90) $(MODOBJ) $(AMRLIB) ramses.o -o $(EXEC)$(NDIM)d $(LIBS)
 	rm write_makefile.f90
-	rm write_patch.f90
+	rm -f write_patch.f90
 ramses_aton: $(MODOBJ) $(ATON_MODOBJ) $(AMRLIB) $(ATON_OBJ) ramses.o
 	$(F90) $(MODOBJ) $(ATON_MODOBJ) $(AMRLIB) $(ATON_OBJ) ramses.o \
 		-o $(EXEC)$(NDIM)d $(LIBS) $(LIBCUDA)
 	rm write_makefile.f90
-	rm write_patch.f90
+	rm -f write_patch.f90
 #############################################################################
 write_gitinfo.o: FORCE
 	$(F90) $(FFLAGS) -DPATCH=\'$(PATCH)\' -DGITBRANCH=\'$(GITBRANCH)\' \
@@ -255,8 +255,8 @@ write_gitinfo.o: FORCE
 write_makefile.o: FORCE
 	../utils/scripts/cr_write_makefile.sh $(MAKEFILE_LIST)
 	$(F90) $(FFLAGS) -c write_makefile.f90 -o $@
-write_patch.o: FORCE
-	../utils/scripts/cr_write_patch.sh $(PATCH)
+write_patch.o: $(wildcard $(patsubst %,%/*.f90,$(subst :, ,$(PATCH))))
+	$(PATCH)/cr_write_patch.sh $(PATCH)
 	$(F90) -O0 -c write_patch.f90 -o $@
 %.o:%.F
 	$(F90) $(FFLAGS) -c $^ -o $@ $(LIBS_OBJ) $(LIBS_OBJ_TURB)

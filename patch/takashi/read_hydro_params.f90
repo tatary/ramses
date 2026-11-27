@@ -1,5 +1,8 @@
 subroutine read_hydro_params(nml_ok)
   use amr_commons
+#ifdef RT
+  use rt_parameters, only: nIons
+#endif
   use hydro_commons
   use mpi_mod
   implicit none
@@ -88,18 +91,27 @@ subroutine read_hydro_params(nml_ok)
   ! Feedback parameters
   namelist/feedback_params/eta_sn,eta_ssn,yield,rbubble,f_ek,ndebris &
   & ,f_w,f_esn,mass_gmc,kappa_IR,delayed_cooling,momentum_feedback &
-  & ,ir_feedback,ir_eff,t_diss,t_sne,mass_star_max,mass_sne_min
+  & ,ir_feedback,ir_eff,t_diss,t_sne,mass_star_max,mass_sne_min &
+  & ,f_esn_loop &
+  & ,pop3_ESN,SN_reservoir,SN_radius_search,Ncell_SN_max,fcool_stop &  ! FG feedback (merge_ks)
+  & ,E_wind_batch,Ncell_wind
 
   ! Cooling / basic chemistry parameters
   namelist/cooling_params/cooling,metal,isothermal,haardt_madau,J21 &
   & ,barotropic_eos,barotropic_eos_form,polytrope_rho,polytrope_index,T_eos,mu_gas &
   & ,a_spec,self_shielding,z_ave,z_reion,ind_rsink,T2max,neq_chem &
-  & ,cooling_ism, Zsolar_Asplund
+  & ,cooling_ism, Zsolar_Asplund, H2coolfunc, H2_fesc, H2_Hm_cool, H2_chem_cool, fclump_H2dust
 
   ! Star formation parameters
   namelist/sf_params/m_star,n_star,T2_star,g_star,del_star &
-  & ,eps_star,jeans_ncells,sf_virial,sf_trelax,sf_tdiss,sf_model&
-  & ,sf_log_properties,sf_imf,sf_compressive
+  & ,eps_star,jeans_ncells,sf_virial,sf_trelax,sf_tdiss,sf_model,sf_b_turb,sf_sigma_noconv,sf_alpha_meandens&
+  & ,sf_log_properties,sf_imf,sf_compressive &
+  & ,sf_fg,pop2_model,pop2_njeans,Tpop2,pop2_peak_only,pop2_SFC_marker,pop2_H2depSF &  ! FG (patch/ks) star formation
+  & ,nonlocal_depletion,nonlocal_depletion_batch,nH_postSF &
+  & ,pop3_model,Zpop3,dpop3,mpop3max,mpop3_SNprog,pop3_dist_min_pc,pop3_tMyr_suppress_newstar,p3_output_minmass &
+  & ,SFC_dist_min_pc,SFC_nH_min,SFC_f_nH_min,SFC_fate,SFC_f_star,SFC_f_star_Zdep,SFC_f_rhocrop,SFC_f_rhoSF &
+  & ,SFC_distribution,SFC_rsize_min_pc,SFC_flg_thin,SFC_t_life,SFC_output_minmass &
+  & ,star_by_star,sbs_imf_name,sbs_Mmin
 
   ! Units parameters
   namelist/units_params/units_density,units_time,units_length
@@ -273,6 +285,20 @@ subroutine read_hydro_params(nml_ok)
     if(myid==1)write(*,*)'Error: metals need nvar >= ndim+3'
     if(myid==1)write(*,*)'Modify hydro_parameters.f90 and recompile'
     nml_ok=.false.
+  endif
+
+  !--------------------------------------------------
+  ! Check H2 cooling options (ported from patch/ks)
+  !--------------------------------------------------
+  if(trim(H2coolfunc).ne.'' .and. trim(H2coolfunc).ne.'Hollenbach' .and. &
+    & trim(H2coolfunc).ne.'Galli' .and. trim(H2coolfunc).ne.'Glover')then
+    if(myid==1)write(*,*)'Error: unknown H2coolfunc = '//trim(H2coolfunc)
+    if(myid==1)write(*,*)'Choose one of: Hollenbach (default, tables), Galli, Glover'
+    nml_ok=.false.
+  endif
+  if(H2_chem_cool .and. .not. H2_Hm_cool)then
+    if(myid==1)write(*,*)'H2_chem_cool=.true. requires H- cooling: setting H2_Hm_cool=.true.'
+    H2_Hm_cool=.true.
   endif
 
   !--------------------------------------------------
@@ -536,6 +562,116 @@ subroutine read_hydro_params(nml_ok)
   endif
 
   ! Last variable is ichem
+
+  !-----------------------------------------------------------------
+  ! FG feedback (merge_ks): cooling-stop timer scalar and SN reservoir
+  !-----------------------------------------------------------------
+  if(fcool_stop>0d0)then
+    ivar_coolstop=nvar
+#ifdef RT
+    if(nvar<ichem+nIons)then
+      if(myid==1)write(*,*)'fcool_stop>0 needs a free passive scalar after the ions (NPSCAL+1): ivar_coolstop=nvar=',nvar,' ichem+nIons=',ichem+nIons
+      nml_ok=.false.
+    endif
+#else
+    if(nvar<ichem)then
+      if(myid==1)write(*,*)'fcool_stop>0 needs a free passive scalar (NPSCAL+1)'
+      nml_ok=.false.
+    endif
+#endif
+    if(ivar_refine>0.and.ivar_refine>=ivar_coolstop)then
+      if(myid==1)write(*,*)'ivar_refine = ',ivar_refine,' ivar_coolstop = ',ivar_coolstop,' and nvar = ',nvar
+      nml_ok=.false.
+    endif
+    if(myid==1)write(*,*)'   ivar_coolstop = ',ivar_coolstop
+  endif
+  if(E_wind_batch>0d0)then
+    if(.not.SN_reservoir)then
+      if(myid==1)write(*,*)'E_wind_batch > 0 requires SN_reservoir=.true. (the packets go through the SN reservoir)'
+      nml_ok=.false.
+    endif
+    if(Ncell_wind<=0d0)then
+      if(myid==1)write(*,*)'Ncell_wind must be positive'
+      nml_ok=.false.
+    endif
+#ifndef STELLAR_POPULATION_MASS
+    if(myid==1)write(*,*)'E_wind_batch > 0 requires a build with STELLAR_POPULATION_MASS=1'
+    nml_ok=.false.
+#endif
+  else if(E_wind_batch<0d0)then
+    if(myid==1)write(*,*)'E_wind_batch must not be negative'
+    nml_ok=.false.
+  endif
+  if(SN_reservoir)then
+    SN_radius_search=.true.
+    if(.not.hydro)then
+      if(myid==1)write(*,*)'SN_reservoir requires hydro'
+      nml_ok=.false.
+    endif
+#ifndef RT
+    if(myid==1)write(*,*)'SN_reservoir requires an RT build (the radius search uses the ion fractions for mu)'
+    nml_ok=.false.
+#endif
+  endif
+  if(Ncell_SN_max<=0d0)then
+    if(myid==1)write(*,*)'Ncell_SN_max must be positive'
+    nml_ok=.false.
+  endif
+
+  !-----------------------------------------------------------------
+  ! FG (patch/ks) star formation: consistency checks
+  !-----------------------------------------------------------------
+  if(sf_fg)then
+    if(.not.(rt.or.neq_chem))then
+      if(myid==1)write(*,*)'sf_fg=.true. needs the ionisation fractions (rt or neq_chem) for Tpop2 and yH2'
+      nml_ok=.false.
+    endif
+    if(.not.metal)then
+      if(myid==1)write(*,*)'sf_fg=.true. needs metal=.true. (Zpop3 selects Pop II / Pop III)'
+      nml_ok=.false.
+    endif
+    if(f_w>0d0)then
+      if(myid==1)write(*,*)'sf_fg=.true. does not support f_w>0 (no debris family)'
+      nml_ok=.false.
+    endif
+    if(pop2_model<1.or.pop2_model>5)then
+      if(myid==1)write(*,*)'pop2_model must be 1-5'
+      nml_ok=.false.
+    endif
+    if(pop2_model==5.and..not.star_by_star)then
+      if(myid==1)write(*,*)'pop2_model=5 requires star_by_star=.true.'
+      nml_ok=.false.
+    endif
+    if(pop3_model<1.or.pop3_model>8)then
+      if(myid==1)write(*,*)'pop3_model must be 1-8'
+      nml_ok=.false.
+    endif
+    if(pop2_njeans<=0d0.and.n_star<=0d0)then
+      if(myid==1)write(*,*)'sf_fg: n_star must be positive when pop2_njeans<=0'
+      nml_ok=.false.
+    endif
+    if(m_star<=0d0)then
+      if(myid==1)write(*,*)'sf_fg: m_star is the Pop II particle mass in Msun and must be positive'
+      nml_ok=.false.
+    endif
+    if(SFC_fate/='crop')then
+      if(myid==1)write(*,*)'sf_fg: SFC_fate must be crop (homog is obsolete in patch/ks)'
+      nml_ok=.false.
+    endif
+    if(SFC_distribution/='mass_weight'.and.SFC_distribution/='spherical')then
+      if(myid==1)write(*,*)'sf_fg: SFC_distribution must be mass_weight or spherical'
+      nml_ok=.false.
+    endif
+    if(SFC_f_star_Zdep<0.or.SFC_f_star_Zdep>2)then
+      if(myid==1)write(*,*)'sf_fg: SFC_f_star_Zdep must be 0, 1 or 2'
+      nml_ok=.false.
+    endif
+    if(pop2_SFC_marker.and.(pop2_model==4.or.pop2_model==5))pop2_SFC_marker=.false.
+#ifndef RT
+    if(myid==1)write(*,*)'sf_fg=.true. requires an RT build (star_formation_fg is empty without -DRT)'
+    nml_ok=.false.
+#endif
+  endif
 
 #ifdef SOLVERmhd
   !-----------------------------------

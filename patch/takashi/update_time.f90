@@ -74,6 +74,63 @@ subroutine timer (label, cmd)
   end if
 end subroutine timer
 !=======================================================================
+subroutine gather_hostnames (names)
+  ! Host (processor) name of every rank, gathered on rank 1 (names is only
+  ! meaningful there). Used for the startup log and the timer_ranks header
+  ! so that a slow rank can be traced to the node it ran on.
+  use amr_commons
+  use mpi_mod
+  implicit none
+  character(len=64),dimension(1:ncpu)::names
+  character(len=64)::myname
+#ifndef WITHOUTMPI
+  character(len=MPI_MAX_PROCESSOR_NAME)::pname
+  integer::plen,mpi_err
+  call MPI_GET_PROCESSOR_NAME(pname,plen,mpi_err)
+  myname=pname(1:min(plen,64))
+  call MPI_GATHER(myname,64,MPI_CHARACTER,names,64,MPI_CHARACTER,0,MPI_COMM_WORLD,mpi_err)
+#else
+  myname='localhost'
+  names(1)=myname
+#endif
+end subroutine gather_hostnames
+!=======================================================================
+subroutine output_hosts
+  ! Startup log: which node each range of consecutive ranks runs on
+  use amr_commons
+  implicit none
+  character(len=64),dimension(1:ncpu)::names
+  integer::i,i0
+  call gather_hostnames(names)
+  if(myid/=1)return
+  i0=1
+  do i=2,ncpu+1
+    if(i>ncpu)then
+      write(*,'(a,i6,a,i6,a,a)')' Ranks ',i0,' -',i-1,' on ',trim(names(i0))
+    else if(names(i)/=names(i0))then
+      write(*,'(a,i6,a,i6,a,a)')' Ranks ',i0,' -',i-1,' on ',trim(names(i0))
+      i0=i
+    end if
+  end do
+end subroutine output_hosts
+!=======================================================================
+subroutine cost_timer_total (tsum)
+  ! Sum of the compute timers used by cost_time_weighting (load_balance.f90):
+  ! the parts whose per-rank time was found to vary at fixed cell count
+  ! (patch/takashi/TODO.md 2b). Completed intervals only.
+  use timer_m
+  implicit none
+  real(kind=8)::tsum
+  integer::i,j
+  character(len=24),dimension(3),parameter::cost_labels=(/'hydro - godunov','cooling        ','rt - godunov   '/)
+  tsum=0d0
+  do i=1,ntimer
+    do j=1,size(cost_labels)
+      if(trim(labels(i))==trim(cost_labels(j)))tsum=tsum+time(i)
+    end do
+  end do
+end subroutine cost_timer_total
+!=======================================================================
 subroutine output_timer(write_file, filename)
   use amr_parameters
   use amr_commons
@@ -93,6 +150,7 @@ subroutine output_timer(write_file, filename)
   logical      :: id_is_one, write_file
   integer      :: ilun=11
   character(LEN=80)::filename, fileloc !Optional for writing timing info
+  character(LEN=80)::fileloc2          ! per-rank dump of all timers and grid counts
 !-----------------------------------------------------------------------
   id_is_one = myid == 1
   total = 1e-9
@@ -158,6 +216,13 @@ subroutine output_timer(write_file, filename)
     if (id_is_one) write (ilun,*) '--------------------------------------------------------------------'
     if (id_is_one) write (ilun,'(/a)') '     minimum       average       maximum' // &
       '  standard dev        std/av       %   rmn   rmx  TIMER'
+    ! Per-rank dump of all timers and grid counts: <timing file>.ranks when writing
+    ! a timing file (outputs), else timer_ranks_<job id>.dat (end of run)
+    if (write_file) then
+      fileloc2=TRIM(filename)//'.ranks'
+    else
+      call timer_ranks_filename(0,fileloc2)
+    end if
     do i = 1,ntimer
       call MPI_GATHER(real(time(i),kind=8),1,MPI_REAL8,vtime,1,MPI_REAL8,0,MPI_COMM_WORLD,mpi_err)
       if (id_is_one) then
@@ -172,10 +237,125 @@ subroutine output_timer(write_file, filename)
       endif
     end do
     if (id_is_one) write (ilun,'(f12.3,4x,f6.1,4x,a)') total, 100., 'TOTAL'
+    call output_timer_ranks(fileloc2)
   endif
 #endif
   if (id_is_one) close(ilun)
 end subroutine output_timer
+!=======================================================================
+subroutine timer_ranks_filename(istep,fileloc2)
+  ! timer_ranks_<job id>[_n<istep>].dat; the job id is PBS_JOBID (digits before
+  ! the first dot) or SLURM_JOB_ID, else timer_ranks_n<nstep_coarse>.dat
+  use amr_commons, only: nstep_coarse
+  implicit none
+  integer::istep
+  character(LEN=80)::fileloc2
+  character(LEN=32)::jobid
+  integer::idot,lenv
+  call get_environment_variable('PBS_JOBID',jobid,lenv)
+  if(lenv<=0)call get_environment_variable('SLURM_JOB_ID',jobid,lenv)
+  if(lenv>0)then
+     idot=index(jobid,'.')
+     if(idot>1)jobid=jobid(1:idot-1)
+     if(istep>0)then
+        write(fileloc2,'(a,a,a,i0,a)')'timer_ranks_',TRIM(jobid),'_n',istep,'.dat'
+     else
+        fileloc2='timer_ranks_'//TRIM(jobid)//'.dat'
+     end if
+  else
+     write(fileloc2,'(a,i0,a)')'timer_ranks_n',max(istep,nstep_coarse),'.dat'
+  end if
+end subroutine timer_ranks_filename
+!=======================================================================
+subroutine output_timer_ranks(fileloc2)
+  ! Per-rank dump (rank 1 writes): one line per timer (cumulative seconds on
+  ! rank 1..ncpu), then per level the active, ghost and received-at-last-load-
+  ! balance grids, the particles, the cost_time_weighting factor and the stars
+  ! on each rank. Lines starting with # are the header (ncpu, host of each rank).
+  ! Called at outputs and at the end of the run (output_timer), and every
+  ! timer_ranks_every coarse steps (adaptive_loop) so that the difference of
+  ! consecutive files gives the per-step time of each rank.
+  use amr_parameters
+  use amr_commons
+  use pm_parameters, only: npartmax
+  use pm_commons, only: npart, nextp, typep, is_star, headp_free, numbp_free
+  use timer_m
+  use mpi_mod
+  implicit none
+  character(LEN=80)::fileloc2
+#ifndef WITHOUTMPI
+  integer      :: ipart, jpart, nstar_loc, nghost_loc
+  logical, allocatable, dimension(:) :: inuse
+  character(len=64), dimension(ncpu) :: hostnames
+  real(kind=8), dimension(ncpu) :: vtime
+  integer      :: mpi_err, icpu
+  integer      :: i, ilevel
+  logical      :: id_is_one
+  integer      :: ilun2=12
+  integer,      dimension(ncpu) :: all_numbl
+  id_is_one = myid == 1
+  if (id_is_one) then
+    open(unit=ilun2,file=fileloc2,form='formatted')
+    write (ilun2,'(a,i6,a)') '# ncpu=',ncpu,'  columns: label, value on rank 1..ncpu'
+  end if
+  call gather_hostnames(hostnames)
+  if (id_is_one) write (ilun2,'(a,100000(1x,a))') '# host', (trim(hostnames(i)),i=1,ncpu)
+  do i = 1,ntimer
+    call MPI_GATHER(real(time(i),kind=8),1,MPI_REAL8,vtime,1,MPI_REAL8,0,MPI_COMM_WORLD,mpi_err)
+    if (id_is_one) write (ilun2,'(a24,100000(1x,ES12.5))') labels(i), vtime
+  end do
+  do ilevel=levelmin,nlevelmax
+    call MPI_GATHER(numbl(myid,ilevel),1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+    if (id_is_one) write (ilun2,'(a,i2,a,100000(1x,i12))') 'grids level ',ilevel,'          ', all_numbl
+  end do
+  ! Ghost (virtual) grids per level
+  do ilevel=levelmin,nlevelmax
+    nghost_loc=0
+    do icpu=1,ncpu
+      nghost_loc=nghost_loc+reception(icpu,ilevel)%ngrid
+    end do
+    call MPI_GATHER(nghost_loc,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+    if (id_is_one) write (ilun2,'(a,i2,a,100000(1x,i12))') 'ghost level ',ilevel,'          ', all_numbl
+  end do
+  ! Grids received (owner changed to this rank) at the last load balance, per level, and over the run
+  do ilevel=levelmin,nlevelmax
+    nghost_loc=0
+    if(allocated(nrecv_lb))nghost_loc=nrecv_lb(ilevel)
+    call MPI_GATHER(nghost_loc,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+    if (id_is_one) write (ilun2,'(a,i2,a,100000(1x,i12))') 'recv  level ',ilevel,'          ', all_numbl
+  end do
+  call MPI_GATHER(nrecv_lb_tot,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+  if (id_is_one) write (ilun2,'(a24,100000(1x,i12))') 'recv total', all_numbl
+  call MPI_GATHER(npart,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+  if (id_is_one) write (ilun2,'(a24,100000(1x,i12))') 'particles', all_numbl
+  call MPI_GATHER(cost_rank_fac,1,MPI_DOUBLE_PRECISION,vtime,1,MPI_DOUBLE_PRECISION,0,MPI_COMM_WORLD,mpi_err)
+  if (id_is_one) write (ilun2,'(a24,100000(1x,es12.5))') 'cost factor', vtime
+  ! Stars: count over the particle slots in use (all slots minus the free
+  ! list). The grid linked lists cannot be used here: between merge_tree_fine
+  ! and the next kill_tree_fine the lists of the children grids are stale.
+  nstar_loc=0
+  if(star.and.npartmax>0)then
+    allocate(inuse(1:npartmax))
+    inuse=.true.
+    ipart=headp_free
+    do jpart=1,numbp_free
+      inuse(ipart)=.false.
+      ipart=nextp(ipart)
+    end do
+    do ipart=1,npartmax
+      if(inuse(ipart))then
+        if(is_star(typep(ipart)))nstar_loc=nstar_loc+1
+      end if
+    end do
+    deallocate(inuse)
+  end if
+  call MPI_GATHER(nstar_loc,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+  if (id_is_one) write (ilun2,'(a24,100000(1x,i12))') 'stars', all_numbl
+  call MPI_GATHER(nsn_rank,1,MPI_INTEGER,all_numbl,1,MPI_INTEGER,0,MPI_COMM_WORLD,mpi_err)
+  if (id_is_one) write (ilun2,'(a24,100000(1x,i12))') 'SN events', all_numbl
+  if (id_is_one) close(ilun2)
+#endif
+end subroutine output_timer_ranks
 !=======================================================================
 subroutine reset_timer
   use timer_m

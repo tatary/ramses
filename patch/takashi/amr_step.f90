@@ -1,4 +1,6 @@
 recursive subroutine amr_step(ilevel,icount)
+  use sn_energy_reservoir, only: prepare_sn_reservoir !FG feedback (merge_ks)
+  use output_analysis, only: output_analysis_data, save_phi_sync_for_output !ugvtk (merge_ks)
   use amr_commons
   use pm_commons
   use hydro_commons
@@ -26,17 +28,29 @@ recursive subroutine amr_step(ilevel,icount)
   ! Each routine is called using a specific order, don't change it,   !
   ! unless you check all consequences first.                          !
   !-------------------------------------------------------------------!
-  integer::i,idim,ivar
+  integer::i,idim,ivar,icpu,j,iskip
+#ifdef SOLVERmhd
+  logical::mhd_feedback_active_tot
+#endif
   logical::ok_defrag,output_now_all
   logical,save::first_step=.true.
+  logical,save::flg_phi_sync_for_output=.false. !ugvtk (merge_ks)
 
   if(numbtot(1,ilevel)==0)return
 
   if(verbose)write(*,999)icount,ilevel
 
+  !ugvtk (merge_ks, patch/ks): save phi_sync_for_output only in the first cycle
+  if(ilevel==levelmin) then
+    flg_phi_sync_for_output = .true. ! reset flag
+  else if (icount == 2) then
+    flg_phi_sync_for_output = .false. ! not store until flag is reset
+  end if
+
   !-------------------------------------------
   ! Make new refinements and update boundaries
   !-------------------------------------------
+  call prepare_sn_reservoir(ilevel) !FG feedback (merge_ks): release pending SN heat before AMR changes and newdt_fine
   call timer('refine','start')
   if(levelmin.lt.nlevelmax .and.(.not.static.or.(nstep_coarse_old.eq.nstep_coarse.and.restart_remap)))then
     if(ilevel==levelmin.or.icount>1)then
@@ -46,6 +60,9 @@ recursive subroutine amr_step(ilevel,icount)
           !--------------------------
           ! Build communicators
           !--------------------------
+          ! separate timer label for build_comm and the exchanges of the whole state (TODO.md 2d-7);
+          ! 'refine' is then refine_fine alone
+          call timer('refine - comm','start')
           call build_comm(i)
 
           !--------------------------
@@ -54,15 +71,9 @@ recursive subroutine amr_step(ilevel,icount)
           call make_virtual_fine_int(cpu_map(1),i)
           if(hydro)then
 #ifdef SOLVERmhd
-            do ivar=1,nvar+3
+            call make_virtual_fine_dp_nv(uold,nvar+3,1,nvar+3,i)
 #else
-            do ivar=1,nvar
-#endif
-              call make_virtual_fine_dp(uold(1,ivar),i)
-#ifdef SOLVERmhd
-            end do
-#else
-            end do
+            call make_virtual_fine_dp_nv(uold,nvar,1,nvar,i)
 #endif
             if(momentum_feedback>0)call make_virtual_fine_dp(pstarold(1),i)
             if(strict_equilibrium>0)call make_virtual_fine_dp(rho_eq(1),i)
@@ -71,17 +82,13 @@ recursive subroutine amr_step(ilevel,icount)
           end if
 #ifdef RT
           if(rt)then
-            do ivar=1,nrtvar
-              call make_virtual_fine_dp(rtuold(1,ivar),i)
-            end do
+            call make_virtual_fine_dp_nv(rtuold,nrtvar,1,nrtvar,i)
             if(simple_boundary)call rt_make_boundary_hydro(i)
           end if
 #endif
           if(poisson)then
             call make_virtual_fine_dp(phi(1),i)
-            do idim=1,ndim
-              call make_virtual_fine_dp(f(1,idim),i)
-            end do
+            call make_virtual_fine_dp_nv(f,ndim,1,ndim,i)
             if(simple_boundary)call make_boundary_force(i)
           end if
         end if
@@ -89,6 +96,7 @@ recursive subroutine amr_step(ilevel,icount)
         !--------------------------
         ! Refine grids
         !--------------------------
+        call timer('refine','start')
         call refine_fine(i)
       end do
     end if
@@ -135,7 +143,13 @@ recursive subroutine amr_step(ilevel,icount)
   !-----------------
 #if NDIM==3
   call timer('sinks','start')
-  if(sink)call update_cloud(ilevel)
+  if(sink)then
+    if(sf_fg)then
+      call update_cloud_fg(ilevel) ! FG sink (sink_particle_fg.f90)
+    else
+      call update_cloud(ilevel)
+    end if
+  end if
 #endif
   !-----------------
   ! Particle leakage
@@ -192,7 +206,14 @@ recursive subroutine amr_step(ilevel,icount)
     ! Dump lightcone
     if(lightcone .and. ndim==3) call output_cone()
 
+    ! FG sink: acc_rate accumulates the mass accreted over the coarse step (grow_sink_fg) and is
+    ! normalised in create_sink_fg; reset after the outputs (patch/ks: must be done after dump_all)
+    if(sink.and.sf_fg)acc_rate=0d0
+
   endif
+
+  !ugvtk (merge_ks, patch/ks): output around the star idp_ugvtk / SFCs at given ages (acts at the finest level only)
+  if(ugvtk) call output_analysis_data(ilevel)
 
   !----------------------------
   ! Output frame to movie dump (without synced levels)
@@ -262,17 +283,13 @@ recursive subroutine amr_step(ilevel,icount)
     endif
 
     ! Compute gravitational potential
-    if(ilevel>levelmin)then
-      if(ilevel .ge. cg_levelmin) then
-        call phi_fine_cg(ilevel,icount)
-      else
-        call multigrid_fine(ilevel,icount)
-      end if
-    else
-      call multigrid_fine(levelmin,icount)
-    end if
+    ! Multigrid or CG, by cg_levelmin or automatically (cg_auto): poisson_auto.f90
+    call poisson_solve_level(ilevel,icount)
     !when there is no old potential...
     if (nstep==0)call save_phi_old(ilevel)
+
+    !ugvtk (merge_ks, patch/ks): save phi at the first cycle of all levels
+    if (ugvtk .and. flg_phi_sync_for_output) call save_phi_sync_for_output(ilevel)
 
     ! Compute gravitational acceleration
     call force_fine(ilevel,icount)
@@ -295,22 +312,22 @@ recursive subroutine amr_step(ilevel,icount)
 
       ! Update boundaries
 #ifdef SOLVERmhd
-      do ivar=1,nvar+3
+      call make_virtual_fine_dp_nv(uold,nvar+3,1,nvar+3,ilevel)
 #else
-      do ivar=1,nvar
-#endif
-        call make_virtual_fine_dp(uold(1,ivar),ilevel)
-#ifdef SOLVERmhd
-      end do
-#else
-      end do
+      call make_virtual_fine_dp_nv(uold,nvar,1,nvar,ilevel)
 #endif
       if(simple_boundary)call make_boundary_hydro(ilevel)
 
       ! Compute Bondi-Hoyle accretion parameters
 #if NDIM==3
       call timer('sinks','start')
-      if(sink.and.hydro)call collect_acczone_avg(ilevel)
+      if(sink.and.hydro)then
+        if(sf_fg)then
+          call collect_acczone_avg_fg(ilevel)
+        else
+          call collect_acczone_avg(ilevel)
+        end if
+      end if
 #endif
     end if
   end if
@@ -370,27 +387,102 @@ recursive subroutine amr_step(ilevel,icount)
       dtnew(ilevel+1)=dtnew(ilevel)/dble(nsubcycle(ilevel))
       call update_time(ilevel)
 #if NDIM==3
-      if(sink)call update_sink(ilevel)
+      if(sink)then
+        if(sf_fg)then
+          call update_sink_fg(ilevel)
+        else
+          call update_sink(ilevel)
+        end if
+      end if
 #endif
     end if
   else
     call update_time(ilevel)
 #if NDIM==3
-    if(sink)call update_sink(ilevel)
+    if(sink)then
+      if(sf_fg)then
+        call update_sink_fg(ilevel)
+      else
+        call update_sink(ilevel)
+      end if
+    end if
 #endif
   end if
 
   ! Thermal feedback from stars
 #if NDIM==3
   call timer('feedback','start')
-  if(hydro.and.star.and.eta_sn>0)call thermal_feedback(ilevel)
+  !------------------------------------------------------------------------
+  ! Added by Mizuki Ono (2026/06/25): magnetic loop injection in thermal_feedback
+  ! writes B into unew of neighbouring cells, which may be virtual boundary
+  ! cells. Reverse-communicate them and zero the virtual copies so that the
+  ! field is not added twice.
+  !------------------------------------------------------------------------
+  if(hydro.and.star.and.eta_sn>0)then
+#ifdef SOLVERmhd
+    mhd_feedback_active = .false.
+#endif
+    call thermal_feedback(ilevel)
+#ifdef SOLVERmhd
+#ifndef WITHOUTMPI
+    call MPI_ALLREDUCE(mhd_feedback_active,mhd_feedback_active_tot,1,MPI_LOGICAL,MPI_LOR,MPI_COMM_WORLD,mpi_err)
+#else
+    mhd_feedback_active_tot = mhd_feedback_active
+#endif
+    if (mhd_feedback_active_tot) then
+      call make_virtual_reverse_dp(unew(1,6),ilevel)
+      call make_virtual_reverse_dp(unew(1,7),ilevel)
+      call make_virtual_reverse_dp(unew(1,8),ilevel)
+      call make_virtual_reverse_dp(unew(1,nvar+1),ilevel)
+      call make_virtual_reverse_dp(unew(1,nvar+2),ilevel)
+      call make_virtual_reverse_dp(unew(1,nvar+3),ilevel)
+      ! Reset magnetic field to 0 for virtual boundary cells to avoid double addition
+      do icpu=1,ncpu
+        do j=1,twotondim
+          iskip=ncoarse+(j-1)*ngridmax
+          if (reception(icpu,ilevel)%ngrid > 0) then
+#ifdef LIGHT_MPI_COMM
+            if (associated(reception(icpu,ilevel)%pcomm)) then
+              if (associated(reception(icpu,ilevel)%pcomm%igrid)) then
+                do i=1,reception(icpu,ilevel)%ngrid
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,6)=0.0
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,7)=0.0
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,8)=0.0
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,nvar+1)=0.0
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,nvar+2)=0.0
+                  unew(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,nvar+3)=0.0
+                end do
+              end if
+            end if
+#else
+            if (associated(reception(icpu,ilevel)%igrid)) then
+              do i=1,reception(icpu,ilevel)%ngrid
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,6)=0.0
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,7)=0.0
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,8)=0.0
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+1)=0.0
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+2)=0.0
+                unew(reception(icpu,ilevel)%igrid(i)+iskip,nvar+3)=0.0
+              end do
+            end if
+#endif
+          end if
+        end do
+      end do
+    end if
+#endif
+  end if
 #endif
 
   ! Density threshold or Bondi accretion onto sink particle
 #if NDIM==3
   if(sink.and.hydro)then
     call timer('sinks','start')
-    call grow_sink(ilevel,.false.)
+    if(sf_fg)then
+      call grow_sink_fg(ilevel,.false.)
+    else
+      call grow_sink(ilevel,.false.)
+    end if
   end if
 #endif
   !-----------
@@ -398,22 +490,29 @@ recursive subroutine amr_step(ilevel,icount)
   !-----------
   if((hydro).and.(.not.static_gas))then
 
+    ! Start the reverse update of the boundaries (virtual cells -> owner)
+    ! before the hydro solver: godunov_fine only modifies the active cells
+    ! of level ilevel and the coarser neighbour cells, never the virtual
+    ! cells of level ilevel, so the communication overlaps with the solver.
+    ! The received contributions are added after the solver, exactly as
+    ! in the blocking version.
+    call timer('hydro - rev ghostzones','start')
+#ifdef SOLVERmhd
+    call make_virtual_reverse_dp_start(unew,nvar+3,1,nvar+3,1,ilevel,1)
+#else
+    call make_virtual_reverse_dp_start(unew,nvar,1,nvar,1,ilevel,1)
+#endif
+
     ! Hyperbolic solver
     call timer('hydro - godunov','start')
     call godunov_fine(ilevel)
 
-    ! Reverse update boundaries
+    ! Complete the reverse update of the boundaries
     call timer('hydro - rev ghostzones','start')
 #ifdef SOLVERmhd
-    do ivar=1,nvar+3
+    call make_virtual_reverse_dp_end(unew,nvar+3,1,nvar+3,1,ilevel,1)
 #else
-    do ivar=1,nvar
-#endif
-      call make_virtual_reverse_dp(unew(1,ivar),ilevel)
-#ifdef SOLVERmhd
-    end do
-#else
-    end do
+    call make_virtual_reverse_dp_end(unew,nvar,1,nvar,1,ilevel,1)
 #endif
     ! MC Tracer
     ! Communicate fluxes accross boundaries
@@ -488,6 +587,22 @@ recursive subroutine amr_step(ilevel,icount)
   endif
 #endif
 
+#if NDIM==3
+  ! Density and momentum for star_formation: start the owner -> virtual
+  ! exchange here if rt_step did not (star_formation completes it).
+  ! (sf_fg: star_formation_fg acts at nlevelmax only and completes it there)
+  if(hydro.and.star.and.(.not.static_gas).and.((.not.sf_fg).or.ilevel==nlevelmax))then
+     if(.not.async_fwd(1)%active)then
+        call timer('hydro - ghostzones','start')
+#ifdef SOLVERmhd
+        call make_virtual_fine_dp_start(uold,nvar+3,1,4,ilevel,1)
+#else
+        call make_virtual_fine_dp_start(uold,nvar,1,4,ilevel,1)
+#endif
+     end if
+  end if
+#endif
+
   !---------------
   ! Move particles
   !---------------
@@ -504,8 +619,16 @@ recursive subroutine amr_step(ilevel,icount)
   ! Star formation in leaf cells only
   !----------------------------------
 #if NDIM==3
-  call timer('feedback','start')
-  if(hydro.and.star.and.(.not.static_gas))call star_formation(ilevel)
+  call timer('star formation','start')
+  if(hydro.and.star.and.(.not.static_gas))then
+    if(sf_fg)then
+#ifdef RT
+      call star_formation_fg(ilevel)   ! patch/ks star formation (Pop II / Pop III / SFC), merge_ks
+#endif
+    else
+      call star_formation(ilevel)
+    end if
+  end if
 #endif
   !---------------------------------------
   ! Update physical and virtual boundaries
@@ -513,15 +636,9 @@ recursive subroutine amr_step(ilevel,icount)
   if((hydro).and.(.not.static_gas))then
     call timer('hydro - ghostzones','start')
 #ifdef SOLVERmhd
-    do ivar=1,nvar+3
+    call make_virtual_fine_dp_nv(uold,nvar+3,1,nvar+3,ilevel)
 #else
-    do ivar=1,nvar
-#endif
-      call make_virtual_fine_dp(uold(1,ivar),ilevel)
-#ifdef SOLVERmhd
-    end do
-#else
-    end do
+    call make_virtual_fine_dp_nv(uold,nvar,1,nvar,ilevel)
 #endif
     if(momentum_feedback>0)call make_virtual_fine_dp(pstarold(1),ilevel)
     if(strict_equilibrium>0)call make_virtual_fine_dp(rho_eq(1),ilevel)
@@ -577,7 +694,13 @@ recursive subroutine amr_step(ilevel,icount)
     ! Sink production
     !---------------
 #if NDIM==3
-    if(ilevel==levelmin)call create_sink
+    if(ilevel==levelmin)then
+      if(sf_fg)then
+        call create_sink_fg
+      else
+        call create_sink
+      end if
+    end if
 #endif
   end if
 
@@ -607,8 +730,10 @@ end subroutine amr_step
 
 #ifdef RT
 subroutine rt_step(ilevel)
-  use amr_parameters, only: dp
+  use amr_parameters, only: dp, hydro, star, static_gas
   use amr_commons,    only: levelmin, t, dtnew, myid
+  use hydro_parameters, only: nvar
+  use hydro_commons,  only: uold
   use rt_cooling_module, only: update_UVrates
   use rt_hydro_commons
   use UV_module
@@ -626,6 +751,7 @@ subroutine rt_step(ilevel)
 
   real(dp) :: dt_hydro, t_left, dt_rt, t_save
   integer  :: i_substep, ivar
+  logical  :: last_sub
 
   dt_hydro = dtnew(ilevel)                   ! Store hydro timestep length
   t_left = dt_hydro
@@ -636,48 +762,82 @@ subroutine rt_step(ilevel)
   i_substep = 0
   do while (t_left > 0)                      !                RT sub-cycle
     i_substep = i_substep + 1
+    call timer('rt - courant','start')
     call get_rt_courant_coarse(dt_rt)
     ! Temporarily change timestep length to rt step:
     dtnew(ilevel) = MIN(t_left, dt_rt/2**(ilevel-levelmin))
     t = t + dtnew(ilevel) ! Shift the time forwards one dt_rt
+    last_sub = (dtnew(ilevel) >= t_left)   ! last RT subcycle of this hydro step
 
     ! If (myid==1) write(*,900) dt_hydro, dtnew(ilevel), i_substep, ilevel
+    call timer('rt - set unew','start')
     if (i_substep > 1) call rt_set_unew(ilevel)
 
+    call timer('rt - star feedback','start')
     if(rt_star) call star_RT_feedback(ilevel,dtnew(ilevel))
 #if NDIM==3
     if(rt_sink) call sink_RT_feedback(ilevel,dtnew(ilevel))
 #endif
 
+    ! Start the reverse update of the boundaries before the solver
+    ! (rt_godunov_fine and add_rt_sources never modify the virtual cells
+    ! of level ilevel), complete it after: the communication overlaps
+    ! with the solver. Only the photon densities iGroups(1:nGroups) can
+    ! be non-zero in the virtual cells (star_RT_feedback adds to them;
+    ! rt_set_unew zeroes everything), so only those are exchanged.
+    call timer('rt - rev ghostzones','start')
+    call make_virtual_reverse_dp_start(rtunew,nrtvar,1,iGroups(nGroups),ndim+1,ilevel,2)
+
     ! Hyperbolic solver
+    call timer('rt - godunov','start')
     if(rt_advect) call rt_godunov_fine(ilevel,dtnew(ilevel))
 
+    call timer('rt - sources','start')
     call add_rt_sources(ilevel,dtnew(ilevel))
 
-    ! Reverse update boundaries
-    do ivar=1,nrtvar
-      call make_virtual_reverse_dp(rtunew(1,ivar),ilevel)
-    end do
+    ! Complete the reverse update of the boundaries
+    call timer('rt - rev ghostzones','start')
+    call make_virtual_reverse_dp_end(rtunew,nrtvar,1,iGroups(nGroups),ndim+1,ilevel,2)
 
     ! Set rtuold equal to rtunew
+    call timer('rt - set uold','start')
     call rt_set_uold(ilevel)
 
+    ! Cooling, then update the virtual copies of rtuold. The grids that
+    ! other cpus need (emission grids) are cooled first, their values are
+    ! sent, and the remaining grids are cooled while the messages are in
+    ! flight (cooling touches only the cells of its own grids).
     call timer('cooling','start')
-    if(neq_chem.or.cooling.or.T2_star>0.0.or.barotropic_eos)call cooling_fine(ilevel)
-    call timer('radiative transfer','start')
-
-    do ivar=1,nrtvar
-      call make_virtual_fine_dp(rtuold(1,ivar),ilevel)
-    end do
+    if(neq_chem.or.cooling.or.T2_star>0.0.or.barotropic_eos)call cooling_fine_part(ilevel,1)
+    call timer('rt - ghostzones','start')
+    call make_virtual_fine_dp_start(rtuold,nrtvar,1,nrtvar,ilevel,2)
+#if NDIM==3
+    ! After the last subcycle, uold of these grids is final: also start
+    ! sending density and momentum to the virtual copies for
+    ! star_formation, which completes the exchange (slot 1) itself.
+    if(last_sub .and. hydro .and. star .and. (.not.static_gas) .and. ((.not.sf_fg).or.ilevel==nlevelmax))then
+#ifdef SOLVERmhd
+       call make_virtual_fine_dp_start(uold,nvar+3,1,4,ilevel,1)
+#else
+       call make_virtual_fine_dp_start(uold,nvar,1,4,ilevel,1)
+#endif
+    end if
+#endif
+    call timer('cooling','start')
+    if(neq_chem.or.cooling.or.T2_star>0.0.or.barotropic_eos)call cooling_fine_part(ilevel,2)
+    call timer('rt - ghostzones','start')
+    call make_virtual_fine_dp_end(rtuold,nrtvar,1,nrtvar,ilevel,2)
     if(simple_boundary)call rt_make_boundary_hydro(ilevel)
 
     t_left = t_left - dtnew(ilevel)
   end do                                   !          End RT subcycle loop
+  call timer('rt - upload fine','start')
   dtnew(ilevel) = dt_hydro                 ! Restore hydro timestep length
   t = t_save       ! Restore original time (otherwise tiny roundoff error)
 
   ! Restriction operator to update coarser level split cells
   call rt_upload_fine(ilevel)
+  call timer('radiative transfer','start')
 
   if (myid==1 .and. rt_nsubcycle .gt. 1) write(*,901) ilevel, i_substep
 

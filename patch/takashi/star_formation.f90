@@ -8,6 +8,7 @@ subroutine star_formation(ilevel)
   use constants, only: M_sun, Myr2sec, Gyr2sec, mH, pi, rhoc, twopi
   use random
   use mpi_mod
+  use sf_log
   implicit none
 #ifndef WITHOUTMPI
   integer::info,info2,dummy_io
@@ -41,6 +42,8 @@ subroutine star_formation(ilevel)
   real(dp)::ul,ur,fl,fr,trgv,alpha0, mach
   real(dp)::sigma2,sigma2_comp,sigma2_sole,lapld,flong,ftot,pcomp=0.3d0
   real(dp)::divv,divv2,curlv,curlva,curlvb,curlvc,curlv2
+  real(dp)::d_alpha,xw2,vdotx,cnum,cden
+  real(dp),dimension(1:3)::xoff,xbar
   real(dp)::birth_epoch,factG
   real(kind=8)::mlost_all,mtot_all
 #ifndef WITHOUTMPI
@@ -57,6 +60,11 @@ subroutine star_formation(ilevel)
   integer ,dimension(1:nvector),save::ind_debris
   integer ,dimension(1:nvector,0:twondim)::ind_nbor
   integer ,dimension(threetondim)::ind_nborcube
+  integer ,dimension(1:nvector,1:threetondim),save::nborcube
+  ! TO ADDED 2026-11-22 (Ramses-FG 453a780): neighbour holds velocities (see get_27_neighbors); velocity of a neighbour
+  logical ,dimension(threetondim)::nbor_prim
+  logical ,dimension(1:nvector,1:threetondim)::nborcube_prim
+  real(dp),dimension(1:3)::vnb
   logical ,dimension(1:nvector),save::ok,ok_new=.true.
   integer ,dimension(1:ncpu)::ntot_star_cpu,ntot_star_all
   character(LEN=80)::filename,filedir,fileloc,filedirini
@@ -69,6 +77,10 @@ subroutine star_formation(ilevel)
   integer::irad
 #endif
   real(kind=8)::vx, vy, vz, vx2, vy2, vz2, dtot
+  ! omp_sf: star formation rate per free-fall time and the criterion of every cell of the level
+  real(dp),allocatable,dimension(:)::sfr_cell
+  logical ,allocatable,dimension(:)::ok_cell
+  logical::thr,thr_sfr
 
   ! TODO: when f2008 is obligatory - remove this and replace erfc_pre_f08 below by
   ! the f2008 intrinsic erfc() function:
@@ -80,53 +92,7 @@ subroutine star_formation(ilevel)
 
   if(verbose)write(*,*)' Entering star_formation'
 
-  if(sf_log_properties.and.ifout.gt.1) then
-    call title(ifout-1,nchar)
-    if(IOGROUPSIZEREP>0) then
-      call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
-      filedirini='output_'//TRIM(nchar)//'/'
-      filedir='output_'//TRIM(nchar)//'/group_'//TRIM(ncharcpu)//'/'
-    else
-      filedir='output_'//TRIM(nchar)//'/'
-    endif
-    filename=TRIM(filedir)//'stars_'//TRIM(nchar)//'.out'
-    ilun=myid+103
-    call title(myid,nchar)
-    fileloc=TRIM(filename)//TRIM(nchar)
-    ! Wait for the token
-#ifndef WITHOUTMPI
-    if(IOGROUPSIZE>0) then
-      if (mod(myid-1,IOGROUPSIZE)/=0) then
-        call MPI_RECV(dummy_io,1,MPI_INTEGER,myid-1-1,tag,&
-        & MPI_COMM_WORLD,MPI_STATUS_IGNORE,info2)
-      end if
-    endif
-#endif
-
-    inquire(file=fileloc,exist=file_exist)
-    if((.not.file_exist).or.(ifout-1.ne.ifout_stars_log)) then
-      open(ilun, file=fileloc, status='replace', form='formatted')
-      write(ilun,'(A24)',advance='no') '# event id  ilevel  mp  '
-      do idim=1,ndim
-        write(ilun,'(A2,I1,A2)',advance='no') 'xp',idim,'  '
-      enddo
-      do idim=1,ndim
-        write(ilun,'(A2,I1,A2)',advance='no') 'vp',idim,'  '
-      enddo
-      do ivar=1,nvar
-        if(ivar.ge.10) then
-          write(ilun,'(A1,I2,A2)',advance='no') 'u',ivar,'  '
-        else
-          write(ilun,'(A1,I1,A2)',advance='no') 'u',ivar,'  '
-        endif
-      enddo
-      write(ilun,'(A5)',advance='no') 'tag  '
-      write(ilun,'(A1)') ' '
-      ifout_stars_log = ifout-1
-    else
-      open(ilun, file=fileloc, status="old", position="append", action="write", form='formatted')
-    endif
-  endif
+  call sf_log_open(ilun)
 
   ! Conversion factor from user units to cgs units
   call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
@@ -193,7 +159,23 @@ subroutine star_formation(ilevel)
   !------------------------------------------------
   ! Convert hydro variables to primitive variables
   !------------------------------------------------
+  ! patch/takashi (omp_sf): the conversion loops (here and at the end) work cell by cell
+  ! and are threaded. The main loop is split in two: the star formation rate of every
+  ! cell (the expensive part: 27 neighbours, velocity dispersion) is computed first, in
+  ! parallel for sf_model 6 and 7 without sf_virial, and the Poisson draws follow serially in
+  ! the original order, so the random number sequence and the result do not depend on
+  ! the number of threads.
   ncache=active(ilevel)%ngrid
+  thr=omp_sf.and.ncache>=omp_mg_mingrid
+  thr_sfr=thr.and.(sf_model==6.or.sf_model==7).and.(.not.sf_virial)
+!$omp parallel do private(igrid,ngrid,i,ind,iskip,ivar,d,u,v,w,e,ind_grid,ind_cell) &
+#ifdef SOLVERmhd
+!$omp & private(bx1,by1,bz1,bx2,by2,bz2) &
+#endif
+#if NENER>0
+!$omp & private(irad) &
+#endif
+!$omp & schedule(static) if(thr)
   do igrid=1,ncache,nvector
     ngrid=MIN(nvector,ncache-igrid+1)
     do i=1,ngrid
@@ -240,12 +222,47 @@ subroutine star_formation(ilevel)
       end do
     end do
   end do
+!$omp end parallel do
 
 ! get values of uold for density and velocities in virtual boundaries
 #ifndef WITHOUTMPI
-  do ivar=1,4
-    call make_virtual_fine_dp(uold(1,ivar),ilevel)
-  end do
+  ! separate timer labels for the two places where this routine waits for the other ranks
+  ! (the exchange below and the collective sums after the main loop): TODO.md 2d-4
+  call timer('sf - ghostzones','start')
+  if(async_fwd(1)%active)then
+    ! amr_step started the exchange (conservative variables) after the
+    ! cooling of the emission grids: complete it and convert the virtual
+    ! cells to velocities with the same operations as the active cells.
+#ifdef SOLVERmhd
+    call make_virtual_fine_dp_end(uold,nvar+3,1,4,ilevel,1)
+#else
+    call make_virtual_fine_dp_end(uold,nvar,1,4,ilevel,1)
+#endif
+    do icpu=1,ncpu
+      do ind=1,twotondim
+        iskip=ncoarse+(ind-1)*ngridmax
+        do i=1,reception(icpu,ilevel)%ngrid
+#ifdef LIGHT_MPI_COMM
+          ncell=reception(icpu,ilevel)%pcomm%igrid(i)+iskip
+#else
+          ncell=reception(icpu,ilevel)%igrid(i)+iskip
+#endif
+          d=uold(ncell,1)
+          uold(ncell,2)=uold(ncell,2)/d
+          uold(ncell,3)=uold(ncell,3)/d
+          uold(ncell,4)=uold(ncell,4)/d
+        end do
+      end do
+    end do
+  else
+    ! density and velocities in one message per neighbour instead of four
+#ifdef SOLVERmhd
+    call make_virtual_fine_dp_nv(uold,nvar+3,1,4,ilevel)
+#else
+    call make_virtual_fine_dp_nv(uold,nvar,1,4,ilevel)
+#endif
+  end if
+  call timer('star formation','start')
 #endif
 
   !------------------------------------------------
@@ -255,6 +272,16 @@ subroutine star_formation(ilevel)
   ndebris_tot=0
   ! Loop over grids
   ncache=active(ilevel)%ngrid
+  allocate(sfr_cell(1:max(1,twotondim*ncache)),ok_cell(1:max(1,twotondim*ncache)))
+!$omp parallel do schedule(static) if(thr_sfr) firstprivate(pcomp) &
+!$omp & private(T2,T_poly,alpha0,b_turb,cs2,cs2_poly,curlv,curlv2,curlva,curlvb,curlvc,d,d1,d2,d3) &
+!$omp & private(d4,d5,d6,divv,divv2,dtot,fl,flong,fr,ftot,i,ind,iskip,j,lapld,mach,nH,ncell,ngrid) &
+!$omp & private(phi_t,phi_x,scrit,sigma2,sigma2_comp,sigma2_sole,sigs,t_dyn,t_ff,tdec,theta,trgv,ul) &
+!$omp & private(ur,vx,vx2,vy,vy2,vz,vz2,zeta,d_alpha,xw2,vdotx,cnum,cden,xoff,xbar) &
+#ifdef SOLVERmhd
+!$omp & private(A,B,C,beta,emag,fbeta) &
+#endif
+!$omp & private(ind_grid,ind_cell,ind_cell2,ok,sfr_ff,nborcube,ind_nborcube,ind_nbor,nbor_prim,nborcube_prim,vnb)
   do igrid=1,ncache,nvector
     ngrid=MIN(nvector,ncache-igrid+1)
     do i=1,ngrid
@@ -271,6 +298,17 @@ subroutine star_formation(ilevel)
         ok(i)=son(ind_cell(i))==0
       end do
       ! sf_model = 6: KM model with an instantaneous estimate
+      if((sf_model==6 .or. sf_model==7) .and. (.not.sf_virial))then
+        ! These models only need the 3x3x3 velocity dispersion for cells
+        ! that pass the density criterion (no side effects on uold), so
+        ! apply it first, and gather the 27 neighbours of all cells of the
+        ! vector of grids at once (one get3cubefather per grid vector
+        ! instead of two per cell; same neighbour mapping as get_27_neighbors).
+        do i=1,ngrid
+          if(ok(i) .and. uold(ind_cell(i),1)<=d0)ok(i)=.false.
+        end do
+        if(any(ok(1:ngrid)))call get_27_neighbors_grid(ind_grid,ngrid,ind,nborcube,nborcube_prim,ilevel)
+      endif
       if(sf_virial .or. (sf_model .gt. 5))then
         do i=1,ngrid
           ! if cell is a leaf cell
@@ -308,29 +346,47 @@ subroutine star_formation(ilevel)
             ! Get neighbor cells if they exist, otherwise use straight injection from local cell
             ncell = 1 ! we just want the neighbors of that cell
             ind_cell2(1) = ind_cell(i)
-            call getnbor(ind_cell2,ind_nbor,ncell,ilevel)
-            d1           = uold(ind_nbor(1,1),1) ; d2 = uold(ind_nbor(1,2),1) ; d3 = uold(ind_nbor(1,3),1)
-            d4           = uold(ind_nbor(1,4),1) ; d5 = uold(ind_nbor(1,5),1) ; d6 = uold(ind_nbor(1,6),1)
+            if (.not.(sf_model == 6 .or. sf_model == 7)) then
+              ! The 6 face neighbours are not used by models 6 and 7
+              call getnbor(ind_cell2,ind_nbor,ncell,ilevel)
+              d1           = uold(ind_nbor(1,1),1) ; d2 = uold(ind_nbor(1,2),1) ; d3 = uold(ind_nbor(1,3),1)
+              d4           = uold(ind_nbor(1,4),1) ; d5 = uold(ind_nbor(1,5),1) ; d6 = uold(ind_nbor(1,6),1)
+            endif
             sigma2       = 0d0 ; sigma2_comp = 0d0 ; sigma2_sole = 0d0
             trgv         = 0d0 ; divv = 0d0 ; curlva = 0d0 ; curlvb = 0d0 ; curlvc = 0d0
             flong        = 0d0
 
             vx = 0 ; vy = 0 ; vz = 0 ; vx2 = 0 ; vy2 = 0 ; vz2 = 0
             dtot = 0
+            d_alpha = d
             if (sf_model == 6 .or. sf_model == 7) then
               ! Mass-weighted velocity dispersion over the 3x3x3 cell cube.
               ! get_27_neighbors returns the coarser cell (one level down) that
               ! covers the region when a same-level neighbor does not exist,
               ! instead of falling back to the central cell itself.
-              call get_27_neighbors(ind_cell2,ind_nborcube,ilevel)
+              if (sf_virial) then
+                call get_27_neighbors(ind_cell2,ind_nborcube,nbor_prim,ilevel)
+              else
+                ind_nborcube(1:threetondim) = nborcube(i,1:threetondim)
+                nbor_prim(1:threetondim) = nborcube_prim(i,1:threetondim)
+              endif
               do j=1,threetondim
                 d1  = uold(ind_nborcube(j),1)
-                vx  = vx  + d1*uold(ind_nborcube(j),2)
-                vy  = vy  + d1*uold(ind_nborcube(j),3)
-                vz  = vz  + d1*uold(ind_nborcube(j),4)
-                vx2 = vx2 + d1*uold(ind_nborcube(j),2)**2
-                vy2 = vy2 + d1*uold(ind_nborcube(j),3)**2
-                vz2 = vz2 + d1*uold(ind_nborcube(j),4)**2
+                ! TO MODIFIED 2026-11-22: uold holds velocities only in the level-ilevel cells this routine
+                ! converted (active grids and the virtual grids of the level); a father cell (coarser level,
+                ! returned where the neighbouring grid does not exist) still holds the momentum, which was
+                ! summed as if it were a velocity.
+                if (nbor_prim(j)) then
+                  vnb(1:3) = uold(ind_nborcube(j),2:4)
+                else
+                  vnb(1:3) = uold(ind_nborcube(j),2:4)/d1
+                end if
+                vx  = vx  + d1*vnb(1)
+                vy  = vy  + d1*vnb(2)
+                vz  = vz  + d1*vnb(3)
+                vx2 = vx2 + d1*vnb(1)**2
+                vy2 = vy2 + d1*vnb(2)**2
+                vz2 = vz2 + d1*vnb(3)**2
                 dtot = dtot + d1
               end do
               vx = vx/dtot
@@ -339,7 +395,36 @@ subroutine star_formation(ilevel)
               vx2 = vx2/dtot
               vy2 = vy2/dtot
               vz2 = vz2/dtot
+              ! 1D velocity dispersion (sigma_1d^2 = sigma_3d^2/3), as in Kretschmer & Teyssier 2020:
+              ! their alpha_vir and Mach number (M = sigma_1d/c_s) are both defined with sigma_1d.
               sigma2 = (vx2 + vy2 + vz2 - vx**2 - vy**2 - vz**2)/3d0
+              ! sf_alpha_meandens: the virial parameter uses the mean density of the cube (the region over
+              ! which sigma is measured) instead of the density of the central cell.
+              if (sf_alpha_meandens) d_alpha = dtot/threetondim
+              ! sf_sigma_noconv: remove the isotropic converging flow from the dispersion. A radial flow
+              ! v - <v> = c (x - <x>) about the centre of mass of the cube is fitted by mass-weighted least
+              ! squares; if c < 0 (convergence) the variance it explains, c^2 <|x-<x>|^2>, is subtracted (the
+              ! residual of a one-parameter fit, so it is never negative). Expansion is kept.
+              ! A father cell standing in for missing neighbours is placed at the nominal offset.
+              if (sf_sigma_noconv) then
+                xbar = 0 ; xw2 = 0 ; vdotx = 0
+                do j=1,threetondim
+                  d1 = uold(ind_nborcube(j),1)
+                  if (nbor_prim(j)) then
+                    vnb(1:3) = uold(ind_nborcube(j),2:4)
+                  else
+                    vnb(1:3) = uold(ind_nborcube(j),2:4)/d1
+                  end if
+                  xoff(1) = mod(j-1,3)-1 ; xoff(2) = mod((j-1)/3,3)-1 ; xoff(3) = (j-1)/9-1
+                  xbar  = xbar  + d1*xoff
+                  xw2   = xw2   + d1*sum(xoff**2)
+                  vdotx = vdotx + d1*sum(vnb*xoff)
+                end do
+                xbar = xbar/dtot
+                cnum = vdotx/dtot - (vx*xbar(1) + vy*xbar(2) + vz*xbar(3))
+                cden = xw2/dtot - sum(xbar**2)
+                if (cnum < 0d0 .and. cden > 0d0) sigma2 = max(sigma2 - cnum**2/cden/3d0, 0d0)
+              end if
             else
               !!!!!!!!!!!!!!!!!!
               ! Divergence terms
@@ -561,9 +646,12 @@ subroutine star_formation(ilevel)
                CASE (6)
                 ! Virial parameter
                 !alpha0    = (5.0d0*sigma2)/(pi*factG*d*dx_loc**2)
-                alpha0    = (1.1937*(sigma2+cs2))/(factG*d*dx_loc**2) ! 5/(4 pi/3)
-                ! Turbulent forcing parameter (Federrath 2008 & 2010)
-                b_turb    = 0.4
+                alpha0    = (1.1937*(sigma2+cs2))/(factG*d_alpha*dx_loc**2) ! 5/(4 pi/3)
+                ! Turbulent forcing parameter (Federrath 2008 & 2010): &SF_PARAMS sf_b_turb (default 0.4*sqrt(3) = 0.69).
+                ! Kretschmer & Teyssier 2020 give no value. Federrath's b is calibrated for the 3D rms Mach number;
+                ! for the 1D Mach number used here the natural (mixed) forcing b_3d = 0.4 corresponds to 0.4*sqrt(3).
+                ! (The default was 0.4 until 2026-11-24.)
+                b_turb    = sf_b_turb
 #ifdef SOLVERmhd
                 ! Best fit values to the Multi-ff KM model (MHD)
                 A         = 0.5d0*(uold(ind_cell(i),6)+uold(ind_cell(i),nvar+1))
@@ -579,6 +667,7 @@ subroutine star_formation(ilevel)
                 scrit = log(alpha0*(1 + 2*(mach**4)/(1 + mach**2)))
 #else
                 ! Best fit values to the Multi-ff KM model (Hydro)
+                ! sigma2 is the 1D dispersion: M = sigma_1d/c_s (Kretschmer & Teyssier 2020), not the 3D rms Mach number
                 mach = sqrt(sigma2/cs2)
                 sigs      = log(1.0d0+(b_turb**2)*mach**2)
                 !scrit     = log(((pi**2)/5)*(phi_x**2)*alpha0*(sigma2/cs2))
@@ -586,7 +675,7 @@ subroutine star_formation(ilevel)
 #endif
                 sfr_ff(i) = (eps_star/2.0d0)*exp(3.0d0/8.0d0*sigs)*(2.0d0-erfc((sigs-scrit)/sqrt(2.0d0*sigs)))
                CASE (7) ! Hopkins 2013
-                alpha0    = (1.1937*(sigma2+cs2))/(factG*d*dx_loc**2) ! 5/(4 pi/3)
+                alpha0    = (1.1937*(sigma2+cs2))/(factG*d_alpha*dx_loc**2) ! 5/(4 pi/3)
                 if (d*scale_nH > 500) then
                   write(*,*) 'alpha0 = ', alpha0, ' sigma2 = ', sigma2, ' cs2 = ', cs2, 'nH = ', d*scale_nH
                 endif
@@ -625,6 +714,34 @@ subroutine star_formation(ilevel)
           if(d<=var_cut_refine)ok(i)=.false.
         end do
       endif
+      ! Keep the result for the serial loop below
+      do i=1,ngrid
+        ok_cell((ind-1)*ncache+igrid+i-1)=ok(i)
+        if(ok(i).and.(sf_virial.or.(sf_model.gt.5)))then
+          sfr_cell((ind-1)*ncache+igrid+i-1)=sfr_ff(i)
+        else
+          sfr_cell((ind-1)*ncache+igrid+i-1)=eps_star
+        end if
+      end do
+    end do
+  end do
+!$omp end parallel do
+
+  ! Poisson draws, serial and in the original order
+  do igrid=1,ncache,nvector
+    ngrid=MIN(nvector,ncache-igrid+1)
+    do i=1,ngrid
+      ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
+    end do
+    do ind=1,twotondim
+      iskip=ncoarse+(ind-1)*ngridmax
+      do i=1,ngrid
+        ind_cell(i)=iskip+ind_grid(i)
+      end do
+      do i=1,ngrid
+        ok(i)=ok_cell((ind-1)*ncache+igrid+i-1)
+        sfr_ff(i)=sfr_cell((ind-1)*ncache+igrid+i-1)
+      end do
       ! Calculate number of new stars in each cell using Poisson statistics
       do i=1,ngrid
         nstar(i)=0
@@ -679,9 +796,12 @@ subroutine star_formation(ilevel)
     end do
   end do
 
+  deallocate(sfr_cell,ok_cell)
+
   !---------------------------------
   ! Check for free particle memory
   !---------------------------------
+  call timer('sf - reduce','start')
   ok_free=(numbp_free-ntot-ndebris_tot)>=0
 #ifndef WITHOUTMPI
   call MPI_ALLREDUCE(numbp_free,numbp_free_tot,1,MPI_INTEGER,MPI_MIN,MPI_COMM_WORLD,info)
@@ -729,6 +849,8 @@ subroutine star_formation(ilevel)
       & ilevel,ntot_all,nstar_tot,mtot_all,mlost_all/(mlost_all+mtot_all)*100.
     endif
   end if
+
+  call timer('star formation','start')
 
   !------------------------------
   ! Create new star particles
@@ -851,28 +973,7 @@ subroutine star_formation(ilevel)
           if(metal)zp(ind_debris(i))=zg+eta_sn*yield*(1-zg)*n*mstar/mdebris
         endif
 
-        if(sf_log_properties) then
-          write(ilun,'(I10)',advance='no') 0
-          write(ilun,'(2I10,E24.12)',advance='no') idp(ind_part(i)),ilevel,mp(ind_part(i))
-          do idim=1,ndim
-            write(ilun,'(E24.12)',advance='no') xp(ind_part(i),idim)
-          enddo
-          do idim=1,ndim
-            write(ilun,'(E24.12)',advance='no') vp(ind_part(i),idim)
-          enddo
-          write(ilun,'(E24.12)',advance='no') uold(ind_cell_new(i),1)
-          do ivar=2,nvar
-            if(ivar.eq.ndim+2)then
-              ! Temperature
-              uvar=(gamma-1.0d0)*(uold(ind_cell_new(i),ndim+2))*scale_T2
-            else
-              uvar=uold(ind_cell_new(i),ivar)
-            endif
-            write(ilun,'(E24.12)',advance='no') uvar
-          enddo
-          write(ilun,'(I10)',advance='no') typep(ind_part(i))%tag
-          write(ilun,'(A1)') ' '
-        endif
+        if(sf_log_properties) call sf_log_write_star(ilun,ind_part(i),ind_cell_new(i),ilevel,.true.)
 
 
       end do
@@ -896,6 +997,14 @@ subroutine star_formation(ilevel)
   ! Convert hydro variables back to conservative variables
   !---------------------------------------------------------
   ncache=active(ilevel)%ngrid
+!$omp parallel do private(igrid,ngrid,i,ind,iskip,ivar,d,u,v,w,e,ind_grid,ind_cell) &
+#ifdef SOLVERmhd
+!$omp & private(bx1,by1,bz1,bx2,by2,bz2) &
+#endif
+#if NENER>0
+!$omp & private(irad) &
+#endif
+!$omp & schedule(static) if(thr)
   do igrid=1,ncache,nvector
     ngrid=MIN(nvector,ncache-igrid+1)
     do i=1,ngrid
@@ -942,8 +1051,9 @@ subroutine star_formation(ilevel)
       end do
     end do
   end do
+!$omp end parallel do
 
-  if(sf_log_properties) close(ilun)
+  call sf_log_close(ilun)
 
 end subroutine star_formation
 #endif
@@ -1034,12 +1144,19 @@ end subroutine getnbor
 ! does not exist at the same level, it returns the index of a
 ! lower level cell that covers that region
 !##############################################################
-subroutine get_27_neighbors(ind_cell, neighbors, ilevel)
+subroutine get_27_neighbors(ind_cell, neighbors, is_prim, ilevel)
   use amr_commons
   implicit none
   integer, dimension(1:nvector), intent(IN) ::ind_cell
   integer, intent(IN) :: ilevel
   integer, dimension(threetondim), intent(OUT) :: neighbors
+  ! TO ADDED 2026-11-22 (Ramses-FG 453a780): is_prim(j) = .true. if neighbour j is a level-ilevel cell whose uold(2:4)
+  ! star_formation has converted to velocities: here the active grids AND the virtual grids of other ranks
+  ! (star_formation / star_formation_fg convert those too; ks converts the active grids only, so its is_prim is
+  ! .false. for ghost grids). .false. for father cells (coarser level, used where the neighbouring grid does not
+  ! exist) and for grids of the physical boundary regions (cpu_map = 0): their uold(2:4) is still the momentum,
+  ! so the caller must divide by the density.
+  logical, dimension(threetondim), intent(OUT) :: is_prim
   !logical, dimension(threetondim), intent(OUT) :: is_father
   integer :: ind_grid
   ! Working arrays
@@ -1088,6 +1205,7 @@ subroutine get_27_neighbors(ind_cell, neighbors, ilevel)
           child_pos = target_i + target_j * 2 + target_k * 4 + 1 ! back to (1-8)
           iskip = ncoarse + (child_pos - 1) * ngridmax
           neighbors(idx) = iskip + son(ind_father(1))
+          is_prim(idx) = .true.
         else
           ! neighbor is outside the current grid, need to find the appropriate father cell
           ! determine which father cell contains the target neighbor
@@ -1119,15 +1237,17 @@ subroutine get_27_neighbors(ind_cell, neighbors, ilevel)
 
           if (child_grid > 0) then
             ! get the child position within that father cell's grid
-            child_pos = 1 + mod(target_i, 2) + 2*mod(target_j, 2) + 4*mod(target_k, 2)
-            ! adjust for negative indices
-            if (target_i < 0) child_pos = child_pos - 1 + 2
-            if (target_j < 0) child_pos = child_pos - 2 + 4
-            if (target_k < 0) child_pos = child_pos - 4 + 8
+            ! TO MODIFIED 2026-11-22 (from Ramses-FG 56e45b5): modulo (non-negative) instead of mod + "adjustment".
+            ! mod(-1,2) = -1 in Fortran and the adjustment added only +1 (+2, +4) instead of +2 (+4, +8), so a
+            ! target at -1 got the child index 0 of the neighbouring grid, i.e. the cell at -2 dx instead of -1 dx:
+            ! for cells with ix (iy, iz) = 0 in their grid the 27-cell cube skipped the adjacent low-side cells.
+            child_pos = 1 + modulo(target_i, 2) + 2*modulo(target_j, 2) + 4*modulo(target_k, 2)
             iskip = ncoarse + (child_pos - 1) * ngridmax
             neighbors(idx) = iskip + child_grid
+            is_prim(idx) = (cpu_map(nbors_father_cells(1, father_idx)) > 0)
           else
             neighbors(idx) = nbors_father_cells(1, father_idx) ! use the father cell if no child exists
+            is_prim(idx) = .false.
             !is_father(idx) = .true.
           endif
         endif
@@ -1135,5 +1255,79 @@ subroutine get_27_neighbors(ind_cell, neighbors, ilevel)
     end do
   end do
 end subroutine get_27_neighbors
+
+!##############################################################
+! Vector version of get_27_neighbors for the cells at position
+! ind (1..8) of a vector of grids: same neighbour mapping, but
+! the 3x3x3 father cells are gathered once per grid vector.
+!##############################################################
+subroutine get_27_neighbors_grid(ind_grid, ngrid, ind, neighbors, is_prim, ilevel)
+  use amr_commons
+  implicit none
+  integer, dimension(1:nvector), intent(IN) :: ind_grid
+  integer, intent(IN) :: ngrid, ind, ilevel
+  integer, dimension(1:nvector,1:threetondim), intent(OUT) :: neighbors
+  logical, dimension(1:nvector,1:threetondim), intent(OUT) :: is_prim   ! as in get_27_neighbors
+  integer, dimension(1:nvector) :: ind_father
+  integer, dimension(1:nvector,1:threetondim) :: nbors_father_cells
+  integer, dimension(1:nvector,1:twotondim) :: nbors_father_grids
+  integer :: i, j, k, n, idx, iskip
+  integer :: my_i, my_j, my_k, ni, nj, nk
+  integer :: target_i, target_j, target_k
+  integer :: father_idx, child_pos, child_grid
+
+  do n = 1, ngrid
+    ind_father(n) = father(ind_grid(n))
+  end do
+  call get3cubefather(ind_father, nbors_father_cells, nbors_father_grids, ngrid, ilevel)
+
+  my_k = (ind - 1) / 4
+  my_j = ((ind - 1) - my_k * 4) / 2
+  my_i = (ind - 1) - my_j * 2 - my_k * 4
+
+  idx = 0
+  do k = -1, 1
+    do j = -1, 1
+      do i = -1, 1
+        idx = idx + 1
+        target_i = my_i + i
+        target_j = my_j + j
+        target_k = my_k + k
+        if (target_i >= 0 .and. target_i <= 1 .and. &
+          target_j >= 0 .and. target_j <= 1 .and. &
+          target_k >= 0 .and. target_k <= 1) then
+          child_pos = target_i + target_j * 2 + target_k * 4 + 1
+          iskip = ncoarse + (child_pos - 1) * ngridmax
+          do n = 1, ngrid
+            neighbors(n, idx) = iskip + ind_grid(n)
+            is_prim(n, idx) = .true.
+          end do
+        else
+          ni = 1; nj = 1; nk = 1
+          if (target_i < 0) ni = 0
+          if (target_i > 1) ni = 2
+          if (target_j < 0) nj = 0
+          if (target_j > 1) nj = 2
+          if (target_k < 0) nk = 0
+          if (target_k > 1) nk = 2
+          father_idx = 1 + ni + 3*nj + 9*nk
+          ! TO MODIFIED 2026-11-22: modulo, as in get_27_neighbors (the low-side neighbour was the cell at -2 dx)
+          child_pos = 1 + modulo(target_i, 2) + 2*modulo(target_j, 2) + 4*modulo(target_k, 2)
+          iskip = ncoarse + (child_pos - 1) * ngridmax
+          do n = 1, ngrid
+            child_grid = son(nbors_father_cells(n, father_idx))
+            if (child_grid > 0) then
+              neighbors(n, idx) = iskip + child_grid
+              is_prim(n, idx) = (cpu_map(nbors_father_cells(n, father_idx)) > 0)
+            else
+              neighbors(n, idx) = nbors_father_cells(n, father_idx)
+              is_prim(n, idx) = .false.
+            endif
+          end do
+        endif
+      end do
+    end do
+  end do
+end subroutine get_27_neighbors_grid
 !##############################################################
 !##############################################################

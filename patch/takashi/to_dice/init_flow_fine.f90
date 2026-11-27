@@ -56,6 +56,9 @@ subroutine init_flow_fine(ilevel)
   use amr_commons
   use hydro_commons
   use cooling_module
+#ifdef RT
+  use rt_parameters, only: iIons, ixHI, ixHII   ! merge_ks: residual ionization default
+#endif
   use mpi_mod
 #if USE_TURB==1
   use turb_commons
@@ -296,6 +299,11 @@ subroutine init_flow_fine(ilevel)
           ! Default value for ionization fraction
           if(cosmo)xval=sqrt(omega_m)/(h0/100*omega_b) ! From the book of Peebles p. 173
           if(cosmo.and.ivar==ixion.and.aton)init_array=1.2d-5*xval
+#ifdef RT
+          ! merge_ks: residual ionization (Peebles) as the default of the RT ion fractions (see patch/takashi/init_flow_fine.f90)
+          if(cosmo.and.ixHII>0.and.ivar==iIons-1+ixHII)init_array=1.2d-5*xval
+          if(cosmo.and.ixHI >0.and.ivar==iIons-1+ixHI )init_array=1d0-1.2d-5*xval
+#endif
         endif
       endif
 
@@ -638,7 +646,11 @@ subroutine reset_uold(ilevel)
       iskip=ncoarse+(ind-1)*ngridmax
       do ivar=1,nvar
         do i=1,reception(icpu,ilevel)%ngrid
+#ifdef LIGHT_MPI_COMM
+          uold(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,ivar)=0D0
+#else
           uold(reception(icpu,ilevel)%igrid(i)+iskip,ivar)=0D0
+#endif
         end do
       end do
     end do
@@ -660,7 +672,10 @@ subroutine init_uold(ilevel)
   ! the hydro scheme. unew is set to zero in virtual boundaries.
   !--------------------------------------------------------------------------
   integer::i,ivar,ind,icpu,iskip,idim
-  real(dp)::u,e
+  real(dp)::u,ek
+#ifdef SOLVERmhd
+  real(dp)::b,eb
+#endif
   real(dp)::scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2
 
   call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
@@ -686,6 +701,14 @@ subroutine init_uold(ilevel)
       end do
     end do
   end do
+#ifdef SOLVERmhd
+  ! Initialize magnetic fields before energy calculation to ensure
+  ! magnetic energy (eb) is correctly available.
+  ! set constant magnetic field
+  CALL mag_constant(ilevel)
+  ! toroidal field
+  CALL mag_compute(ilevel)
+#endif
   ! Set cell averaged kinetic energy
   do ind=1,twotondim
     iskip=ncoarse+(ind-1)*ngridmax
@@ -705,28 +728,36 @@ subroutine init_uold(ilevel)
           uold(active(ilevel)%igrid(i)+iskip,ivar_refine) = 1.0*uold(active(ilevel)%igrid(i)+iskip,1)
         endif
       endif
-      e = 0d0
+      ek = 0d0
       do idim=1,ndim
-        e = e+0.5*uold(active(ilevel)%igrid(i)+iskip,idim+1)**2/uold(active(ilevel)%igrid(i)+iskip,1)
+        ek = ek+0.5*uold(active(ilevel)%igrid(i)+iskip,idim+1)**2/uold(active(ilevel)%igrid(i)+iskip,1)
       enddo
-      uold(active(ilevel)%igrid(i)+iskip,ndim+2) = uold(active(ilevel)%igrid(i)+iskip,ndim+2)+e
+#ifdef SOLVERmhd
+      ! Cell-centered field from the left and right face values.
+      eb = 0d0
+      do idim=1,3
+        b = 0.5d0*(uold(active(ilevel)%igrid(i)+iskip,idim+5) &
+             +uold(active(ilevel)%igrid(i)+iskip,idim+nvar))
+        eb = eb+0.5d0*b**2
+      enddo
+      uold(active(ilevel)%igrid(i)+iskip,ndim+2) = uold(active(ilevel)%igrid(i)+iskip,ndim+2)+ek+eb
+#else
+      uold(active(ilevel)%igrid(i)+iskip,ndim+2) = uold(active(ilevel)%igrid(i)+iskip,ndim+2)+ek
+#endif
     end do
   end do
 
-#ifdef SOLVERmhd
-  ! set constant magnetic field
-  CALL mag_constant(ilevel)
-  ! toroidal field
-  CALL mag_compute(ilevel)
-#endif
-
-  ! Set uold to 0 for virtual boundary cells
+ ! Set uold to 0 for virtual boundary cells
   do icpu=1,ncpu
     do ind=1,twotondim
       iskip=ncoarse+(ind-1)*ngridmax
       do ivar=1,nvar
         do i=1,reception(icpu,ilevel)%ngrid
+#ifdef LIGHT_MPI_COMM
+          uold(reception(icpu,ilevel)%pcomm%igrid(i)+iskip,ivar)=0.0
+#else
           uold(reception(icpu,ilevel)%igrid(i)+iskip,ivar)=0.0
+#endif
         end do
       end do
     end do

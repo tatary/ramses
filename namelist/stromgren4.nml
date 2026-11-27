@@ -1,0 +1,130 @@
+&RUN_PARAMS 
+hydro=.true.
+rt=.true.
+nrestart=0
+nremap=0
+nsubcycle=10*1
+verbose=.false.
+/
+
+&INIT_PARAMS
+nregion=1
+region_type(1)='square'
+x_center=7.5
+y_center=7.5
+z_center=7.5
+length_x=100.0
+length_y=100.0
+length_z=100.0
+exp_region=10.0
+d_region=1d-3		   	  ! 1e-3 hydrogen atoms per cc
+p_region=8.69869d-10		  ! 100 K
+var_region(1,1)=1e-6
+/
+
+&AMR_PARAMS 
+levelmin=7
+levelmax=7
+ngridmax=300000
+nexpand=1
+boxlen=15.			!  1 kpc
+/
+
+&OUTPUT_PARAMS
+delta_tout=10.
+tend=500.
+/
+
+&HYDRO_PARAMS
+gamma=1.4
+courant_factor=0.8
+scheme='muscl'
+slope_type=2
+riemann='hllc'
+/
+
+&COOLING_PARAMS
+cooling=.true.
+z_ave=0.1
+neq_chem = .true.
+Zsolar_Asplund = .true.
+/
+
+&UNITS_PARAMS
+units_density=1.66d-24
+units_time=3.1556926d13
+units_length=3.08568025d21
+/
+
+&REFINE_PARAMS
+err_grad_d=0.4
+/
+
+&RT_PARAMS
+isHe=.true.                     ! is there helium
+isH2=.true.                     ! is there molecular hydrogen
+X=7.6d-1                        ! mass fraction of hydrogen
+Y=2.4d-1                        ! mass fraction of helium
+rt_output_coolstats=.true.      ! for additional cooling information
+rt_flux_scheme='glf'
+rt_courant_factor=0.8
+rt_c_fraction=0.01
+uv_file='/mnt/synology1/takashi/dwarf/ramses_tables/hm12/hm12_ramses.dat'
+cloudy_metal_cooling=.true.
+cloudy_metal_file='/mnt/synology1/takashi/dwarf/ramses_tables/cloudy_cooling/run/output/cloudy_excess_metal_cooling.bin'
+iPEH_group=3
+rt_isIR_alt=.true.              ! logical	Assume first photon group represents IR photons
+is_kIR_T=.ture.
+rt_nsource=7
+rt_source_type=7*'point'
+rt_src_x_center=7*0.
+rt_src_y_center=7*0.
+rt_src_z_center=7*0.
+rt_src_length_x=7*1.0
+rt_src_length_y=7*1.0
+rt_src_length_z=7*1.0
+rt_src_group=1,2,3,4,5,6,7
+!rt_n_source=2.235d48,2.47d48,0.295d48 ! Total = 5d48
+rt_n_source=1.33e+46,3.38e+47,7.65e+47,3.72e+47,1.57e+48,1.74e+48,2.05e+47
+rt_u_source=7*0
+rt_v_source=7*0
+rt_w_source=7*0
+rt_is_init_xion=.false.
+attn_after_chem=.true.         ! absorption will be estimated after chemistry
+rt_skip_convergence=.false.
+/
+
+&RT_GROUPS			! Blackbody at T=1d5 Kelvin
+group_egy     = 0.55, 3.3, 8.4,  12.44, 18.85,  35.079, 65.666
+groupL0       = 0.1,  1.0, 5.6,  11.20, 13.60,  24.590,  54.42
+groupL1       = 1.0,  5.6, 11.20, 13.60, 24.590, 54.42,  0.0
+spec2group    = 4,5,6,7             ! H2, HI, HeI, HeII -> pck
+group_on      = 1, 1, 1, 1, 1, 1
+group_csn(1,:) = 0.0, 0.0, 0.0, 0.0
+group_csn(2,:) = 0.0, 0.0, 0.0, 0.0
+group_csn(3,:) = 0.0, 0.0, 0.0, 0.0
+group_csn(4,:) = 2.1d-19, 0.0, 0.0, 0.0
+group_csn(5,:) = 5.0d-18, 3.007d-18, 0.0, 0.0
+group_csn(6,:) = 2.9d-18, 5.687d-19, 4.478d-18, 0.0
+group_csn(7,:) = 4.1d-19, 7.889d-20, 1.197d-18, 1.055d-18
+group_cse(1,:) = 0.0, 0.0, 0.0, 0.0
+group_cse(2,:) = 0.0, 0.0, 0.0, 0.0
+group_cse(3,:) = 0.0, 0.0, 0.0, 0.0
+group_cse(4,:) = 2.1d-19, 0.0, 0.0, 0.0
+group_cse(5,:) = 5.3d-18, 2.781d-18, 0.0, 0.0
+group_cse(6,:) = 2.8d-18, 5.042d-19, 4.130d-18, 0.0
+group_cse(7,:) = 4.1d-19, 7.456d-20, 1.142d-18, 1.001d-18
+kappaAbs= 10.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0
+kappaSc = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+/
+
+&BOUNDARY_PARAMS 
+nboundary=6
+bound_type= 1, 2,  1,  2,  1,  2
+ibound_min=-1, 1, -1, -1, -1, -1
+ibound_max=-1, 1,  1,  1,  1,  1
+jbound_min= 0, 0, -1,  1, -1, -1
+jbound_max= 0, 0, -1,  1,  1,  1
+kbound_min= 0, 0,  0,  0, -1,  1
+kbound_max= 0, 0,  0,  0, -1,  1
+/

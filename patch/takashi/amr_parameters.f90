@@ -87,6 +87,27 @@ module amr_parameters
   real(dp)::boxlen=1.0D0                   ! Box length along x direction
   character(len=128)::ordering='hilbert'
   logical::cost_weighting=.true.           ! Activate load balancing according to cpu time
+  real(dp)::cost_weight_power=1.0d0        ! Power applied to the per-level cost weights (cost_weighting only)
+  ! two-tier domain decomposition (ported from patch/ks 2026-11-13, docs/merge_ks.md; ks NOTES_handover_two_tier_2026-11-05.md)
+  logical::two_tier_balance=.false.        ! grids at level<=Ls: Hilbert partition balanced by memory; level>Ls: another one balanced by cost
+  integer::two_tier_level=0                ! Ls; 0: chosen at every load balance from two_tier_fine_frac; <0: every candidate is scored (two_tier_auto_ls)
+  real(dp)::two_tier_fine_frac=0.02d0      ! auto Ls: coarsest level such that the octs at levels>Ls are at most this fraction of all octs
+  real(dp)::two_tier_auto_tol=0.05d0       ! two_tier_level<0: the current Ls is kept while its time score is within this fraction of the best
+  real(dp)::two_tier_auto_memmax=0.7d0     ! two_tier_level<0: candidates whose estimated max(octs/ngridmax, particles/npartmax) exceeds this are excluded
+  real(dp)::two_tier_auto_ghost=0.5d0      ! two_tier_level<0: work of a tier-mismatch ghost oct in units of an owned oct
+  integer::two_tier_test_shift=0           ! test mode: fine-tier interval i goes to cpu mod(i-1+shift,ncpu)+1 (maximises the tier mismatch)
+  logical::cost_time_weighting=.false.     ! Scale each rank's cell costs by its measured compute time per unit cost
+  real(dp)::cost_time_relax=1.0d0          ! Relaxation of the time factor between load balances (1: use the latest measurement)
+  integer::timer_ranks_every=0             ! Write timer_ranks_<job>_n<step>.dat every N coarse steps (0: only at outputs and the end)
+  logical::omp_hydro=.true.                ! OpenMP: thread the hydro Godunov sweeps (OPENMP=1 builds)
+  logical::omp_rt=.true.                   ! OpenMP: thread the RT Godunov sweeps
+  logical::omp_cooling=.true.              ! OpenMP: thread the cooling / chemistry sweeps
+  logical::omp_poisson=.true.              ! OpenMP: thread the Poisson solvers (phi_fine_cg and the fine-level multigrid)
+  logical::omp_cg=.false.                  ! OpenMP: also thread the CG iteration (needs omp_poisson); slower at ~2400 grids per rank (TODO.md 2d-4)
+  logical::omp_sf=.true.                   ! OpenMP: thread star_formation (unit conversions and the rate of each cell; the Poisson draws stay serial)
+  logical::omp_rho=.true.                  ! OpenMP: thread rho_fine (multipole_fine, cic_from_multipole, particle CIC; the additions stay serial and ordered)
+  logical::omp_flag=.true.                 ! OpenMP: thread the refinement flags (hydro_flag, smooth_fine)
+  integer,parameter::omp_mg_mingrid=256    ! levels with fewer active grids on this rank are solved serially
   ! Recursive bisection tree parameters
   integer::nbilevelmax=1                   ! Max steps of bisection partitioning
   integer::nbinodes=3                      ! Max number of internal nodes
@@ -154,6 +175,7 @@ module amr_parameters
   real(dp)::rbubble=0                ! Supernovae superbubble radius in pc
   real(dp)::f_w    =0                ! Supernovae mass loading factor
   real(dp)::f_esn  =1                ! Supernovae energy in units of 1d51 erg
+  real(dp)::f_esn_loop=0.01d0        ! Supernovae loop magnetic energy fraction (SOLVERmhd only)
   integer ::ndebris=1                ! Supernovae debris particle number
   real(dp)::mass_gmc=-1              ! Stochastic exploding GMC mass
   real(dp)::z_ave  =0                ! Average metal abundance
@@ -173,6 +195,14 @@ module amr_parameters
   real(dp)::sf_trelax=0              ! Relaxation time for star formation (cosmo=.false. only)
   real(dp)::sf_tdiss=0               ! Dissipation timescale for subgrid turbulence in units of turbulent crossing time
   integer::sf_model=3                ! Virial star formation model
+  logical ::sf_sigma_noconv=.false.   ! sf_model 6/7: remove the isotropic converging flow from the 3x3x3 velocity dispersion
+  logical ::sf_alpha_meandens=.false. ! sf_model 6/7: virial parameter with the mean density of the 3x3x3 cube
+  real(dp)::sf_b_turb=0.6928203230275509d0 ! sf_model=6: turbulent forcing parameter b in sigma_s^2 = ln(1 + b^2 M^2), with M = sigma_1d/c_s.
+                                     ! Default = 0.4*sqrt(3): the natural (mixed) forcing b = 0.4 of Federrath et al. is defined for the
+                                     ! 3D rms Mach number, sigma_3d = sqrt(3) sigma_1d. Until 2026-11-24 the default was the
+                                     ! single-precision literal 0.4 (= 0.40000000596046448); set that value to reproduce older runs.
+                                     ! Federrath's b (1/3 solenoidal, ~0.4 natural mix, 1 compressive) is calibrated for the 3D rms
+                                     ! Mach number; with the 1D Mach number used here the same forcing is b*sqrt(3): 0.69 for the natural mix.
   integer::nlevel_collapse=3         ! Number of levels to follow initial dark matter collapse (cosmo=.true. only)
   real(dp)::mass_star_max=120        ! Maximum mass of a star in solar mass
   real(dp)::mass_sne_min=10          ! Minimum mass of a single supernova in solar mass
@@ -196,6 +226,12 @@ module amr_parameters
   real(dp):: charge_slope=0.0         ! Determines how the grain charge scales with grain size (power law option)
 
   logical ::self_shielding=.false.
+  ! H2 cooling options (ported from patch/ks 2026-11-12; defaults = upstream RAMSES-RT)
+  character(len=10)::H2coolfunc=''   ! ''/'Hollenbach': HM79 tables (upstream); 'Galli': Galli & Palla 1998; 'Glover': Glover & Abel 2008 + Glover 2015 LTE
+  logical ::H2_fesc=.false.          ! H2 line cooling x escape fraction (Fukushima+2018) from the Jeans-length H2 column
+  logical ::H2_Hm_cool=.false.       ! H- radiative attachment cooling (H + e -> H- + hnu)
+  logical ::H2_chem_cool=.false.     ! chemical cooling/heating of H2 formation/dissociation (implies H2_Hm_cool)
+  real(dp)::fclump_H2dust=1d0        ! clumping factor of the dust-surface H2 formation rate (isH2Katz only)
   logical ::pressure_fix=.false.
   logical ::nordlund_fix=.true.
   logical ::cooling=.false.
@@ -214,6 +250,77 @@ module amr_parameters
   logical ::sf_log_properties=.false.   ! Log in ascii files birth properties of stars and supernovae
   logical ::sf_imf=.false.              ! Activate IMF sampling for SN feedback when resolution allows it
   logical ::sf_compressive=.false.      ! Advect compressive and solenoidal turbulence terms separately
+
+  !------------------------------------------------------------------------------------------------
+  ! FG (first-galaxy, patch/ks) star formation: sf_fg=.true. calls star_formation_fg instead of
+  ! star_formation and interprets the particle families as in patch/ks (pm_commons). All of the
+  ! following are only used when sf_fg=.true. (docs/merge_ks.md). Defaults are those of patch/ks.
+  !------------------------------------------------------------------------------------------------
+  logical ::sf_fg=.false.
+  ! Pop II
+  integer :: pop2_model = 2  !1 -> rho cond, 2 -> + div v cond (fiducial), 3 -> + phi cond, 4 -> SFC (star-forming cloud), 5 -> SFC star-by-star
+  real(dp) :: pop2_njeans = 4. !rho_th for pop2 formation determined by the condition lamJ = pop2_njeans*dxmin, n_star is used if pop2_njeans <= 0
+  real(dp) :: Tpop2 = 1d4     !threshold T for pop2 formation (cf. T<1e4 in Ricotti+ 2016)
+  ! loc_vir (velocity-dispersion condition of Pop II / Pop III) was removed on 2026-11-24 (Ramses-FG 00ab333: div v < 0 instead;
+  ! the Pop III density-peak test is always applied). A namelist that still sets loc_vir stops at start-up.
+  logical :: pop2_peak_only = .false. ! Pop II forms only in cells that are the density maximum of their 27-cell cube
+  logical :: pop2_SFC_marker = .false. ! local Pop II models (pop2_model 1-3): massless FAM_SFC marker where the SFC condition (cell condition, div v < 0, density peak of the 27-cell cube; kind 1) or the star formation condition of the local model (kind 2) is met (NOTES_pop2_model_comparison)
+  logical :: pop2_H2depSF = .false. !whether PopII SF efficiency is multiplied by the H2 abundance or not
+  logical :: nonlocal_depletion = .false. !depleting gas at star formation from a finite spherical region instead of the cell including the particle
+  logical :: nonlocal_depletion_batch = .true. !merge_ks: deplete the spheres of all new stars at once (collective calls independent of the number of stars); .false. = ks sequential version
+  real(dp) :: nH_postSF = -1d0 !density of post-star-forming cell in cm-3 (not used if negative or nonlocal_depletion = .false.)
+  ! Pop III
+  integer :: pop3_model = 1  !1 -> 80+40 Msun binary (fiducial), 2 -> + the first Pop III 1000 Msun, 3 -> mpop3max, 4 -> mdot-dep mass (single), 5 -> mdot-dep (binary), 6 -> mdot-dep (multiple), 7/8 -> Salpeter/flat IMF 10-500 Msun
+  real(dp) :: Zpop3 = 1d-5     ! Metallicity for Pop III formation in Zsun ( Z < Zpop3*Zsun )
+  real(dp) :: dpop3 = 0.1      ! Density for Pop III formation in H/cc (nH > dpop3); <0: the Pop II Jeans condition
+  real(dp) :: mpop3max = 300   ! Pop III star mass for pop3_model=3 [Msun]
+  real(dp) :: mpop3_SNprog = -1d0 !progenitor mass regarding pop3 SN (same as mpop3max if negative, used only for pop3_model = 3)
+  real(dp) :: pop3_dist_min_pc = 1d2 !minimum stellar distance for pop3 formation (pc)
+  real(dp) :: pop3_tMyr_suppress_newstar = 2d0 !time for suppressing successive pop3 formation (Myr)
+  real(dp) :: p3_output_minmass = -1d0 !ugvtk output around a new Pop III only above this mass [Msun] (<0: all)
+  ! ugvtk (nested uniform-grid VTK output, output_analysis.f90; &OUTPUT_PARAMS): TO ADDED master switch, rest as in ks
+  logical  :: ugvtk = .false.          !master switch of the ugvtk output (ks has none: there the output is always on)
+  integer  :: idp_ugvtk = -1           !idp of the star followed by the ugvtk output at formation and at given ages (no output if negative)
+  integer  :: NI_ugvtk = 64            !cells on a side of each ugvtk level
+  logical  :: SFC_output_at_given_age = .false. !ugvtk output around every SFC at 0.1, 1, 3, 5, 10 Myr (expensive)
+  ! SFC (star-forming cloud) model, pop2_model = 4/5
+  real(dp) :: SFC_dist_min_pc = 1d2 !minimum distance for simulataneous SFC formation (pc)
+  real(dp) :: SFC_nH_min = -1d3 !minimum (outer-boundary) density for SFC (cm-3)
+  real(dp) :: SFC_f_nH_min = 1d-1 !minimum (outer-boundary) density factor for SFC (nH_min = SFC_f_nH_min * nH_cen)
+  character(LEN=128) :: SFC_fate = 'crop' !fate of SFC after SF ('crop'; 'homog' is obsolete)
+  real(dp) :: SFC_f_star = -1d-1 !constant star formation efficiency in SFC (He+2019 formula if negative)
+  integer :: SFC_f_star_Zdep = 0 !low-metallicity factor of the He+2019 efficiency: 0 fixed 0.2; 1 Sugimura+2024 eq. 2; 2 He+2019 sec. 3.4
+  real(dp) :: SFC_f_rhocrop = 2d0 !ratio of threshold density for crop and average density (SFC_fate = 'crop')
+  real(dp) :: SFC_f_rhoSF = 1d0 !ratio of threshold density for star formation and average density (SFC_distribution = 'mass_weight')
+  character(LEN=128) :: SFC_distribution = 'mass_weight' !stellar distribution in SFC ('spherical' or 'mass_weight')
+  real(dp) :: SFC_rsize_min_pc = 1d0 !minimum size for SFC (pc)
+  logical :: SFC_flg_thin = .false. !let photons freely escape from active SFC (cooling side; not ported yet)
+  real(dp) :: SFC_t_life = 1d1 !life time of active SFC in Myr
+  real(dp) :: SFC_output_minmass = -1d0 !ugvtk output around a new SFC only above this mass [Msun] (<0: all)
+  ! star-by-star (pop2_model = 5) IMF
+  logical :: star_by_star = .false. ! use star-by-star feedback models (for radiation and SN)
+  character(len=16) :: sbs_imf_name='Chabrier' ! IMF name (either Chabrier or Chon)
+  real(dp) :: sbs_Mmin = 1d0   ! minimum resolved stellar mass [Msun]
+  ! FG feedback (merge_ks 2026-11-13): Pop III SNe (feedback.f90), SN energy reservoir (sn_energy_reservoir.f90)
+  real(dp) :: pop3_ESN = 1d50      ! Pop III SN energy [erg] for pop3_model 1/2 (ks production 3d52); other models: Wise+2012 by mass
+  logical  :: SN_reservoir = .false.   ! store the SN heat and release it into a cooling-radius sphere (volume weighted) before the next refinement
+  logical  :: SN_radius_search = .false. ! evaluate/log the SN injection radii (set by SN_reservoir)
+  real(dp) :: Ncell_SN_max = 4d0   ! radius search cap: r_max = Ncell_SN_max * host dx
+  ! Batched stellar winds (2026-11-26, docs/wind_batch.md): the wind energy of young star particles (the part scaled
+  ! by msp0/mp0, age <= agemax) is released in packets of E_wind_batch into a sphere of radius Ncell_wind * host dx
+  ! (volume weighted, through the SN reservoir) instead of into the host cell every step.
+  real(dp) :: E_wind_batch = 0d0   ! [erg] packet size; 0: off (wind energy into the host cell every step)
+  real(dp) :: Ncell_wind = 4d0     ! radius of the wind sphere in units of the host cell width
+  real(dp) :: fcool_stop = -1d0    ! >0: cooling is disabled for fcool_stop x sound-crossing time after a SN (needs a free passive scalar: ivar_coolstop=nvar)
+  integer  :: ivar_coolstop = -1   ! index of the cooling-stop timer scalar (set in read_hydro_params when fcool_stop>0)
+  ! FG sink / BH (sink_particle_fg.f90, &SINK_PARAMS, only with sf_fg; merge_ks 2026-11-13)
+  logical  :: bhpop3 = .false.              ! sinks from Pop III remnant BHs (FAM_BH) / dead Pop II (FAM_DEAD) particles
+  integer  :: BH_model = 2                  ! 0 test particle, 1 BHL + 0.1 efficiency, 2 SR20 + RIAF/std/slim (fiducial), 3 BHL + thermal feedback, 4 BHL without radiation
+  real(dp) :: sink_mass_min_pop3BH = 0d0    ! minimum FAM_BH mass [Msun] converted to a sink (negative: never)
+  real(dp) :: sink_mass_min_pop2BH = -1d0   ! minimum FAM_DEAD mass [Msun] converted to a sink (negative: never)
+  logical  :: no_sinkcloud_refine = .false. ! sink cloud particles do not count for the particle refinement criterion (rho_fine)
+  real(dp) :: sgagn_T2max = 1d9             ! BH_model=3: maximum T/mu [K] reached by the thermal feedback
+  logical  :: sink_check_vars = .false.     ! check that msink/xsink/vsink agree on all ranks (ALLREDUCEs per sink and call)
   logical ::cooling_ism = .false.      ! Use cooling module from Audit & Hennebelle 2005 (non-RT)
   ! instead of ramses classical cooling
   integer :: pressure_fix_cond = 1

@@ -7,20 +7,89 @@
 ! Added by Takashi Okamoto (2024/04/08)
 !------------------------------------------------------------------------
 module chemical_yields
-  use amr_commons
-  implicit none
-  integer, parameter :: nelements = 11
-  ! Z, He, C, N, O, Ne, Mg, Si, S, Ca, Fe
-  real(dp), parameter :: solar_abundances(nelements) = (/ 0.0142d0, &
-  & 0.27030d0, 2.53d-3, 7.41d-4, 6.13d-3, 1.34d-3, 7.57d-4, &
-  & 7.12d-4, 3.31d-4, 6.87d-5, 1.38d-3 /)
-  real(dp), parameter :: agemax = 0.044d0 ! in Gyr
+   use amr_commons
+   implicit none
+   integer, parameter :: nelements = 11
+   ! Z, He, C, N, O, Ne, Mg, Si, S, Ca, Fe
+   real(dp), parameter :: solar_abundances(nelements) = (/ 0.0142d0, &
+      & 0.27030d0, 2.53d-3, 7.41d-4, 6.13d-3, 1.34d-3, 7.57d-4, &
+      & 7.12d-4, 3.31d-4, 6.87d-5, 1.38d-3 /)
+   real(dp), parameter :: agemax = 0.044d0 ! in Gyr
 end module chemical_yields
+!------------------------------------------------------------------------
+! Batched stellar winds (E_wind_batch > 0, 2026-11-26; docs/wind_batch.md)
+! Cumulative wind energy of a star particle per unit stellar-population mass, as a function of age and
+! metallicity only:  W(age, Z) = int_0^age 0.5 mdot(a) v(a)^2 f(a) da   [(km/s)^2],
+! with f = mp/mp0 the remaining mass fraction, d ln f/da = -(mdot + rate_CC * M_ej,CC) (the mass loss of
+! feedbk in the continuum limit; no SN Ia before agemax). The energy a particle has emitted up to an age is
+! msp0 * W, so the step in which it crosses a multiple of E_wind_batch follows from tp, zp and msp0 alone:
+! no stored state, nothing to write in the restart files.
+!------------------------------------------------------------------------
+module wind_batch
+   use chemical_yields
+   implicit none
+   integer, parameter :: nz_wb = 65, na_wb = 4401     ! log Z/Zsun in [0.01,3] (the clip of the wind fit), age in [0,agemax]
+   real(dp), allocatable :: wcum_wb(:,:)
+   real(dp) :: lz0_wb, dlz_wb, da_wb
+contains
+   subroutine init_wind_batch
+      real(dp) :: zz, age, mdot, vej, rcc, mcc, loss, loss_old, g, g_old, lnf
+      real(dp) :: met(1:nelements), yields(1:nelements)
+      integer :: iz, ia
+      if (allocated(wcum_wb)) return
+      allocate(wcum_wb(1:na_wb,1:nz_wb))
+      lz0_wb = log(0.01d0)
+      dlz_wb = (log(3.0d0)-lz0_wb)/dble(nz_wb-1)
+      da_wb = agemax/dble(na_wb-1)
+      do iz = 1, nz_wb
+         zz = exp(lz0_wb+dble(iz-1)*dlz_wb)
+         met = solar_abundances*zz
+         lnf = 0d0; loss_old = 0d0; g_old = 0d0
+         do ia = 1, na_wb
+            age = dble(ia-1)*da_wb
+            call get_wind_mass_loss_rate(age, met, mdot, vej)
+            call calculate_number_of_CC(age, rcc)
+            call get_CC_yields(age, yields, mcc)
+            loss = mdot+rcc*mcc
+            if (ia > 1) lnf = lnf-0.5d0*(loss_old+loss)*da_wb
+            g = 0.5d0*mdot*vej**2*exp(lnf)
+            if (ia == 1) then
+               wcum_wb(ia,iz) = 0d0
+            else
+               wcum_wb(ia,iz) = wcum_wb(ia-1,iz)+0.5d0*(g_old+g)*da_wb
+            endif
+            loss_old = loss; g_old = g
+         end do
+      end do
+   end subroutine init_wind_batch
+
+   ! W(age [Gyr], Z/Zsun) in (km/s)^2, bilinear in (age, log Z); monotonic in age, constant beyond agemax
+   function wind_cum_energy(age_Gyr, zz) result(w)
+      real(dp), intent(in) :: age_Gyr, zz
+      real(dp) :: w, xa, xz, fa, fz
+      integer :: ia, iz
+      if (.not. allocated(wcum_wb)) call init_wind_batch
+      xa = min(max(age_Gyr, 0d0), agemax)/da_wb
+      ia = min(int(xa), na_wb-2); fa = xa-dble(ia); ia = ia+1
+      xz = (log(min(max(zz, 0.01d0), 3.0d0))-lz0_wb)/dlz_wb
+      iz = min(max(int(xz), 0), nz_wb-2); fz = min(max(xz-dble(iz), 0d0), 1d0); iz = iz+1
+      w = (1d0-fz)*((1d0-fa)*wcum_wb(ia,iz)+fa*wcum_wb(ia+1,iz)) &
+         & +fz*((1d0-fa)*wcum_wb(ia,iz+1)+fa*wcum_wb(ia+1,iz+1))
+   end function wind_cum_energy
+end module wind_batch
 subroutine thermal_feedback(ilevel)
   use pm_commons
   use amr_commons
   use hydro_commons
   use mpi_mod
+  use sf_log
+  use constants, only: Myr2sec
+#ifdef RT
+  ! FG feedback (merge_ks): SN radius search / energy reservoir
+  use sn_sphere_stats, only: sn_radius_choice
+  use sn_energy_reservoir, only: deposit_sn_reservoir
+  use sn_feedback_radius, only: evaluate_sn_feedback_radii, report_sn_feedback_radii, evaluate_fixed_sn_radii
+#endif
   implicit none
 #ifndef WITHOUTMPI
   integer::info2,dummy_io
@@ -38,54 +107,21 @@ subroutine thermal_feedback(ilevel)
   character(LEN=5)::nchar,ncharcpu
   logical::file_exist
   integer,parameter::tag=1120
-
-  if(sf_log_properties.and.ifout.gt.1) then
-    call title(ifout-1,nchar)
-    if(IOGROUPSIZEREP>0) then
-      call title(((myid-1)/IOGROUPSIZEREP)+1,ncharcpu)
-      filedirini='output_'//TRIM(nchar)//'/'
-      filedir='output_'//TRIM(nchar)//'/group_'//TRIM(ncharcpu)//'/'
-    else
-      filedir='output_'//TRIM(nchar)//'/'
-    endif
-    filename=TRIM(filedir)//'stars_'//TRIM(nchar)//'.out'
-    ilun=myid+103
-    call title(myid,nchar)
-    fileloc=TRIM(filename)//TRIM(nchar)
-    ! Wait for the token
-#ifndef WITHOUTMPI
-    if(IOGROUPSIZE>0) then
-      if (mod(myid-1,IOGROUPSIZE)/=0) then
-        call MPI_RECV(dummy_io,1,MPI_INTEGER,myid-1-1,tag,&
-        & MPI_COMM_WORLD,MPI_STATUS_IGNORE,info2)
-      end if
-    endif
+  ! FG feedback (merge_ks)
+  logical,dimension(1:nvector),save::ok3          ! Pop III flag of the gathered particles
+  real(dp)::t_sfc,current_time
+  real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,sn_scale_ene
+  integer::nSN_tot,iSN,ioff,info
+  integer,dimension(1:ncpu)::nSN_list
+  real(dp),allocatable::pos_glob(:,:),ESN_glob(:)
+  integer,allocatable::idp_glob(:)
+#ifdef RT
+  type(sn_radius_choice),allocatable::choices(:)
 #endif
 
-    inquire(file=fileloc,exist=file_exist)
-    if((.not.file_exist).or.(ifout-1.ne.ifout_stars_log)) then
-      open(ilun, file=fileloc, status='replace', form='formatted')
-      write(ilun,'(A24)',advance='no') '# event id  ilevel  mp  '
-      do idim=1,ndim
-        write(ilun,'(A2,I1,A2)',advance='no') 'xp',idim,'  '
-      enddo
-      do idim=1,ndim
-        write(ilun,'(A2,I1,A2)',advance='no') 'vp',idim,'  '
-      enddo
-      do ivar=1,nvar
-        if(ivar.ge.10) then
-          write(ilun,'(A1,I2,A2)',advance='no') 'u',ivar,'  '
-        else
-          write(ilun,'(A1,I1,A2)',advance='no') 'u',ivar,'  '
-        endif
-      enddo
-      write(ilun,'(A5)',advance='no') 'tag  '
-      write(ilun,'(A1)') ' '
-      ifout_stars_log = ifout-1
-    else
-      open(ilun, file=fileloc, status="old", position="append", action="write", form='formatted')
-    endif
-  endif
+  call sf_log_open(ilun)
+  SNinfo_nSN=0
+  WINDinfo_n=0
 
 
   if(numbtot(1,ilevel)==0)return
@@ -95,64 +131,175 @@ subroutine thermal_feedback(ilevel)
 
   ! Loop over cpus
   do icpu=1,ncpu
-    igrid=headl(icpu,ilevel)
-    ig=0
-    ip=0
-    ! Loop over grids
-    do jgrid=1,numbl(icpu,ilevel)
-      npart1=numbp(igrid)  ! Number of particles in the grid
-      npart2=0
+     igrid=headl(icpu,ilevel)
+     ig=0
+     ip=0
+     ! Loop over grids
+     do jgrid=1,numbl(icpu,ilevel)
+        npart1=numbp(igrid)  ! Number of particles in the grid
+        npart2=0
 
-      ! Count star particles
-      if(npart1>0)then
-        ipart=headp(igrid)
-        ! Loop over particles
-        do jpart=1,npart1
-          ! Save next particle   <--- Very important !!!
-          next_part=nextp(ipart)
-          if ( is_star(typep(ipart)) ) then
-            npart2=npart2+1
-          endif
-          ipart=next_part  ! Go to next particle
-        end do
-      endif
+        ! Count star particles
+        if(npart1>0)then
+           ipart=headp(igrid)
+           ! Loop over particles
+           do jpart=1,npart1
+              ! Save next particle   <--- Very important !!!
+              next_part=nextp(ipart)
+              if ( is_star(typep(ipart)) .or. (sf_fg.and.is_pop3(typep(ipart))) ) then
+                 npart2=npart2+1
+              endif
+              ipart=next_part  ! Go to next particle
+           end do
+        endif
 
-      ! Gather star particles
-      if(npart2>0)then
-        ig=ig+1
-        ind_grid(ig)=igrid
-        ipart=headp(igrid)
-        ! Loop over particles
-        do jpart=1,npart1
-          ! Save next particle   <--- Very important !!!
-          next_part=nextp(ipart)
-          ! Select only star particles
-          if ( is_star(typep(ipart)) ) then
-            if(ig==0)then
-              ig=1
-              ind_grid(ig)=igrid
-            end if
-            ip=ip+1
-            ind_part(ip)=ipart
-            ind_grid_part(ip)=ig
-          endif
-          if(ip==nvector)then
-            call feedbk(ind_grid,ind_part,ind_grid_part,ig,ip,ilevel)
-            ip=0
-            ig=0
-          end if
-          ipart=next_part  ! Go to next particle
-        end do
-        ! End loop over particles
-      end if
-      igrid=next(igrid)   ! Go to next grid
-    end do
-    ! End loop over grids
-    if(ip>0)call feedbk(ind_grid,ind_part,ind_grid_part,ig,ip,ilevel)
+        ! Gather star particles
+        if(npart2>0)then
+           ig=ig+1
+           ind_grid(ig)=igrid
+           ipart=headp(igrid)
+           ! Loop over particles
+           do jpart=1,npart1
+              ! Save next particle   <--- Very important !!!
+              next_part=nextp(ipart)
+              ! Select only star particles
+              if ( is_star(typep(ipart)) .or. (sf_fg.and.is_pop3(typep(ipart))) ) then
+                 if(ig==0)then
+                    ig=1
+                    ind_grid(ig)=igrid
+                 end if
+                 ip=ip+1
+                 ind_part(ip)=ipart
+                 ind_grid_part(ip)=ig
+                 ok3(ip)=is_pop3(typep(ipart))
+              endif
+              if(ip==nvector)then
+                 call feedbk(ind_grid,ind_part,ind_grid_part,ig,ip,ilevel,ok3)
+                 ip=0
+                 ig=0
+              end if
+              ipart=next_part  ! Go to next particle
+           end do
+           ! End loop over particles
+        end if
+        igrid=next(igrid)   ! Go to next grid
+     end do
+     ! End loop over grids
+     if(ip>0)call feedbk(ind_grid,ind_part,ind_grid_part,ig,ip,ilevel,ok3)
   end do
   ! End loop over cpus
 
-  if(sf_log_properties) close(ilun)
+  !---------------------------------------------------------------------------
+  ! FG feedback (merge_ks): SFC particles (sf_fg) past SFC_t_life become PSC
+  !---------------------------------------------------------------------------
+  if(sf_fg)then
+     call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+     if(use_proper_time)then
+        t_sfc=SFC_t_life*Myr2sec/(scale_t/aexp**2)
+        current_time=texp
+     else
+        t_sfc=SFC_t_life*Myr2sec/scale_t
+        current_time=t
+     endif
+     do icpu=1,ncpu
+        igrid=headl(icpu,ilevel)
+        do jgrid=1,numbl(icpu,ilevel)
+           npart1=numbp(igrid)
+           if(npart1>0)then
+              ipart=headp(igrid)
+              do jpart=1,npart1
+                 next_part=nextp(ipart)
+                 if(is_SFC(typep(ipart)))then
+                    if(tp(ipart)+t_sfc<current_time)then
+                       typep(ipart)%family=FAM_PSC
+                       write(*,'(A,3I8,A,1PE10.3,A,1P3E16.8)')"** SFC converted to PSC after its lifetime ** myid, ilevel, idp: ",&
+                            & myid,ilevel,idp(ipart),", R_SFC [kpc]: ",-zp(ipart)*scale_l/3.0857d21,", pos: ",xp(ipart,1:3)
+                    endif
+                 endif
+                 ipart=next_part
+              end do
+           endif
+           igrid=next(igrid)
+        end do
+     end do
+  endif
+
+  !---------------------------------------------------------------------------
+  ! FG feedback (merge_ks): SN radius search and energy reservoir (ks, TO ADDED).
+  ! All ranks see the same ordered event list; the search uses the pre-injection
+  ! uold (feedbk wrote into unew). The reservoir receives the pure SN heat that
+  ! feedbk left out of unew (pending_heat).
+  !---------------------------------------------------------------------------
+#ifdef RT
+  if(SN_radius_search)then
+     nSN_list=0
+     nSN_list(myid)=SNinfo_nSN
+#ifndef WITHOUTMPI
+     call MPI_ALLREDUCE(MPI_IN_PLACE,nSN_list,ncpu,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+     nSN_tot=sum(nSN_list)
+     if(nSN_tot>0)then
+        allocate(pos_glob(3,nSN_tot),ESN_glob(nSN_tot),idp_glob(nSN_tot),choices(nSN_tot))
+        pos_glob=0d0; ESN_glob=0d0; idp_glob=0
+        ioff=sum(nSN_list(1:myid-1))
+        do iSN=1,SNinfo_nSN
+           pos_glob(1:3,ioff+iSN)=SNinfo_pos(1:3,iSN)
+           ESN_glob(ioff+iSN)=SNinfo_ESN(iSN)
+           idp_glob(ioff+iSN)=SNinfo_idp(iSN)
+        end do
+#ifndef WITHOUTMPI
+        call MPI_ALLREDUCE(MPI_IN_PLACE,pos_glob,3*nSN_tot,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+        call MPI_ALLREDUCE(MPI_IN_PLACE,ESN_glob,nSN_tot,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+        call MPI_ALLREDUCE(MPI_IN_PLACE,idp_glob,nSN_tot,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+        call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+        sn_scale_ene=scale_d*scale_l**3*scale_v**2
+        call evaluate_sn_feedback_radii(pos_glob,ESN_glob*sn_scale_ene,uold,scale_l,scale_d,scale_nH,choices)
+        call report_sn_feedback_radii(ilevel,idp_glob,ESN_glob*sn_scale_ene,choices,scale_l,scale_nH)
+        if(SN_reservoir)call deposit_sn_reservoir(pos_glob,ESN_glob*sn_scale_ene,choices)
+        deallocate(pos_glob,ESN_glob,idp_glob,choices)
+     endif
+  endif
+  !---------------------------------------------------------------------------
+  ! Batched winds (E_wind_batch > 0): the packets recorded by feedbk go into a sphere of radius
+  ! Ncell_wind * host dx through the SN reservoir (volume weighted, released before the next step of the level)
+  !---------------------------------------------------------------------------
+  if(E_wind_batch>0d0)then
+     nSN_list=0
+     nSN_list(myid)=WINDinfo_n
+#ifndef WITHOUTMPI
+     call MPI_ALLREDUCE(MPI_IN_PLACE,nSN_list,ncpu,MPI_INTEGER,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+     nSN_tot=sum(nSN_list)
+     if(nSN_tot>0)then
+        allocate(pos_glob(3,nSN_tot),ESN_glob(nSN_tot),choices(nSN_tot))
+        pos_glob=0d0; ESN_glob=0d0
+        ioff=sum(nSN_list(1:myid-1))
+        do iSN=1,WINDinfo_n
+           pos_glob(1:3,ioff+iSN)=WINDinfo_pos(1:3,iSN)
+           ESN_glob(ioff+iSN)=WINDinfo_E(iSN)
+        end do
+#ifndef WITHOUTMPI
+        call MPI_ALLREDUCE(MPI_IN_PLACE,pos_glob,3*nSN_tot,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+        call MPI_ALLREDUCE(MPI_IN_PLACE,ESN_glob,nSN_tot,MPI_DOUBLE_PRECISION,MPI_SUM,MPI_COMM_WORLD,info)
+#endif
+        call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+        sn_scale_ene=scale_d*scale_l**3*scale_v**2
+        call evaluate_fixed_sn_radii(pos_glob,Ncell_wind,uold,choices)
+        call deposit_sn_reservoir(pos_glob,ESN_glob*sn_scale_ene,choices,coolstop=.false.)
+        if(myid==1)then
+           do iSN=1,nSN_tot
+              write(*,'(a,3(i0,1x),a,3(es12.4,1x))')'WIND_BATCH coarse/fine/level=',nstep_coarse,nstep,ilevel, &
+                   & 'E_erg/r_pc/M_sphere_Msun=',ESN_glob(iSN)*sn_scale_ene,choices(iSN)%radius*scale_l/3.0857d18, &
+                   & choices(iSN)%stats%mass*scale_d*scale_l**3/1.989d33
+           end do
+        endif
+        deallocate(pos_glob,ESN_glob,choices)
+     endif
+  endif
+#endif
+
+  call sf_log_close(ilun)
 
 111 format('   Entering thermal_feedback for level ',I2)
 
@@ -163,18 +310,22 @@ end subroutine thermal_feedback
 !################################################################
 !################################################################
 #if NDIM==3
-subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
+subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel,ok3)
   use amr_commons
   use pm_commons
   use hydro_commons
   use random
   use chemical_yields
+  use wind_batch, only: wind_cum_energy
   use cooling_module, only: Y
   use constants, only: M_sun, Myr2sec, Gyr2sec, pc2cm
   implicit none
   integer::ng,np,ilevel
   integer,dimension(1:nvector)::ind_grid
   integer,dimension(1:nvector)::ind_grid_part,ind_part
+  logical,dimension(1:nvector)::ok3   ! FG (merge_ks): .true. for Pop III particles (sf_fg); the SN of a Pop III
+                                      ! star is a single event at the end of its life (Schaerer 2002 lifetime,
+                                      ! Wise+2012 energy, remnant/metal mass tables of ks feedbk)
   real(dp), dimension(1:nelements)::yields, metallicities
   !-----------------------------------------------------------------------
   ! This routine is called by subroutine feedback. Each stellar particle
@@ -189,8 +340,9 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   real(dp)::delta_x,tau_factor,rad_factor
   real(dp)::dx,dx_loc,scale,birth_time,current_time,t_age_Gyr, dt_Gyr
   real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v, scale_mcgs
-  real(dp):: scale_Msol, m_in_sol
+  real(dp):: scale_Msol, m_in_sol, scale_B_muG
   real(dp)::Msne, nSNCC, nSNIa, nSN_tot, Mej, Mej_winds, dE_winds, dMz, v_ej
+  real(dp)::a0_w, a1_w, e_thr_w, ec0_w, ec1_w, e_w   ! batched winds (E_wind_batch)
   ! Grid based arrays
   real(dp),dimension(1:nvector,1:ndim),save::x0
   integer ,dimension(1:nvector),save::ind_cell
@@ -199,6 +351,7 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   ! Particle based arrays
   logical,dimension(1:nvector),save::ok
   real(dp),dimension(1:nvector),save::mloss,mzloss,ethermal,ekinetic,dteff
+  real(dp)::tsec   ! seconds per code time unit for ages (see below)
   real(dp),dimension(1:nvector),save::vol_loc
   real(dp),dimension(1:nvector,1:ndim),save::x
   integer ,dimension(1:nvector,1:ndim),save::id,igd,icd
@@ -208,11 +361,30 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   integer::irad
 #endif
   integer ,dimension(1:ncpu,1:IRandNumSize)::allseed
+  ! FG feedback (merge_ks)
+  real(dp),dimension(1:nvector),save::pending_heat,e_sn_part   ! SN heat kept for the reservoir; pure SN energy per particle
+  logical,dimension(1:nvector),save::pop3_sn
+  real(dp)::e_sn,e_sn_erg,mprog,mHe,mrem,mmet,t_hne,t0_3,rho_1,ekk_1,eth_1,T2_1,cs_1
+  real(dp),external::cal_mrem,cal_mmet,cal_tpop3
+#ifdef SOLVERmhd
+!------------------------------------------------------------------------
+! Added by Mizuki Ono (2026/06/13)
+!------------------------------------------------------------------------
+  integer::c_loop(8)
+  real(dp)::B_inj_loop,sum_dot_loop
+  integer::S_zminus,S_zplus,S_yminus,S_yplus,S_xminus,S_xplus
+  integer::ind_loop
+  real(dp),dimension(1:ndim)::dd_loop
+  integer,dimension(1:ndim)::id_loop,ig_loop,igg_loop,igd_loop,icg_loop,icd_loop
+  integer,dimension(1:twotondim)::kg_loop,icell_loop,igrid_loop
+  integer::ix_loop,iy_loop,ind_father_loop
+  logical::ok_loop
+#endif
 
   ! If necessary, initialize random number generator
   if(localseed(1)==-1)then
-    call rans(ncpu,iseed,allseed)
-    localseed=allseed(myid,1:IRandNumSize)
+     call rans(ncpu,iseed,allseed)
+     localseed=allseed(myid,1:IRandNumSize)
   end if
 
   if(sf_log_properties) ilun=myid+103
@@ -220,6 +392,8 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
   scale_mcgs = scale_d * scale_l**3 ! get mass in units of g
   scale_Msol = scale_d * scale_l**3 / M_sun ! get mass in units of M_sun
+  ! Conversion factor for magnetic field from code unit to micro Gauss (CGS)
+  scale_B_muG = sqrt(4.0D0 * acos(-1.0D0) * scale_d) * scale_v * 1.0D6
 
   ! Mesh spacing in that level
   dx=0.5D0**ilevel
@@ -236,9 +410,9 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 
   ! Minimum star particle mass
   if(m_star < 0d0)then
-    mstar=n_star/(scale_nH*aexp**3)*vol_min
+     mstar=n_star/(scale_nH*aexp**3)*vol_min
   else
-    mstar=m_star*mass_sph
+     mstar=m_star*mass_sph
   endif
   !msne_min=mass_sne_min*M_sun/(scale_d*scale_l**3)
   !mstar_max=mass_star_max*M_sun/(scale_d*scale_l**3)
@@ -248,11 +422,11 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 
   ! Massive star lifetime from Myr to code units
   if(use_proper_time)then
-    t0=t_sne*Myr2sec/(scale_t/aexp**2)
-    current_time=texp
+     t0=t_sne*Myr2sec/(scale_t/aexp**2)
+     current_time=texp
   else
-    t0=t_sne*Myr2sec/scale_t
-    current_time=t
+     t0=t_sne*Myr2sec/scale_t
+     current_time=t
   endif
 
   ! Type II supernova energy from cgs to code units
@@ -263,213 +437,505 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
 
   ! Lower left corner of 3x3x3 grid-cube
   do idim=1,ndim
-    do i=1,ng
-      x0(i,idim)=xg(ind_grid(i),idim)-3.0D0*dx
-    end do
+     do i=1,ng
+        x0(i,idim)=xg(ind_grid(i),idim)-3.0D0*dx
+     end do
   end do
 
   ! Gather 27 neighboring father cells (should be present anytime !)
   do i=1,ng
-    ind_cell(i)=father(ind_grid(i))
+     ind_cell(i)=father(ind_grid(i))
   end do
   call get3cubefather(ind_cell,nbors_father_cells,nbors_father_grids,ng,ilevel)
 
   ! Rescale position at level ilevel
   do idim=1,ndim
-    do j=1,np
-      x(j,idim)=xp(ind_part(j),idim)/scale+skip_loc(idim)
-    end do
+     do j=1,np
+        x(j,idim)=xp(ind_part(j),idim)/scale+skip_loc(idim)
+     end do
   end do
   do idim=1,ndim
-    do j=1,np
-      x(j,idim)=x(j,idim)-x0(ind_grid_part(j),idim)
-    end do
+     do j=1,np
+        x(j,idim)=x(j,idim)-x0(ind_grid_part(j),idim)
+     end do
   end do
   do idim=1,ndim
-    do j=1,np
-      x(j,idim)=x(j,idim)/dx
-    end do
+     do j=1,np
+        x(j,idim)=x(j,idim)/dx
+     end do
   end do
 
   ! NGP at level ilevel
   do idim=1,ndim
-    do j=1,np
-      id(j,idim)=int(x(j,idim))
-    end do
+     do j=1,np
+        id(j,idim)=int(x(j,idim))
+     end do
   end do
 
-  ! Compute parent grids
+   ! Compute parent grids
   do idim=1,ndim
-    do j=1,np
-      igd(j,idim)=id(j,idim)/2
-    end do
+     do j=1,np
+        igd(j,idim)=id(j,idim)/2
+     end do
   end do
   do j=1,np
-    kg(j)=1+igd(j,1)+3*igd(j,2)+9*igd(j,3)
+     kg(j)=1+igd(j,1)+3*igd(j,2)+9*igd(j,3)
   end do
   do j=1,np
-    igrid(j)=son(nbors_father_cells(ind_grid_part(j),kg(j)))
+     igrid(j)=son(nbors_father_cells(ind_grid_part(j),kg(j)))
   end do
 
   ! Check if particles are entirely in level ilevel
   ok(1:np)=.true.
   do j=1,np
-    ok(j)=ok(j).and.igrid(j)>0
+     ok(j)=ok(j).and.igrid(j)>0
   end do
 
   ! Compute parent cell position
   do idim=1,ndim
-    do j=1,np
-      if(ok(j))then
-        icd(j,idim)=id(j,idim)-2*igd(j,idim)
-      end if
-    end do
+     do j=1,np
+        if(ok(j))then
+           icd(j,idim)=id(j,idim)-2*igd(j,idim)
+        end if
+     end do
   end do
   do j=1,np
-    if(ok(j))then
-      icell(j)=1+icd(j,1)+2*icd(j,2)+4*icd(j,3)
-    end if
+     if(ok(j))then
+        icell(j)=1+icd(j,1)+2*icd(j,2)+4*icd(j,3)
+     end if
   end do
 
   ! Compute parent cell adresses
   do j=1,np
-    if(ok(j))then
-      indp(j)=ncoarse+(icell(j)-1)*ngridmax+igrid(j)
-    else
-      indp(j) = nbors_father_cells(ind_grid_part(j),kg(j))
-      vol_loc(j)=vol_loc(j)*2**ndim ! ilevel-1 cell volume
-    end if
+     if(ok(j))then
+        indp(j)=ncoarse+(icell(j)-1)*ngridmax+igrid(j)
+     else
+        indp(j) = nbors_father_cells(ind_grid_part(j),kg(j))
+        vol_loc(j)=vol_loc(j)*2**ndim ! ilevel-1 cell volume
+     end if
   end do
 
   ! Compute individual time steps
   do j=1,np
-    dteff(j)=dtnew(levelp(ind_part(j)))
+     dteff(j)=dtnew(levelp(ind_part(j)))
   end do
 
   if(use_proper_time)then
-    do j=1,np
-      dteff(j)=dteff(j)*aexp**2
-    end do
+     do j=1,np
+        dteff(j)=dteff(j)*aexp**2
+     end do
   endif
+  ! seconds per code time unit for ages and dteff: proper time (texp, dteff*aexp**2) has the unit scale_t/aexp**2
+  ! (= 1/H0), conformal/non-cosmo time has scale_t (2026-11-14: was scale_t in both cases -> ages and dt of the
+  ! FIRE-3 rates a factor aexp**2 too small in cosmological runs; harmless for DICE where aexp=1)
+  tsec=scale_t
+  if(use_proper_time)tsec=scale_t/aexp**2
 
   ! Reset ejected mass, metallicity, thermal energy
   do j=1,np
-    mloss(j)=0d0
-    mzloss(j)=0d0
-    ethermal(j)=0d0
+     mloss(j)=0d0
+     mzloss(j)=0d0
+     ethermal(j)=0d0
   end do
 
+  pending_heat(1:np)=0d0; e_sn_part(1:np)=0d0; pop3_sn(1:np)=.false.
   ! Compute stellar mass loss and thermal feedback due to supernovae
   if(f_w==0)then
-    do j=1,np
-      dt_Gyr = dteff(j)*scale_t/Gyr2sec
-      m_in_sol = mp(ind_part(j))*scale_Msol
-      birth_time=tp(ind_part(j))
-      t_age_Gyr=(current_time-birth_time)*scale_t/Gyr2sec
-      ! Metallicity
-      metallicities = solar_abundances
-      if (metal) then
-        metallicities = solar_abundances &
-          * zp(ind_part(j))/solar_abundances(1)
-        ! Hellium
-        metallicities(2) = Y + (metallicities(2) - Y) &
-          * zp(ind_part(j))/solar_abundances(1)
-      endif
-      ! Stellar mass loss
-      mejecta = 0.0d0
-      call calculate_number_of_CC(t_age_Gyr, nSNCC)
-      nSNCC = nSNCC * dt_Gyr * m_in_sol
-#ifndef STELLAR_POPULATION_MASS
-      nSN_tot = nSNCC
-#else
-      nSN_tot = nSNCC * msp0(ind_part(j))/mp0(ind_part(j))
-#endif
-      call get_CC_yields(t_age_Gyr, yields, Msne)
-      Mej = nSNCC * Msne
-      mejecta = mejecta + Mej
-      dMz = (yields(1) + metallicities(1))*Mej
-
-      call calculate_number_of_Ia(t_age_Gyr, nSNIa)
-      nSNIa = nSNIa * dt_Gyr * m_in_sol
-      nSN_tot = nSN_tot + nSNIa
-      call get_Ia_yields(yields, Msne)
-      Mej = nSNIa * Msne
-      mejecta = mejecta + Mej
-      dMz = dMz + yields(1) * Mej
-      v_ej = 0.0d0
-      call get_wind_mass_loss_rate(t_age_Gyr, metallicities, Mej, v_ej)
-      Mej = Mej * dt_Gyr * m_in_sol
-      Mej_winds = Mej
-      mejecta = mejecta + Mej
-      v_ej = v_ej * 1.0d5/scale_v ! convert from km/s to code units
-      call get_wind_yields(t_age_Gyr, metallicities, yields)
-      dMz = dMz + (yields(1) + metallicities(1))* Mej
-
-      mejecta = mejecta/scale_Msol
-      Mej_winds = Mej_winds/scale_Msol
-      mloss(j) = mejecta/vol_loc(j)
-      if (metal) then
-        mzloss(j) = dMz/scale_Msol/vol_loc(j)
-      endif
-
-      ! Thermal energy
-      dE_winds = 0.5 * Mej_winds * v_ej**2
-#ifdef STELLAR_POPULATION_MASS
-      if (t_age_Gyr .le. agemax) then
-        dE_winds = dE_winds*msp0(ind_part(j))/mp0(ind_part(j))
-      endif
-#endif
-
-
-      if (nSN_tot .ge. 1.0) then
-        ethermal(j) = ESN * nSN_tot
-      else
-        call ranf(localseed, RandNum)
-        if (RandNum < nSN_tot) then
-          ethermal(j) = ESN
+     do j=1,np
+        e_sn=0d0; dE_winds=0d0
+        if(ok3(j))then
+        !-----------------------------------------------------------------
+        ! FG Pop III star (sf_fg): one SN or direct collapse at the end of
+        ! its life (ks feedbk); nothing before that
+        !-----------------------------------------------------------------
+        birth_time=tp(ind_part(j))
+        t_age_Gyr=(current_time-birth_time)*tsec/Gyr2sec
+        mprog=mp(ind_part(j))*scale_Msol
+        if(pop3_model==3 .and. mpop3_SNprog>=0d0) mprog=mpop3_SNprog
+        t_hne=cal_tpop3(mprog)   ! lifetime [Myr]
+        if(use_proper_time)then
+           t0_3=t_hne*Myr2sec/(scale_t/aexp**2)
+        else
+           t0_3=t_hne*Myr2sec/scale_t
         endif
-      endif
-      ethermal(j) = (f_esn * ethermal(j) + dE_winds)/vol_loc(j)
-      !ethermal(j)=ethermal(j)+mejecta*ESN/vol_loc(j)
-      mp(ind_part(j))=mp(ind_part(j))-mejecta
-      if(sf_log_properties .and. (ethermal(j) .gt. (1.01*dE_winds/vol_loc(j)))) then
-        write(ilun,'(I10)',advance='no') 1
-        write(ilun,'(2I10,E24.12)',advance='no') idp(ind_part(j)),ilevel,mp(ind_part(j))
-        do idim=1,ndim
-          write(ilun,'(E24.12)',advance='no') xp(ind_part(j),idim)
-        enddo
-        do idim=1,ndim
-          write(ilun,'(E24.12)',advance='no') vp(ind_part(j),idim)
-        enddo
-        write(ilun,'(E24.12)',advance='no') unew(indp(j),1)
-        do ivar=2,nvar
-          if(ivar.eq.ndim+2)then
-            e=0.0d0
+        if(birth_time.lt.(current_time-t0_3).and.birth_time.ge.(current_time-t0_3-dteff(j)))then
+           if((pop3_model==1.or.pop3_model==2).and.mp(ind_part(j))*scale_Msol>3d2)then
+              ! the 1000 Msun star of pop3_model=2 collapses directly: no SN
+              typep(ind_part(j))%family=FAM_BH
+              write(*,'(A,3I8,1PE12.4,A,1P3E16.8)')"** POPIII direct collapse BH formation ** myid, ilevel, idp, M [Msun]: ",&
+                   & myid,ilevel,idp(ind_part(j)),mp(ind_part(j))*scale_Msol,", pos: ",xp(ind_part(j),1:3)
+           else
+              ! SN energy: Wise+2012 by progenitor mass; pop3_ESN for the 80+40 Msun binary models
+              mHe=13d0/24d0*(mprog-20d0)
+              if(mprog>=11d0.and.mprog<20d0)then
+                 e_sn_erg=1d51
+              else if(mprog>=20d0.and.mprog<=40.000001d0)then
+                 e_sn_erg=(-13.714d0+1.086d0*mprog)*1d51
+              else if(mprog>=139.999999d0.and.mprog<=260.000001d0)then
+                 e_sn_erg=(5d0+1.304d0*(mHe-64d0))*1d51
+              else if(mprog<11d0)then
+                 e_sn_erg=2d45   ! just keep the gas warm
+              else
+                 e_sn_erg=0d0    ! direct collapse (40 < M < 140 or M > 260)
+              endif
+              if(pop3_model==1.or.pop3_model==2) e_sn_erg=pop3_ESN
+              e_sn=e_sn_erg/(scale_mcgs*scale_v**2)
+              mrem=cal_mrem(mprog)
+              mmet=cal_mmet(mprog)
+              mejecta=(mprog-mrem)/scale_Msol
+              mloss(j)=mejecta/vol_loc(j)
+              ethermal(j)=e_sn/vol_loc(j)
+              if(metal) mzloss(j)=mmet/scale_Msol/vol_loc(j)
+              mp(ind_part(j))=mp(ind_part(j))-mejecta
+              pop3_sn(j)=.true.   ! family -> BH after the log line below
+              write(*,'(A,/,3I8,5(1PE12.4),/,A,1P3E16.8)')&
+                   & "** POPIII SN explosion or direct collapse ** myid, ilevel, idp, Mprog[Msun], Mejecta[Msun], E_SN[erg], Zej, t_age[Myr]: ",&
+                   & myid,ilevel,idp(ind_part(j)),mprog,mejecta*scale_Msol,e_sn_erg,mmet/max(mejecta*scale_Msol,1d-100),t_age_Gyr*1d3,&
+                   & 'pos: ',xp(ind_part(j),1:3)
+           endif
+        endif
+        else
+        dt_Gyr = dteff(j)*tsec/Gyr2sec
+        m_in_sol = mp(ind_part(j))*scale_Msol
+        birth_time=tp(ind_part(j))
+        ! FIRE-3 rates evaluated at the mid-step age (midpoint rule), as in patch/ks (fire3_yields); a star born
+        ! during this step is integrated from age 0 (2026-11-14; before: end-of-step age over the whole dteff)
+        t_age_Gyr=(current_time-birth_time-0.5d0*dteff(j))*tsec/Gyr2sec
+        if(birth_time>current_time-dteff(j))then
+           dt_Gyr=(current_time-birth_time)*tsec/Gyr2sec
+           t_age_Gyr=0.5d0*dt_Gyr
+        endif
+        ! Metallicity
+        metallicities = solar_abundances
+        if (metal) then
+          metallicities = solar_abundances &
+            * zp(ind_part(j))/solar_abundances(1)
+          ! Hellium
+          metallicities(2) = Y + (metallicities(2) - Y) &
+            * zp(ind_part(j))/solar_abundances(1)
+         endif
+         ! Stellar mass loss
+         mejecta = 0.0d0
+         call calculate_number_of_CC(t_age_Gyr, nSNCC)
+         nSNCC = nsnCC * dt_Gyr * m_in_sol
+#ifndef STELLAR_POPULATION_MASS
+         nSN_tot = nSNCC
+#else
+         nSN_tot = nSNCC * msp0(ind_part(j))/mp0(ind_part(j))
+#endif
+         call get_CC_yields(t_age_Gyr, yields, Msne)
+         Mej = nSNCC * Msne
+         mejecta = mejecta + Mej
+         dMz = (yields(1) + metallicities(1))*Mej
+
+         call calculate_number_of_Ia(t_age_Gyr, nSNIa)
+         nSNIa = nsnIa * dt_Gyr * m_in_sol
+         nSN_tot = nSN_tot + nSNIa
+         call get_Ia_yields(yields, Msne)
+         Mej = nSNIa * Msne
+         mejecta = mejecta + Mej
+         dMz = dMz + yields(1) * Mej
+         v_ej = 0.0d0
+         call get_wind_mass_loss_rate(t_age_Gyr, metallicities, Mej, v_ej)
+         Mej = Mej * dt_Gyr * m_in_sol
+         Mej_winds = Mej
+         mejecta = mejecta + Mej
+         v_ej = v_ej * 1.0d5/scale_v ! convert from km/s to code units
+         call get_wind_yields(t_age_Gyr, metallicities, yields)
+         dMz = dMz + (yields(1) + metallicities(1))* Mej
+
+         mejecta = mejecta/scale_Msol
+         Mej_winds = Mej_winds/scale_Msol
+         mloss(j) = mejecta/vol_loc(j)
+         if (metal) then
+            mzloss(j) = dMz/scale_Msol/vol_loc(j)
+         endif
+
+         ! Thermal energy
+         dE_winds = 0.5 * Mej_winds * v_ej**2
+#ifdef STELLAR_POPULATION_MASS
+         if (t_age_Gyr .le. agemax) then
+            dE_winds = dE_winds*msp0(ind_part(j))/mp0(ind_part(j))
+         endif
+         ! Batched winds: the scaled wind energy does not go into the host cell. A packet is recorded for every
+         ! multiple of E_wind_batch that the cumulative energy msp0 * W(age, Z) crosses during this step, and
+         ! the remainder when the particle reaches agemax (module wind_batch).
+         if (E_wind_batch > 0d0) then
+            if (t_age_Gyr .le. agemax) dE_winds = 0d0
+            a1_w = (current_time-birth_time)*tsec/Gyr2sec
+            a0_w = max(a1_w-dteff(j)*tsec/Gyr2sec, 0d0)
+            if (a0_w < agemax .and. msp0(ind_part(j)) > 0d0) then
+               e_thr_w = E_wind_batch/(scale_mcgs*scale_v**2)
+               ec0_w = msp0(ind_part(j))*wind_cum_energy(a0_w, metallicities(1)/solar_abundances(1))*(1d5/scale_v)**2
+               ec1_w = msp0(ind_part(j))*wind_cum_energy(a1_w, metallicities(1)/solar_abundances(1))*(1d5/scale_v)**2
+               e_w = (aint(ec1_w/e_thr_w)-aint(ec0_w/e_thr_w))*e_thr_w
+               if (a1_w >= agemax) e_w = e_w+(ec1_w-aint(ec1_w/e_thr_w)*e_thr_w)
+               if (e_w > 0d0) then
+                  if (WINDinfo_n >= SNinfo_nSNmax) then
+                     write(*,*)'wind packet buffer full on rank',myid
+                     call clean_stop
+                  endif
+                  WINDinfo_n = WINDinfo_n+1
+                  WINDinfo_E(WINDinfo_n) = e_w
+                  WINDinfo_pos(1:3,WINDinfo_n) = xp(ind_part(j),1:3)
+               endif
+            endif
+         endif
+#endif
+
+
+         if (nSN_tot .ge. 1.0) then
+            ethermal(j) = ESN * nSN_tot
+            nsn_rank = nsn_rank + nint(nSN_tot)
+         else
+            call ranf(localseed, RandNum)
+            if (RandNum < nSN_tot) then
+               ethermal(j) = ESN
+               nsn_rank = nsn_rank + 1
+            endif
+         endif
+         e_sn = f_esn * ethermal(j)   ! pure SN energy of this step [code units] (FG feedback: reservoir / timer)
+         ethermal(j) = (f_esn * ethermal(j) + dE_winds)/vol_loc(j)
+         !ethermal(j)=ethermal(j)+mejecta*ESN/vol_loc(j)
+         mp(ind_part(j))=mp(ind_part(j))-mejecta
+        end if   ! Pop II / Pop III
+        !-----------------------------------------------------------------
+        ! FG feedback (merge_ks): keep the pure SN heat for the reservoir and
+        ! record the event for the radius search (thermal_feedback)
+        !-----------------------------------------------------------------
+        e_sn_part(j)=e_sn
+        if(SN_reservoir.and.e_sn>0d0) pending_heat(j)=e_sn/vol_loc(j)
+        if(SN_radius_search.and.e_sn>0d0)then
+           if(SNinfo_nSN>=SNinfo_nSNmax)then
+              write(*,*)'SN event buffer full on rank',myid
+              call clean_stop
+           endif
+           SNinfo_nSN=SNinfo_nSN+1
+           SNinfo_ESN(SNinfo_nSN)=e_sn
+           SNinfo_pos(1:3,SNinfo_nSN)=xp(ind_part(j),1:3)
+           SNinfo_idp(SNinfo_nSN)=idp(ind_part(j))
+        endif
+!------------------------------------------------------------------------
+! Modified by Mizuki Ono (2026/10/28)
+! Record log (sf_log_properties) before MHD loop injection (grid update).
+!------------------------------------------------------------------------
+         if(sf_log_properties .and. (ethermal(j) .gt. (1.01*dE_winds/vol_loc(j)))) then
+            write(ilun,'(I10)',advance='no') 1
+            write(ilun,'(2I10,E24.12)',advance='no') idp(ind_part(j)),ilevel,mp(ind_part(j))
             do idim=1,ndim
-              e=e+0.5d0*unew(indp(j),idim+1)**2/max(unew(indp(j),1),smallr)
+               write(ilun,'(E24.12)',advance='no') xp(ind_part(j),idim)
             enddo
+            do idim=1,ndim
+               write(ilun,'(E24.12)',advance='no') vp(ind_part(j),idim)
+            enddo
+            write(ilun,'(E24.12)',advance='no') unew(indp(j),1)
+            do ivar=2,nvar
+               if(ivar.eq.ndim+2)then
+                  e=0.0d0
+                  do idim=1,ndim
+                     e=e+0.5d0*unew(indp(j),idim+1)**2/max(unew(indp(j),1),smallr)
+                  enddo
 #if NENER>0
-            do irad=0,nener-1
-              e=e+unew(indp(j),inener+irad)
-            enddo
+                  do irad=0,nener-1
+                     e=e+unew(indp(j),inener+irad)
+                  enddo
 #endif
 #ifdef SOLVERmhd
-            do idim=1,ndim
-              e=e+0.125d0*(unew(indp(j),idim+ndim+2)+unew(indp(j),idim+nvar))**2
-            enddo
+                  do idim=1,ndim
+                     e=e+0.125d0*(unew(indp(j),idim+ndim+2)+unew(indp(j),idim+nvar))**2
+                  enddo
 #endif
-            ! Temperature
-            uvar=(gamma-1.0d0)*(unew(indp(j),ndim+2)-e)*scale_T2
-          else
-            uvar=unew(indp(j),ivar)
-          endif
-          write(ilun,'(E24.12)',advance='no') uvar/unew(indp(j),1)
-        enddo
-        write(ilun,'(I10)',advance='no') typep(ind_part(j))%tag
-        write(ilun,'(A1)') ' '
-      endif
-    end do
-  endif
+                  ! Temperature
+                  uvar=(gamma-1.0d0)*(unew(indp(j),ndim+2)-e)*scale_T2
+               else
+                  uvar=unew(indp(j),ivar)
+               endif
+               write(ilun,'(E24.12)',advance='no') uvar/unew(indp(j),1)
+            enddo
+               write(ilun,'(I10)',advance='no') typep(ind_part(j))%tag
+               write(ilun,'(I10)',advance='no') typep(ind_part(j))%family
+               write(ilun,'(A1)') ' '
+         endif
+         if(pop3_sn(j)) typep(ind_part(j))%family=FAM_BH   ! FG: Pop III remnant (ks: BH, later a sink with bhpop3)
+#ifdef SOLVERmhd
+!------------------------------------------------------------------------
+! Added by Mizuki Ono (2026/06/13)
+!------------------------------------------------------------------------
+         if ((ethermal(j) .gt. (1.01*dE_winds/vol_loc(j))) .and. f_esn_loop > 0.0D0 .and. t_age_Gyr .le. agemax) then
+            if (ok(j)) then
+               mhd_feedback_active = .true.
+
+               ! B_inj = sqrt(0.02 * epsilon_SN)
+               ! epsilon_SN is the SN energy density in the NGP cell, which is ethermal(j)
+               B_inj_loop = sqrt(2.0D0 * f_esn_loop * (ethermal(j)-dE_winds/vol_loc(j)))
+
+               ! Find 2x2x2 cell cube around the star particle across neighbor grids
+               do idim = 1, ndim
+                  dd_loop(idim) = x(j,idim) + 0.5D0
+                  id_loop(idim) = int(dd_loop(idim))
+                  ig_loop(idim) = id_loop(idim) - 1
+                  igg_loop(idim) = ig_loop(idim) / 2
+                  igd_loop(idim) = id_loop(idim) / 2
+                  icg_loop(idim) = ig_loop(idim) - 2 * igg_loop(idim)
+                  icd_loop(idim) = id_loop(idim) - 2 * igd_loop(idim)
+               end do
+
+               do ix_loop = 1, twotondim
+                  iy_loop = ix_loop - 1
+                  kg_loop(ix_loop) = 1
+                  icell_loop(ix_loop) = 1
+                  if (mod(iy_loop,2) == 0) then
+                     kg_loop(ix_loop) = kg_loop(ix_loop) + igg_loop(1)
+                     icell_loop(ix_loop) = icell_loop(ix_loop) + icg_loop(1)
+                  else
+                     kg_loop(ix_loop) = kg_loop(ix_loop) + igd_loop(1)
+                     icell_loop(ix_loop) = icell_loop(ix_loop) + icd_loop(1)
+                  end if
+                  if (ndim > 1) then
+                     if (mod(iy_loop/2,2) == 0) then
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 3 * igg_loop(2)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 2 * icg_loop(2)
+                     else
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 3 * igd_loop(2)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 2 * icd_loop(2)
+                     end if
+                  end if
+                  if (ndim > 2) then
+                     if (mod(iy_loop/4,2) == 0) then
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 9 * igg_loop(3)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 4 * icg_loop(3)
+                     else
+                        kg_loop(ix_loop) = kg_loop(ix_loop) + 9 * igd_loop(3)
+                        icell_loop(ix_loop) = icell_loop(ix_loop) + 4 * icd_loop(3)
+                     end if
+                  end if
+               end do
+
+               ok_loop = .true.
+               do ix_loop = 1, twotondim
+                  ind_father_loop = nbors_father_cells(ind_grid_part(j), kg_loop(ix_loop))
+                  if (ind_father_loop > 0) then
+                     igrid_loop(ix_loop) = son(ind_father_loop)
+                     if (igrid_loop(ix_loop) > 0) then
+                        c_loop(ix_loop) = ncoarse + (icell_loop(ix_loop) - 1) * ngridmax + igrid_loop(ix_loop)
+                     else
+                        ok_loop = .false.
+                     end if
+                  else
+                     ok_loop = .false.
+                  end if
+               end do
+
+               if (.not. ok_loop) then
+                  ! Warning: neighbor cells are not properly refined at this level
+                  write(*,*) 'WARNING: Loop B injection skipped - unrefined neighbor cell at ilevel=', ilevel, &
+                             ' StarID=', idp(ind_part(j)), ' myid=', myid
+               else
+
+               ! Loop 1: Edge z- = (0, 0, -1/2)
+               sum_dot_loop = uold(c_loop(4),6) - uold(c_loop(4),7) - uold(c_loop(2),6) + uold(c_loop(3),7)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_zminus = 1
+               else
+                  S_zminus = -1
+               end if
+               unew(c_loop(3),nvar+1) = unew(c_loop(3),nvar+1) + S_zminus * B_inj_loop
+               unew(c_loop(4),6)      = unew(c_loop(4),6)      + S_zminus * B_inj_loop
+               unew(c_loop(2),nvar+2) = unew(c_loop(2),nvar+2) - S_zminus * B_inj_loop
+               unew(c_loop(4),7)      = unew(c_loop(4),7)      - S_zminus * B_inj_loop
+               unew(c_loop(1),nvar+1) = unew(c_loop(1),nvar+1) - S_zminus * B_inj_loop
+               unew(c_loop(2),6)      = unew(c_loop(2),6)      - S_zminus * B_inj_loop
+               unew(c_loop(1),nvar+2) = unew(c_loop(1),nvar+2) + S_zminus * B_inj_loop
+               unew(c_loop(3),7)      = unew(c_loop(3),7)      + S_zminus * B_inj_loop
+
+               ! Loop 2: Edge z+ = (0, 0, 1/2)
+               sum_dot_loop = uold(c_loop(8),6) - uold(c_loop(8),7) - uold(c_loop(6),6) + uold(c_loop(7),7)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_zplus = 1
+               else
+                  S_zplus = -1
+               end if
+               unew(c_loop(7),nvar+1) = unew(c_loop(7),nvar+1) + S_zplus * B_inj_loop
+               unew(c_loop(8),6)      = unew(c_loop(8),6)      + S_zplus * B_inj_loop
+               unew(c_loop(6),nvar+2) = unew(c_loop(6),nvar+2) - S_zplus * B_inj_loop
+               unew(c_loop(8),7)      = unew(c_loop(8),7)      - S_zplus * B_inj_loop
+               unew(c_loop(5),nvar+1) = unew(c_loop(5),nvar+1) - S_zplus * B_inj_loop
+               unew(c_loop(6),6)      = unew(c_loop(6),6)      - S_zplus * B_inj_loop
+               unew(c_loop(5),nvar+2) = unew(c_loop(5),nvar+2) + S_zplus * B_inj_loop
+               unew(c_loop(7),7)      = unew(c_loop(7),7)      + S_zplus * B_inj_loop
+
+               ! Loop 3: Edge y- = (0, -1/2, 0)
+               sum_dot_loop = uold(c_loop(6),6) - uold(c_loop(6),8) - uold(c_loop(2),6) + uold(c_loop(5),8)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_yminus = 1
+               else
+                  S_yminus = -1
+               end if
+               unew(c_loop(5),nvar+1) = unew(c_loop(5),nvar+1) + S_yminus * B_inj_loop
+               unew(c_loop(6),6)      = unew(c_loop(6),6)      + S_yminus * B_inj_loop
+               unew(c_loop(2),nvar+3) = unew(c_loop(2),nvar+3) - S_yminus * B_inj_loop
+               unew(c_loop(6),8)      = unew(c_loop(6),8)      - S_yminus * B_inj_loop
+               unew(c_loop(1),nvar+1) = unew(c_loop(1),nvar+1) - S_yminus * B_inj_loop
+               unew(c_loop(2),6)      = unew(c_loop(2),6)      - S_yminus * B_inj_loop
+               unew(c_loop(1),nvar+3) = unew(c_loop(1),nvar+3) + S_yminus * B_inj_loop
+               unew(c_loop(5),8)      = unew(c_loop(5),8)      + S_yminus * B_inj_loop
+
+               ! Loop 4: Edge y+ = (0, 1/2, 0)
+               sum_dot_loop = uold(c_loop(8),6) - uold(c_loop(8),8) - uold(c_loop(4),6) + uold(c_loop(7),8)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_yplus = 1
+               else
+                  S_yplus = -1
+               end if
+               unew(c_loop(7),nvar+1) = unew(c_loop(7),nvar+1) + S_yplus * B_inj_loop
+               unew(c_loop(8),6)      = unew(c_loop(8),6)      + S_yplus * B_inj_loop
+               unew(c_loop(4),nvar+3) = unew(c_loop(4),nvar+3) - S_yplus * B_inj_loop
+               unew(c_loop(8),8)      = unew(c_loop(8),8)      - S_yplus * B_inj_loop
+               unew(c_loop(3),nvar+1) = unew(c_loop(3),nvar+1) - S_yplus * B_inj_loop
+               unew(c_loop(4),6)      = unew(c_loop(4),6)      - S_yplus * B_inj_loop
+               unew(c_loop(3),nvar+3) = unew(c_loop(3),nvar+3) + S_yplus * B_inj_loop
+               unew(c_loop(7),8)      = unew(c_loop(7),8)      + S_yplus * B_inj_loop
+
+               ! Loop 5: Edge x- = (-1/2, 0, 0)
+               sum_dot_loop = uold(c_loop(7),7) - uold(c_loop(7),8) - uold(c_loop(3),7) + uold(c_loop(5),8)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_xminus = 1
+               else
+                  S_xminus = -1
+               end if
+               unew(c_loop(5),nvar+2) = unew(c_loop(5),nvar+2) + S_xminus * B_inj_loop
+               unew(c_loop(7),7)      = unew(c_loop(7),7)      + S_xminus * B_inj_loop
+               unew(c_loop(3),nvar+3) = unew(c_loop(3),nvar+3) - S_xminus * B_inj_loop
+               unew(c_loop(7),8)      = unew(c_loop(7),8)      - S_xminus * B_inj_loop
+               unew(c_loop(1),nvar+2) = unew(c_loop(1),nvar+2) - S_xminus * B_inj_loop
+               unew(c_loop(3),7)      = unew(c_loop(3),7)      - S_xminus * B_inj_loop
+               unew(c_loop(1),nvar+3) = unew(c_loop(1),nvar+3) + S_xminus * B_inj_loop
+               unew(c_loop(5),8)      = unew(c_loop(5),8)      + S_xminus * B_inj_loop
+
+               ! Loop 6: Edge x+ = (1/2, 0, 0)
+               sum_dot_loop = uold(c_loop(8),7) - uold(c_loop(8),8) - uold(c_loop(4),7) + uold(c_loop(6),8)
+               if (sum_dot_loop >= 0.0D0) then
+                  S_xplus = 1
+               else
+                  S_xplus = -1
+               end if
+               unew(c_loop(6),nvar+2) = unew(c_loop(6),nvar+2) + S_xplus * B_inj_loop
+               unew(c_loop(8),7)      = unew(c_loop(8),7)      + S_xplus * B_inj_loop
+               unew(c_loop(4),nvar+3) = unew(c_loop(4),nvar+3) - S_xplus * B_inj_loop
+               unew(c_loop(8),8)      = unew(c_loop(8),8)      - S_xplus * B_inj_loop
+               unew(c_loop(2),nvar+2) = unew(c_loop(2),nvar+2) - S_xplus * B_inj_loop
+               unew(c_loop(4),7)      = unew(c_loop(4),7)      - S_xplus * B_inj_loop
+               unew(c_loop(2),nvar+3) = unew(c_loop(2),nvar+3) + S_xplus * B_inj_loop
+               unew(c_loop(6),8)      = unew(c_loop(6),8)      + S_xplus * B_inj_loop
+
+               ! ethermal(j) = ethermal(j) * (1-f_esn_loop)
+               write(*,*) 'FEEDBACK B = ', B_inj_loop * scale_B_muG, ' muG  StarID = ', idp(ind_part(j))
+               end if
+            end if
+         end if
+#endif
+      end do
+   endif
 
   ! Update hydro variables due to feedback
 
@@ -486,53 +952,71 @@ subroutine feedbk(ind_grid,ind_part,ind_grid_part,ng,np,ilevel)
   do j=1,np
 
 
-    ! Infrared photon trapping boost
-    !     if(metal)then
-    !        tauIR=tau_factor*max(uold(indp(j),imetal),smallr)
-    !     else
-    !        tauIR=tau_factor*max(uold(indp(j),1),smallr)
-    !     endif
-    !     if(uold(indp(j),1)*scale_nH > 10.)then
-    !        RAD_BOOST=rad_factor*(1d0-exp(-tauIR))
-    !     else
-    !        RAD_BOOST=0
-    !     endif
+     ! Infrared photon trapping boost
+   !     if(metal)then
+   !        tauIR=tau_factor*max(uold(indp(j),imetal),smallr)
+   !     else
+   !        tauIR=tau_factor*max(uold(indp(j),1),smallr)
+   !     endif
+   !     if(uold(indp(j),1)*scale_nH > 10.)then
+   !        RAD_BOOST=rad_factor*(1d0-exp(-tauIR))
+   !     else
+   !        RAD_BOOST=0
+   !     endif
 
-    ! Specific kinetic energy of the star
-    ekinetic(j)=0.5d0*(vp(ind_part(j),1)**2 &
-    &            +vp(ind_part(j),2)**2 &
-    &            +vp(ind_part(j),3)**2)
+     ! Specific kinetic energy of the star
+     ekinetic(j)=0.5d0*(vp(ind_part(j),1)**2 &
+          &            +vp(ind_part(j),2)**2 &
+          &            +vp(ind_part(j),3)**2)
 
-    ! Update hydro variable in NGP cell
-    unew(indp(j),1)=unew(indp(j),1)+mloss(j)
-    unew(indp(j),2)=unew(indp(j),2)+mloss(j)*vp(ind_part(j),1)
-    unew(indp(j),3)=unew(indp(j),3)+mloss(j)*vp(ind_part(j),2)
-    unew(indp(j),4)=unew(indp(j),4)+mloss(j)*vp(ind_part(j),3)
-    !unew(indp(j),5)=unew(indp(j),5)+mloss(j)*ekinetic(j)+ &
-    ! & ethermal(j)*(1d0+RAD_BOOST)
-    unew(indp(j),5)=unew(indp(j),5)+mloss(j)*ekinetic(j)+ethermal(j)
-    if((ethermal(j) .gt. 0.99*(f_esn*ESN/vol_loc(j))).and.f_esn .gt. 0) then
-      e = 0.d0
-      do idim=1,ndim
-        e=e+0.5d0*unew(indp(j),idim+1)**2/max(unew(indp(j),1),smallr)
-      end do
-      uvar=(gamma-1.0d0)*(unew(indp(j),ndim+2)-e)*scale_T2/max(unew(indp(j),1),smallr)
-      write(*,*) 'FEEDBACK T2 = ', uvar, ' mgas = ', unew(indp(j),1)*vol_loc(j)*scale_Msol, ' Msol'
-    endif
+     ! Update hydro variable in NGP cell
+     unew(indp(j),1)=unew(indp(j),1)+mloss(j)
+     unew(indp(j),2)=unew(indp(j),2)+mloss(j)*vp(ind_part(j),1)
+     unew(indp(j),3)=unew(indp(j),3)+mloss(j)*vp(ind_part(j),2)
+     unew(indp(j),4)=unew(indp(j),4)+mloss(j)*vp(ind_part(j),3)
+     !unew(indp(j),5)=unew(indp(j),5)+mloss(j)*ekinetic(j)+ &
+         ! & ethermal(j)*(1d0+RAD_BOOST)
+     unew(indp(j),5)=unew(indp(j),5)+mloss(j)*ekinetic(j)+ethermal(j)-pending_heat(j)   ! FG: the pending SN heat goes to the reservoir
+     ! FG feedback (merge_ks): cooling-stop timer [Myr] on the host cell (immediate injection; the reservoir sets it when it releases the heat)
+     if(.not.SN_reservoir .and. fcool_stop>0d0 .and. e_sn_part(j)>0d0)then
+        rho_1=max(unew(indp(j),1),smallr)
+        ekk_1=0.5d0*(unew(indp(j),2)**2+unew(indp(j),3)**2+unew(indp(j),4)**2)/rho_1
+        eth_1=unew(indp(j),5)-ekk_1
+        T2_1=(gamma-1d0)*eth_1/rho_1
+        cs_1=sqrt(gamma*max(T2_1,smallc**2))
+        unew(indp(j),ivar_coolstop)=fcool_stop*vol_loc(j)**(1d0/3d0)/cs_1*scale_t/Myr2sec
+     endif
+     if((ethermal(j) .gt. 0.99*(f_esn*ESN/vol_loc(j))).and.f_esn .gt. 0) then
+         e = 0.d0
+         do idim=1,ndim
+             e=e+0.5d0*unew(indp(j),idim+1)**2/max(unew(indp(j),1),smallr)
+         end do
+#ifdef SOLVERmhd
+!------------------------------------------------------------------------
+! Modified by Mizuki Ono (2026/10/28)
+! Subtract magnetic energy in addition to kinetic energy from total energy.
+!------------------------------------------------------------------------
+         do idim=1,ndim
+             e=e+0.125d0*(unew(indp(j),idim+ndim+2)+unew(indp(j),idim+nvar))**2
+         end do
+#endif
+         uvar=(gamma-1.0d0)*(unew(indp(j),ndim+2)-e)*scale_T2/max(unew(indp(j),1),smallr)
+         write(*,*) 'FEEDBACK T2 = ', uvar, ' mgas = ', unew(indp(j),1)*vol_loc(j)*scale_Msol, ' Msol'
+     endif
   end do
 
   ! Add metals
   if(metal)then
-    do j=1,np
-      unew(indp(j),imetal)=unew(indp(j),imetal)+mzloss(j)
-    end do
+     do j=1,np
+        unew(indp(j),imetal)=unew(indp(j),imetal)+mzloss(j)
+     end do
   endif
 
   ! Add delayed cooling switch variable
   if(delayed_cooling)then
-    do j=1,np
-      unew(indp(j),idelay)=unew(indp(j),idelay)+mloss(j)
-    end do
+     do j=1,np
+        unew(indp(j),idelay)=unew(indp(j),idelay)+mloss(j)
+     end do
   endif
 
 end subroutine feedbk
@@ -590,20 +1074,20 @@ subroutine kinetic_feedback
 
   ! Minimum star particle mass
   if(m_star < 0d0)then
-    mstar=n_star/(scale_nH*aexp**3)*vol_min
+     mstar=n_star/(scale_nH*aexp**3)*vol_min
   else
-    mstar=m_star*mass_sph
+     mstar=m_star*mass_sph
   endif
 
 
   ! Lifetime of Giant Molecular Clouds from Myr to code units
   ! Massive star lifetime from Myr to code units
   if(use_proper_time)then
-    t0=t_sne*Myr2sec/(scale_t/aexp**2)
-    current_time=texp
+     t0=t_sne*Myr2sec/(scale_t/aexp**2)
+     current_time=texp
   else
-    t0=t_sne*Myr2sec/scale_t
-    current_time=t
+     t0=t_sne*Myr2sec/scale_t
+     current_time=t
   endif
 
   !------------------------------------------------------
@@ -612,28 +1096,28 @@ subroutine kinetic_feedback
   nSN_loc=0
   ! Loop over levels
   do icpu=1,ncpu
-    ! Loop over cpus
-    igrid=headl(icpu,levelmin)
-    ! Loop over grids
-    do jgrid=1,numbl(icpu,levelmin)
-      npart1=numbp(igrid)  ! Number of particles in the grid
-      npart2=0
-      ! Count old enough GMC particles
-      if(npart1>0)then
-        ipart=headp(igrid)
-        ! Loop over particles
-        do jpart=1,npart1
-          ! Save next particle   <--- Very important !!!
-          next_part=nextp(ipart)
-          if ( is_debris(typep(ipart)) .and. tp(ipart).lt.(current_time-t0) ) then
-            npart2=npart2+1
-          endif
-          ipart=next_part  ! Go to next particle
-        end do
-      endif
-      nSN_loc=nSN_loc+npart2   ! Add SNe to the total
-      igrid=next(igrid)   ! Go to next grid
-    end do
+  ! Loop over cpus
+     igrid=headl(icpu,levelmin)
+     ! Loop over grids
+     do jgrid=1,numbl(icpu,levelmin)
+        npart1=numbp(igrid)  ! Number of particles in the grid
+        npart2=0
+        ! Count old enough GMC particles
+        if(npart1>0)then
+           ipart=headp(igrid)
+           ! Loop over particles
+           do jpart=1,npart1
+              ! Save next particle   <--- Very important !!!
+              next_part=nextp(ipart)
+              if ( is_debris(typep(ipart)) .and. tp(ipart).lt.(current_time-t0) ) then
+                 npart2=npart2+1
+              endif
+              ipart=next_part  ! Go to next particle
+            end do
+        endif
+        nSN_loc=nSN_loc+npart2   ! Add SNe to the total
+        igrid=next(igrid)   ! Go to next grid
+     end do
   end do
   ! End loop over levels
   nSN_icpu=0
@@ -649,9 +1133,9 @@ subroutine kinetic_feedback
   if (nSN_tot .eq. 0) return
 
   if(myid==1)then
-    write(*,*)'-----------------------------------------------'
-    write(*,*)'Number of GMC to explode=',nSN_tot
-    write(*,*)'-----------------------------------------------'
+     write(*,*)'-----------------------------------------------'
+     write(*,*)'Number of GMC to explode=',nSN_tot
+     write(*,*)'-----------------------------------------------'
   endif
 
   ! Allocate arrays for the position and the mass of the SN
@@ -660,60 +1144,60 @@ subroutine kinetic_feedback
   xSN=0; vSN=0; mSN=0; sSN=0; ZSN=0
   ! Allocate arrays for particles index and parent grid
   if(nSN_loc>0)then
-    allocate(ind_part(1:nSN_loc),ind_grid(1:nSN_loc),ok_free(1:nSN_loc))
+     allocate(ind_part(1:nSN_loc),ind_grid(1:nSN_loc),ok_free(1:nSN_loc))
   endif
 
   !------------------------------------------------------
   ! Store position and mass of the GMC into the SN array
   !------------------------------------------------------
   if(myid==1)then
-    iSN=0
+     iSN=0
   else
-    iSN=sum(nSN_icpu(1:myid-1))
+     iSN=sum(nSN_icpu(1:myid-1))
   endif
   ! Loop over levels
   ip=0
   do icpu=1,ncpu
-    igrid=headl(icpu,levelmin)
-    ! Loop over grids
-    do jgrid=1,numbl(icpu,levelmin)
-      npart1=numbp(igrid)  ! Number of particles in the grid
-      ! Count old enough star particles that have not exploded
-      if(npart1>0)then
-        ipart=headp(igrid)
-        ! Loop over particles
-        do jpart=1,npart1
-          ! Save next particle   <--- Very important !!!
-          next_part=nextp(ipart)
-          if ( is_debris(typep(ipart)) .and. tp(ipart).lt.(current_time-t0) ) then
-            iSN=iSN+1
-            xSN(iSN,1)=xp(ipart,1)
-            xSN(iSN,2)=xp(ipart,2)
-            xSN(iSN,3)=xp(ipart,3)
-            vSN(iSN,1)=vp(ipart,1)
-            vSN(iSN,2)=vp(ipart,2)
-            vSN(iSN,3)=vp(ipart,3)
-            mSN(iSN)=mp(ipart)
-            sSN(iSN)=dble(-idp(ipart))*mstar
-            if(metal)ZSN(iSN)=zp(ipart)
-            ip=ip+1
-            ind_grid(ip)=igrid
-            ind_part(ip)=ipart
-          endif
-          ipart=next_part  ! Go to next particle
-        end do
-      endif
-      igrid=next(igrid)   ! Go to next grid
-    end do
+     igrid=headl(icpu,levelmin)
+     ! Loop over grids
+     do jgrid=1,numbl(icpu,levelmin)
+        npart1=numbp(igrid)  ! Number of particles in the grid
+        ! Count old enough star particles that have not exploded
+        if(npart1>0)then
+           ipart=headp(igrid)
+           ! Loop over particles
+           do jpart=1,npart1
+              ! Save next particle   <--- Very important !!!
+              next_part=nextp(ipart)
+              if ( is_debris(typep(ipart)) .and. tp(ipart).lt.(current_time-t0) ) then
+                 iSN=iSN+1
+                 xSN(iSN,1)=xp(ipart,1)
+                 xSN(iSN,2)=xp(ipart,2)
+                 xSN(iSN,3)=xp(ipart,3)
+                 vSN(iSN,1)=vp(ipart,1)
+                 vSN(iSN,2)=vp(ipart,2)
+                 vSN(iSN,3)=vp(ipart,3)
+                 mSN(iSN)=mp(ipart)
+                 sSN(iSN)=dble(-idp(ipart))*mstar
+                 if(metal)ZSN(iSN)=zp(ipart)
+                 ip=ip+1
+                 ind_grid(ip)=igrid
+                 ind_part(ip)=ipart
+              endif
+              ipart=next_part  ! Go to next particle
+           end do
+        endif
+        igrid=next(igrid)   ! Go to next grid
+     end do
   end do
   ! End loop over levels
 
   ! Remove GMC particle
   if(nSN_loc>0)then
-    ok_free=.true.
-    call remove_list(ind_part,ind_grid,ok_free,nSN_loc)
-    call add_free_cond(ind_part,ok_free,nSN_loc)
-    deallocate(ind_part,ind_grid,ok_free)
+     ok_free=.true.
+     call remove_list(ind_part,ind_grid,ok_free,nSN_loc)
+     call add_free_cond(ind_part,ok_free,nSN_loc)
+     deallocate(ind_part,ind_grid,ok_free)
   endif
 
 #ifndef WITHOUTMPI
@@ -745,10 +1229,10 @@ subroutine kinetic_feedback
 
   ! Update hydro quantities for split cells
   do ilevel=nlevelmax,levelmin,-1
-    call upload_fine(ilevel)
-    do ivar=1,nvar
-      call make_virtual_fine_dp(uold(1,ivar),ilevel)
-    enddo
+     call upload_fine(ilevel)
+     do ivar=1,nvar
+        call make_virtual_fine_dp(uold(1,ivar),ilevel)
+     enddo
   enddo
 
 end subroutine kinetic_feedback
@@ -811,81 +1295,81 @@ subroutine average_SN(xSN,vol_gas,dq,ekBlast,ind_blast,nSN)
 
   ! Loop over levels
   do ilevel=levelmin,nlevelmax
-    ! Computing local volume (important for averaging hydro quantities)
-    dx=0.5D0**ilevel
-    dx_loc=dx*scale
-    vol_loc=dx_loc**ndim
-    ! Cells center position relative to grid center position
-    do ind=1,twotondim
-      iz=(ind-1)/4
-      iy=(ind-1-4*iz)/2
-      ix=(ind-1-2*iy-4*iz)
-      xc(ind,1)=(dble(ix)-0.5D0)*dx
-      xc(ind,2)=(dble(iy)-0.5D0)*dx
-      xc(ind,3)=(dble(iz)-0.5D0)*dx
-    end do
+     ! Computing local volume (important for averaging hydro quantities)
+     dx=0.5D0**ilevel
+     dx_loc=dx*scale
+     vol_loc=dx_loc**ndim
+     ! Cells center position relative to grid center position
+     do ind=1,twotondim
+        iz=(ind-1)/4
+        iy=(ind-1-4*iz)/2
+        ix=(ind-1-2*iy-4*iz)
+        xc(ind,1)=(dble(ix)-0.5D0)*dx
+        xc(ind,2)=(dble(iy)-0.5D0)*dx
+        xc(ind,3)=(dble(iz)-0.5D0)*dx
+     end do
 
-    ! Loop over grids
-    ncache=active(ilevel)%ngrid
-    do igrid=1,ncache,nvector
-      ngrid=MIN(nvector,ncache-igrid+1)
-      do i=1,ngrid
-        ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
-      end do
-
-      ! Loop over cells
-      do ind=1,twotondim
-        iskip=ncoarse+(ind-1)*ngridmax
+     ! Loop over grids
+     ncache=active(ilevel)%ngrid
+     do igrid=1,ncache,nvector
+        ngrid=MIN(nvector,ncache-igrid+1)
         do i=1,ngrid
-          ind_cell(i)=iskip+ind_grid(i)
+           ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
         end do
 
-        ! Flag leaf cells
-        do i=1,ngrid
-          ok(i)=son(ind_cell(i))==0
-        end do
+        ! Loop over cells
+        do ind=1,twotondim
+           iskip=ncoarse+(ind-1)*ngridmax
+           do i=1,ngrid
+              ind_cell(i)=iskip+ind_grid(i)
+           end do
 
-        do i=1,ngrid
-          if(ok(i))then
-            ! Get gas cell position
-            x=(xg(ind_grid(i),1)+xc(ind,1)-skip_loc(1))*scale
-            y=(xg(ind_grid(i),2)+xc(ind,2)-skip_loc(2))*scale
-            z=(xg(ind_grid(i),3)+xc(ind,3)-skip_loc(3))*scale
-            do iSN=1,nSN
-              ! Check if the cell lies within the SN radius
-              dxx=x-xSN(iSN,1)
-              dyy=y-xSN(iSN,2)
-              dzz=z-xSN(iSN,3)
-              dr_SN=dxx**2+dyy**2+dzz**2
-              dr_cell=MAX(ABS(dxx),ABS(dyy),ABS(dzz))
-              if(dr_SN.lt.rmax2)then
-                vol_gas(iSN)=vol_gas(iSN)+vol_loc
-                ! Take account for grid effects on the conservation of the
-                ! normalized linear momentum
-                u=dxx/rmax
-                v=dyy/rmax
-                w=dzz/rmax
-                ! Add the local normalized linear momentum to the total linear
-                ! momentum of the blast wave (should be zero with no grid effect)
-                dq(iSN,1)=dq(iSN,1)+u*vol_loc
-                dq(iSN,2)=dq(iSN,2)+v*vol_loc
-                dq(iSN,3)=dq(iSN,3)+w*vol_loc
-                u2Blast(iSN,1)=u2Blast(iSN,1)+u*u*vol_loc
-                u2Blast(iSN,2)=u2Blast(iSN,2)+v*v*vol_loc
-                u2Blast(iSN,3)=u2Blast(iSN,3)+w*w*vol_loc
+           ! Flag leaf cells
+           do i=1,ngrid
+              ok(i)=son(ind_cell(i))==0
+           end do
+
+           do i=1,ngrid
+              if(ok(i))then
+                 ! Get gas cell position
+                 x=(xg(ind_grid(i),1)+xc(ind,1)-skip_loc(1))*scale
+                 y=(xg(ind_grid(i),2)+xc(ind,2)-skip_loc(2))*scale
+                 z=(xg(ind_grid(i),3)+xc(ind,3)-skip_loc(3))*scale
+                 do iSN=1,nSN
+                    ! Check if the cell lies within the SN radius
+                    dxx=x-xSN(iSN,1)
+                    dyy=y-xSN(iSN,2)
+                    dzz=z-xSN(iSN,3)
+                    dr_SN=dxx**2+dyy**2+dzz**2
+                    dr_cell=MAX(ABS(dxx),ABS(dyy),ABS(dzz))
+                    if(dr_SN.lt.rmax2)then
+                       vol_gas(iSN)=vol_gas(iSN)+vol_loc
+                       ! Take account for grid effects on the conservation of the
+                       ! normalized linear momentum
+                       u=dxx/rmax
+                       v=dyy/rmax
+                       w=dzz/rmax
+                       ! Add the local normalized linear momentum to the total linear
+                       ! momentum of the blast wave (should be zero with no grid effect)
+                       dq(iSN,1)=dq(iSN,1)+u*vol_loc
+                       dq(iSN,2)=dq(iSN,2)+v*vol_loc
+                       dq(iSN,3)=dq(iSN,3)+w*vol_loc
+                       u2Blast(iSN,1)=u2Blast(iSN,1)+u*u*vol_loc
+                       u2Blast(iSN,2)=u2Blast(iSN,2)+v*v*vol_loc
+                       u2Blast(iSN,3)=u2Blast(iSN,3)+w*w*vol_loc
+                    endif
+                    if(dr_cell.le.dx_loc/2.0)then
+                       ind_blast(iSN)=ind_cell(i)
+                       ekBlast  (iSN)=vol_loc
+                    endif
+                 end do
               endif
-              if(dr_cell.le.dx_loc/2.0)then
-                ind_blast(iSN)=ind_cell(i)
-                ekBlast  (iSN)=vol_loc
-              endif
-            end do
-          endif
-        end do
+           end do
 
-      end do
-      ! End loop over cells
-    end do
-    ! End loop over grids
+        end do
+        ! End loop over cells
+     end do
+     ! End loop over grids
   end do
   ! End loop over levels
 
@@ -900,18 +1384,18 @@ subroutine average_SN(xSN,vol_gas,dq,ekBlast,ind_blast,nSN)
   ekBlast=ekBlast_all
 #endif
   do iSN=1,nSN
-    if(vol_gas(iSN)>0d0)then
-      dq(iSN,1)=dq(iSN,1)/vol_gas(iSN)
-      dq(iSN,2)=dq(iSN,2)/vol_gas(iSN)
-      dq(iSN,3)=dq(iSN,3)/vol_gas(iSN)
-      u2Blast(iSN,1)=u2Blast(iSN,1)/vol_gas(iSN)
-      u2Blast(iSN,2)=u2Blast(iSN,2)/vol_gas(iSN)
-      u2Blast(iSN,3)=u2Blast(iSN,3)/vol_gas(iSN)
-      u2=u2Blast(iSN,1)-dq(iSN,1)**2
-      v2=u2Blast(iSN,2)-dq(iSN,2)**2
-      w2=u2Blast(iSN,3)-dq(iSN,3)**2
-      ekBlast(iSN)=max(0.5d0*(u2+v2+w2),0.0d0)
-    endif
+     if(vol_gas(iSN)>0d0)then
+        dq(iSN,1)=dq(iSN,1)/vol_gas(iSN)
+        dq(iSN,2)=dq(iSN,2)/vol_gas(iSN)
+        dq(iSN,3)=dq(iSN,3)/vol_gas(iSN)
+        u2Blast(iSN,1)=u2Blast(iSN,1)/vol_gas(iSN)
+        u2Blast(iSN,2)=u2Blast(iSN,2)/vol_gas(iSN)
+        u2Blast(iSN,3)=u2Blast(iSN,3)/vol_gas(iSN)
+        u2=u2Blast(iSN,1)-dq(iSN,1)**2
+        v2=u2Blast(iSN,2)-dq(iSN,2)**2
+        w2=u2Blast(iSN,3)-dq(iSN,3)**2
+        ekBlast(iSN)=max(0.5d0*(u2+v2+w2),0.0d0)
+     endif
   end do
 
   if(verbose)write(*,*)'Exiting average_SN'
@@ -967,9 +1451,9 @@ subroutine Sedov_blast(xSN,vSN,mSN,sSN,ZSN,indSN,vol_gas,dq,ekBlast,nSN)
 
   ! Minimum star particle mass
   if(m_star < 0d0)then
-    mstar=n_star/(scale_nH*aexp**3)*vol_min
+     mstar=n_star/(scale_nH*aexp**3)*vol_min
   else
-    mstar=m_star*mass_sph
+     mstar=m_star*mass_sph
   endif
   msne_min=mass_sne_min*M_sun/(scale_d*scale_l**3)
   mstar_max=mass_star_max*M_sun/(scale_d*scale_l**3)
@@ -977,119 +1461,119 @@ subroutine Sedov_blast(xSN,vSN,mSN,sSN,ZSN,indSN,vol_gas,dq,ekBlast,nSN)
   ESN=(1d51/(10d0*M_sun))/scale_v**2
 
   do iSN=1,nSN
-    eta_sn2    = eta_sn
-    if(sf_imf)then
-      if(mSN(iSN).le.mstar_max)then
-        if(mSN(iSN).ge.msne_min) eta_sn2 = eta_ssn
-        if(mSN(iSN).lt.msne_min) eta_sn2 = 0
-      endif
-    endif
-    if(vol_gas(iSN)>0d0)then
-      d_gas(iSN)=mSN(iSN)/vol_gas(iSN)
-      if(metal)d_metal(iSN)=ZSN(iSN)*mSN(iSN)/vol_gas(iSN)
-      if(ekBlast(iSN)==0d0)then
-        p_gas(iSN)=eta_sn2*sSN(iSN)*ESN/vol_gas(iSN)
-        uSedov(iSN)=0d0
-      else
-        p_gas(iSN)=(1d0-f_ek)*eta_sn2*sSN(iSN)*ESN/vol_gas(iSN)
-        uSedov(iSN)=sqrt(f_ek*eta_sn2*sSN(iSN)*ESN/mSN(iSN)/ekBlast(iSN))
-      endif
-    else
-      d_gas(iSN)=mSN(iSN)/ekBlast(iSN)
-      p_gas(iSN)=eta_sn2*sSN(iSN)*ESN/ekBlast(iSN)
-      if(metal)d_metal(iSN)=ZSN(iSN)*mSN(iSN)/ekBlast(iSN)
-    endif
+     eta_sn2    = eta_sn
+     if(sf_imf)then
+        if(mSN(iSN).le.mstar_max)then
+           if(mSN(iSN).ge.msne_min) eta_sn2 = eta_ssn
+           if(mSN(iSN).lt.msne_min) eta_sn2 = 0
+        endif
+     endif
+     if(vol_gas(iSN)>0d0)then
+        d_gas(iSN)=mSN(iSN)/vol_gas(iSN)
+        if(metal)d_metal(iSN)=ZSN(iSN)*mSN(iSN)/vol_gas(iSN)
+        if(ekBlast(iSN)==0d0)then
+           p_gas(iSN)=eta_sn2*sSN(iSN)*ESN/vol_gas(iSN)
+           uSedov(iSN)=0d0
+        else
+           p_gas(iSN)=(1d0-f_ek)*eta_sn2*sSN(iSN)*ESN/vol_gas(iSN)
+           uSedov(iSN)=sqrt(f_ek*eta_sn2*sSN(iSN)*ESN/mSN(iSN)/ekBlast(iSN))
+        endif
+     else
+        d_gas(iSN)=mSN(iSN)/ekBlast(iSN)
+        p_gas(iSN)=eta_sn2*sSN(iSN)*ESN/ekBlast(iSN)
+        if(metal)d_metal(iSN)=ZSN(iSN)*mSN(iSN)/ekBlast(iSN)
+     endif
   end do
 
   ! Loop over levels
   do ilevel=levelmin,nlevelmax
-    ! Computing local volume (important for averaging hydro quantities)
-    dx=0.5D0**ilevel
-    dx_loc=dx*scale
-    vol_loc=dx_loc**ndim
-    ! Cells center position relative to grid center position
-    do ind=1,twotondim
-      iz=(ind-1)/4
-      iy=(ind-1-4*iz)/2
-      ix=(ind-1-2*iy-4*iz)
-      xc(ind,1)=(dble(ix)-0.5D0)*dx
-      xc(ind,2)=(dble(iy)-0.5D0)*dx
-      xc(ind,3)=(dble(iz)-0.5D0)*dx
-    end do
+     ! Computing local volume (important for averaging hydro quantities)
+     dx=0.5D0**ilevel
+     dx_loc=dx*scale
+     vol_loc=dx_loc**ndim
+     ! Cells center position relative to grid center position
+     do ind=1,twotondim
+        iz=(ind-1)/4
+        iy=(ind-1-4*iz)/2
+        ix=(ind-1-2*iy-4*iz)
+        xc(ind,1)=(dble(ix)-0.5D0)*dx
+        xc(ind,2)=(dble(iy)-0.5D0)*dx
+        xc(ind,3)=(dble(iz)-0.5D0)*dx
+     end do
 
-    ! Loop over grids
-    ncache=active(ilevel)%ngrid
-    do igrid=1,ncache,nvector
-      ngrid=MIN(nvector,ncache-igrid+1)
-      do i=1,ngrid
-        ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
-      end do
-
-      ! Loop over cells
-      do ind=1,twotondim
-        iskip=ncoarse+(ind-1)*ngridmax
+     ! Loop over grids
+     ncache=active(ilevel)%ngrid
+     do igrid=1,ncache,nvector
+        ngrid=MIN(nvector,ncache-igrid+1)
         do i=1,ngrid
-          ind_cell(i)=iskip+ind_grid(i)
+           ind_grid(i)=active(ilevel)%igrid(igrid+i-1)
         end do
 
-        ! Flag leaf cells
-        do i=1,ngrid
-          ok(i)=son(ind_cell(i))==0
-        end do
+        ! Loop over cells
+        do ind=1,twotondim
+           iskip=ncoarse+(ind-1)*ngridmax
+           do i=1,ngrid
+              ind_cell(i)=iskip+ind_grid(i)
+           end do
 
-        do i=1,ngrid
-          if(ok(i))then
-            ! Get gas cell position
-            x=(xg(ind_grid(i),1)+xc(ind,1)-skip_loc(1))*scale
-            y=(xg(ind_grid(i),2)+xc(ind,2)-skip_loc(2))*scale
-            z=(xg(ind_grid(i),3)+xc(ind,3)-skip_loc(3))*scale
-            do iSN=1,nSN
-              ! Check if the cell lies within the SN radius
-              dxx=x-xSN(iSN,1)
-              dyy=y-xSN(iSN,2)
-              dzz=z-xSN(iSN,3)
-              dr_SN=dxx**2+dyy**2+dzz**2
-              if(dr_SN.lt.rmax2)then
-                ! Compute the mass density in the cell
-                uold(ind_cell(i),1)=uold(ind_cell(i),1)+d_gas(iSN)
-                ! Compute the metal density in the cell
-                if(metal)uold(ind_cell(i),imetal)=uold(ind_cell(i),imetal)+d_metal(iSN)
-                ! Velocity at a given dr_SN linearly interpolated between zero and uSedov
-                u=uSedov(iSN)*(dxx/rmax-dq(iSN,1))+vSN(iSN,1)
-                v=uSedov(iSN)*(dyy/rmax-dq(iSN,2))+vSN(iSN,2)
-                w=uSedov(iSN)*(dzz/rmax-dq(iSN,3))+vSN(iSN,3)
-                ! Add each momentum component of the blast wave to the gas
-                uold(ind_cell(i),2)=uold(ind_cell(i),2)+d_gas(iSN)*u
-                uold(ind_cell(i),3)=uold(ind_cell(i),3)+d_gas(iSN)*v
-                uold(ind_cell(i),4)=uold(ind_cell(i),4)+d_gas(iSN)*w
-                ! Finally update the total energy of the gas
-                uold(ind_cell(i),5)=uold(ind_cell(i),5)+0.5d0*d_gas(iSN)*(u*u+v*v+w*w)+p_gas(iSN)
+           ! Flag leaf cells
+           do i=1,ngrid
+              ok(i)=son(ind_cell(i))==0
+           end do
+
+           do i=1,ngrid
+              if(ok(i))then
+                 ! Get gas cell position
+                 x=(xg(ind_grid(i),1)+xc(ind,1)-skip_loc(1))*scale
+                 y=(xg(ind_grid(i),2)+xc(ind,2)-skip_loc(2))*scale
+                 z=(xg(ind_grid(i),3)+xc(ind,3)-skip_loc(3))*scale
+                 do iSN=1,nSN
+                    ! Check if the cell lies within the SN radius
+                    dxx=x-xSN(iSN,1)
+                    dyy=y-xSN(iSN,2)
+                    dzz=z-xSN(iSN,3)
+                    dr_SN=dxx**2+dyy**2+dzz**2
+                    if(dr_SN.lt.rmax2)then
+                       ! Compute the mass density in the cell
+                       uold(ind_cell(i),1)=uold(ind_cell(i),1)+d_gas(iSN)
+                       ! Compute the metal density in the cell
+                       if(metal)uold(ind_cell(i),imetal)=uold(ind_cell(i),imetal)+d_metal(iSN)
+                       ! Velocity at a given dr_SN linearly interpolated between zero and uSedov
+                       u=uSedov(iSN)*(dxx/rmax-dq(iSN,1))+vSN(iSN,1)
+                       v=uSedov(iSN)*(dyy/rmax-dq(iSN,2))+vSN(iSN,2)
+                       w=uSedov(iSN)*(dzz/rmax-dq(iSN,3))+vSN(iSN,3)
+                       ! Add each momentum component of the blast wave to the gas
+                       uold(ind_cell(i),2)=uold(ind_cell(i),2)+d_gas(iSN)*u
+                       uold(ind_cell(i),3)=uold(ind_cell(i),3)+d_gas(iSN)*v
+                       uold(ind_cell(i),4)=uold(ind_cell(i),4)+d_gas(iSN)*w
+                       ! Finally update the total energy of the gas
+                       uold(ind_cell(i),5)=uold(ind_cell(i),5)+0.5d0*d_gas(iSN)*(u*u+v*v+w*w)+p_gas(iSN)
+                    endif
+                 end do
               endif
-            end do
-          endif
-        end do
+           end do
 
-      end do
-      ! End loop over cells
-    end do
-    ! End loop over grids
+        end do
+        ! End loop over cells
+     end do
+     ! End loop over grids
   end do
   ! End loop over levels
 
   do iSN=1,nSN
-    if(vol_gas(iSN)==0d0)then
-      u=vSN(iSN,1)
-      v=vSN(iSN,2)
-      w=vSN(iSN,3)
-      if(indSN(iSN)>0)then
-        uold(indSN(iSN),1)=uold(indSN(iSN),1)+d_gas(iSN)
-        uold(indSN(iSN),2)=uold(indSN(iSN),2)+d_gas(iSN)*u
-        uold(indSN(iSN),3)=uold(indSN(iSN),3)+d_gas(iSN)*v
-        uold(indSN(iSN),4)=uold(indSN(iSN),4)+d_gas(iSN)*w
-        uold(indSN(iSN),5)=uold(indSN(iSN),5)+d_gas(iSN)*0.5d0*(u*u+v*v+w*w)+p_gas(iSN)
-        if(metal)uold(indSN(iSN),imetal)=uold(indSN(iSN),imetal)+d_metal(iSN)
-      endif
-    endif
+     if(vol_gas(iSN)==0d0)then
+        u=vSN(iSN,1)
+        v=vSN(iSN,2)
+        w=vSN(iSN,3)
+        if(indSN(iSN)>0)then
+           uold(indSN(iSN),1)=uold(indSN(iSN),1)+d_gas(iSN)
+           uold(indSN(iSN),2)=uold(indSN(iSN),2)+d_gas(iSN)*u
+           uold(indSN(iSN),3)=uold(indSN(iSN),3)+d_gas(iSN)*v
+           uold(indSN(iSN),4)=uold(indSN(iSN),4)+d_gas(iSN)*w
+           uold(indSN(iSN),5)=uold(indSN(iSN),5)+d_gas(iSN)*0.5d0*(u*u+v*v+w*w)+p_gas(iSN)
+           if(metal)uold(indSN(iSN),imetal)=uold(indSN(iSN),imetal)+d_metal(iSN)
+        endif
+     endif
   end do
 
   if(verbose)write(*,*)'Exiting Sedov_blast'
@@ -1098,307 +1582,309 @@ end subroutine Sedov_blast
 !------------------------------------------------------------------------
 ! Added by Takashi Okamoto (2024/04/08)
 subroutine calculate_number_of_CC(t_age_Gyr, nSNe)
-  use chemical_yields
-  implicit none
-  real(dp), intent(in) :: t_age_Gyr
-  real(dp), intent(out) :: nSNe
-  real(dp) :: agemin, agebrk, f1, f2, f3
+   use chemical_yields
+   implicit none
+   real(dp), intent(in) :: t_age_Gyr
+   real(dp), intent(out) :: nSNe
+   real(dp) :: agemin, agebrk, f1, f2, f3
 
-  agemin=0.0037d0
-  agebrk=0.7d-2
-  f1=3.9d-4
-  f2=5.1d-4
-  f3=1.8d-4
-  nSNe = 0.0d0
+   agemin=0.0037d0
+   agebrk=0.7d-2
+   f1=3.9d-4
+   f2=5.1d-4
+   f3=1.8d-4
+   nSNe = 0.0d0
 
-  if (t_age_Gyr .lt. agemin) then
-    nSNe = 0.0d0
-  elseif (t_age_Gyr .le. agebrk) then
-    nSNe =f1*(t_age_Gyr/agemin)**(log(f2/f1)/log(agebrk/agemin))
-  elseif (t_age_Gyr .le. agemax) then
-    nSNe = f2*(t_age_Gyr/agebrk)**(log(f3/f2)/log(agemax/agebrk))
-  else
-    nSNe = 0
-  endif
-  nSNe = nSNe * 1.0d3 ! convert to per Myr from per Gyr
+   if (t_age_Gyr .lt. agemin) then
+      nSNe = 0.0d0
+   elseif (t_age_Gyr .le. agebrk) then
+      nSNe =f1*(t_age_Gyr/agemin)**(log(f2/f1)/log(agebrk/agemin))
+   elseif (t_age_Gyr .le. agemax) then
+      nSNe = f2*(t_age_Gyr/agebrk)**(log(f3/f2)/log(agemax/agebrk))
+   else
+      nSNe = 0
+   endif
+   nSNe = nSNe * 1.0d3 ! convert to per Myr from per Gyr
 end subroutine calculate_number_of_CC
 
 subroutine calculate_number_of_Ia(t_age_Gyr, nSNe)
-  use chemical_yields
-  implicit none
-  real(dp), intent(in) :: t_age_Gyr
-  real(dp), intent(out) :: nSNe
-  real(dp) :: t_Ia_min
-  t_Ia_min = agemax
-  nSNe = 0
-  if (t_age_Gyr .gt. t_Ia_min) then
-    nSNe = 0.0083d0*(t_age_Gyr/t_Ia_min)**(-1.1d0)
-  endif
+   use chemical_yields
+   implicit none
+   real(dp), intent(in) :: t_age_Gyr
+   real(dp), intent(out) :: nSNe
+   real(dp) :: t_Ia_min
+   t_Ia_min = agemax
+   nSNe = 0
+   if (t_age_Gyr .gt. t_Ia_min) then
+      nSNe = 0.0083d0*(t_age_Gyr/t_Ia_min)**(-1.1d0)
+   endif
 end subroutine calculate_number_of_Ia
 
 subroutine get_CC_yields(t_age_Gyr, yields, Msne)
-  use chemical_yields
-  implicit none
-  real(dp), intent(in) :: t_age_Gyr
-  real(dp), intent(out) :: yields(1:nelements), Msne
-  real(dp) :: tt, tmin, tbrk, tmax, Mmax, Mbrk, Mmin, t_myr
-  integer, parameter :: i_tvec = 5
-  integer :: i_t, k, i_y
-  real(dp) :: tvec(i_tvec) = (/3.7d0, 8.0d0, 18.0d0, 30.0d0, 44.d0/) ! time in Myr
-  real(dp), dimension(i_tvec,10) :: fvec = reshape( (/ &
-  ! He [IMF-mean y=3.67e-01]  [note have to remove normal solar correction and take care with winds]
-  & 4.61d-01, 3.30d-01, 3.58d-01, 3.65d-01, 3.59d-01, &
-  ! C  [IMF-mean y=3.08e-02]  [note care needed in fitting out winds: wind=6.5e-3, ejecta_only=1.0e-3]
-  & 2.37d-01, 8.57d-03, 1.69d-02, 9.33d-03, 4.47d-03, &
-  ! N  [IMF-mean y=4.47e-03]  [some care needed with winds, but not as essential]
-  & 1.07d-02, 3.48d-03, 3.44d-03, 3.72d-03, 3.50d-03, &
-  ! O  [IMF-mean y=7.26e-02]  [reasonable - generally IMF-integrated alpha-element total mass-yields lower vs fire-2 by factor ~0.7 or so]
-  & 9.53d-02, 1.02d-01, 9.85d-02, 1.73d-02, 8.20d-03, &
-  ! Ne [IMF-mean y=1.58e-02]  [roughly a hybrid of fit direct to ejecta and fit to all mass as above, truncating at highest masses]
-  & 2.60d-02, 2.20d-02, 1.93d-02, 2.70d-03, 2.75d-03, &
-  ! Mg [IMF-mean y=9.48e-03]  [fit directly on ejecta and ignore mass-fraction rescaling since that's not reliable at early times: this gives a reasonable number. important to note that early SNe dominate Mg here, quite strongly]
-  & 2.89d-02, 1.25d-02, 5.77d-03, 1.03d-03, 1.03d-03, &
-  ! Si [IMF-mean y=4.53e-03]  [lots comes from 1a's, so low here isn't an issue]
-  & 4.12d-04, 7.69d-03, 8.73d-03, 2.23d-03, 1.18d-03, &
-  ! S  [IMF-mean y=3.01e-03]  [more from Ia's]
-  & 3.63d-04, 5.61d-03, 5.49d-03, 1.26d-03, 5.75d-04, &
-  ! Ca [IMF-mean y=2.77e-04]  [Ia]
-  & 4.28d-05, 3.21d-04, 6.00d-04, 1.84d-04, 9.64d-05, &
-  ! Fe [IMF-mean y=4.11e-03]  [Ia]
-  & 5.46d-04, 2.18d-03, 1.08d-02, 4.57d-03, 1.83d-03  &
-  & /), (/5,10/) )
+   use chemical_yields
+   implicit none
+   real(dp), intent(in) :: t_age_Gyr
+   real(dp), intent(out) :: yields(1:nelements), Msne
+   real(dp) :: tt, tmin, tbrk, tmax, Mmax, Mbrk, Mmin, t_myr
+   integer, parameter :: i_tvec = 5
+   integer :: i_t, k, i_y
+   real(dp) :: tvec(i_tvec) = (/3.7d0, 8.0d0, 18.0d0, 30.0d0, 44.d0/) ! time in Myr
+   real(dp), dimension(i_tvec,10) :: fvec = reshape( (/ &
+      ! He [IMF-mean y=3.67e-01]  [note have to remove normal solar correction and take care with winds]
+      & 4.61d-01, 3.30d-01, 3.58d-01, 3.65d-01, 3.59d-01, &
+      ! C  [IMF-mean y=3.08e-02]  [note care needed in fitting out winds: wind=6.5e-3, ejecta_only=1.0e-3]
+      & 2.37d-01, 8.57d-03, 1.69d-02, 9.33d-03, 4.47d-03, &
+      ! N  [IMF-mean y=4.47e-03]  [some care needed with winds, but not as essential]
+      & 1.07d-02, 3.48d-03, 3.44d-03, 3.72d-03, 3.50d-03, &
+      ! O  [IMF-mean y=7.26e-02]  [reasonable - generally IMF-integrated alpha-element total mass-yields lower vs fire-2 by factor ~0.7 or so]
+      & 9.53d-02, 1.02d-01, 9.85d-02, 1.73d-02, 8.20d-03, &
+      ! Ne [IMF-mean y=1.58e-02]  [roughly a hybrid of fit direct to ejecta and fit to all mass as above, truncating at highest masses]
+      & 2.60d-02, 2.20d-02, 1.93d-02, 2.70d-03, 2.75d-03, &
+      ! Mg [IMF-mean y=9.48e-03]  [fit directly on ejecta and ignore mass-fraction rescaling since that's not reliable at early times: this gives a reasonable number. important to note that early SNe dominate Mg here, quite strongly]
+      & 2.89d-02, 1.25d-02, 5.77d-03, 1.03d-03, 1.03d-03, &
+      ! Si [IMF-mean y=4.53e-03]  [lots comes from 1a's, so low here isn't an issue]
+      & 4.12d-04, 7.69d-03, 8.73d-03, 2.23d-03, 1.18d-03, &
+      ! S  [IMF-mean y=3.01e-03]  [more from Ia's]
+      & 3.63d-04, 5.61d-03, 5.49d-03, 1.26d-03, 5.75d-04, &
+      ! Ca [IMF-mean y=2.77e-04]  [Ia]
+      & 4.28d-05, 3.21d-04, 6.00d-04, 1.84d-04, 9.64d-05, &
+      ! Fe [IMF-mean y=4.11e-03]  [Ia]
+      & 5.46d-04, 2.18d-03, 1.08d-02, 4.57d-03, 1.83d-03  &
+   & /), (/5,10/) )
 
-  tt = t_age_Gyr
-  tmin=0.0037d0
-  tbrk=0.0065d0
-  tmax=agemax
-  Mmax=35.d0
-  Mbrk=10.d0
-  Mmin=6.d0
-  yields = 0.0d0
-  Msne = 0.0d0
-  if (tt .lt. tmin) return
+   tt = t_age_Gyr
+   tmin=0.0037d0
+   tbrk=0.0065d0
+   tmax=agemax
+   Mmax=35.d0
+   Mbrk=10.d0
+   Mmin=6.d0
+   yields = 0.0d0
+   Msne = 0.0d0
+   if (tt .lt. tmin) return
 
-  if (tt .le. tbrk) then
-    Msne=Mmax*(tt/tmin)**(log(Mbrk/Mmax)/log(tbrk/tmin))
-  else
-    Msne=Mbrk*(tt/tbrk)**(log(Mmin/Mbrk)/log(tmax/tbrk))
-  endif
+   if (tt .le. tbrk) then
+      Msne=Mmax*(tt/tmin)**(log(Mbrk/Mmax)/log(tbrk/tmin))
+   else
+      Msne=Mbrk*(tt/tbrk)**(log(Mmin/Mbrk)/log(tmax/tbrk))
+   endif
 
-  t_myr = tt * 1000
-  i_t = 0
-  do k = 1, i_tvec
-    if (t_myr .gt. tvec(k)) then
-      i_t = k
-    endif
-  end do
+   t_myr = tt * 1000
+   i_t = 0
+   do k = 1, i_tvec
+      if (t_myr .gt. tvec(k)) then
+         i_t = k
+      endif
+   end do
 
-  do k = 1, 10
-    i_y = k + 1
-    if (i_t .lt. 1) then
-      yields(i_y) = fvec(1, k)
-    elseif (i_t .ge. i_tvec) then
-      yields(i_y) = fvec(i_tvec, k)
-    else
-      yields(i_y) = fvec(i_t, k) * (t_myr/tvec(i_t))**( &
-        log(fvec(i_t+1, k)/fvec(i_t, k))/log(tvec(i_t+1)/tvec(i_t)))
-    endif
-  end do
+   do k = 1, 10
+      i_y = k + 1
+      if (i_t .lt. 1) then
+         yields(i_y) = fvec(1, k)
+      elseif (i_t .ge. i_tvec) then
+         yields(i_y) = fvec(i_tvec, k)
+      else
+         yields(i_y) = fvec(i_t, k) * (t_myr/tvec(i_t))**( &
+         log(fvec(i_t+1, k)/fvec(i_t, k))/log(tvec(i_t+1)/tvec(i_t)))
+      endif
+   end do
 
-  yields(1) = 0.0d0
-  do k = 3, nelements
-    yields(1) = yields(1) + 1.0144 * yields(k)
-  end do
+   yields(1) = 0.0d0
+   do k = 3, nelements
+      yields(1) = yields(1) + 1.0144 * yields(k)
+   end do
 
-  do k = 1, nelements
-    yields(k) = min(1., max(0., yields(k)))
-  end do
-  yields = yields - solar_abundances
+   do k = 1, nelements
+      yields(k) = min(1., max(0., yields(k)))
+   end do
+   yields = yields - solar_abundances
 end subroutine get_CC_yields
 
 subroutine get_Ia_yields(yields, Msne)
-  use chemical_yields
-  implicit none
-  real(dp), intent(out) :: yields(1:nelements), Msne
+   use chemical_yields
+   implicit none
+   real(dp), intent(out) :: yields(1:nelements), Msne
 
-  yields(1)=1
-  yields(2)=0
-  yields(3)=1.76d-2
-  yields(4)=2.10d-06
-  yields(5)=7.36d-2
-  yields(6)=2.02d-3
-  yields(7)=6.21d-3
-  yields(8)=1.46d-1
-  yields(9)=7.62d-2
-  yields(10)=1.29d-2
-  yields(11)=5.58d-1
-  Msne = 1.4d0
+   yields(1)=1
+   yields(2)=0
+   yields(3)=1.76d-2
+   yields(4)=2.10d-06
+   yields(5)=7.36d-2
+   yields(6)=2.02d-3
+   yields(7)=6.21d-3
+   yields(8)=1.46d-1
+   yields(9)=7.62d-2
+   yields(10)=1.29d-2
+   yields(11)=5.58d-1
+   Msne = 1.4d0
 end subroutine get_Ia_yields
 
 subroutine get_wind_mass_loss_rate(t_age_Gyr, metallicities, mdot, v_ejecta)
-  ! v_ejecta is in km/s here
-  use chemical_yields
-  implicit none
-  real(dp), intent(in) :: t_age_Gyr
-  real(dp), intent(in) :: metallicities(1:nelements)
-  real(dp), intent(out) :: mdot, v_ejecta
-  integer :: k
-  real(dp) :: ZZ, f0, f1, f2, f3, t1, t2, t3, tt
-  real(dp) :: f_agb, t_agb, x_agb
-  ZZ = metallicities(1)/solar_abundances(1)
-  ZZ = min(max(ZZ, 0.01), 3.0)
-  f1 = 3.d0 * ZZ**0.87
-  f2 = 20.d0 * ZZ**0.45
-  f3 = 0.6d0 * ZZ
-  t1 = 0.0017d0
-  t2 = 0.004d0
-  t3 = 0.02d0
-  tt=t_age_Gyr ! fit parameters for 'massive star' mass-loss
+   ! v_ejecta is in km/s here
+   use chemical_yields
+   implicit none
+   real(dp), intent(in) :: t_age_Gyr
+   real(dp), intent(in) :: metallicities(1:nelements)
+   real(dp), intent(out) :: mdot, v_ejecta
+   integer :: k
+   real(dp) :: ZZ, f0, f1, f2, f3, t1, t2, t3, tt
+   real(dp) :: f_agb, t_agb, x_agb
+   ZZ = metallicities(1)/solar_abundances(1)
+   ZZ = min(max(ZZ, 0.01), 3.0)
+   f1 = 3.d0 * ZZ**0.87
+   f2 = 20.d0 * ZZ**0.45
+   f3 = 0.6d0 * ZZ
+   t1 = 0.0017d0
+   t2 = 0.004d0
+   t3 = 0.02d0
+   tt=t_age_Gyr ! fit parameters for 'massive star' mass-loss
 
-  if (tt .le. t1) then
-    mdot = f1
-  else if (tt .le. t2) then
-    mdot = f1 * (tt/t1)**(log(f2/f1)/log(t2/t1))
-  else if (tt .le. t3) then
-    mdot = f2 * (tt/t2)**(log(f3/f2)/log(t3/t2))
-  else
-    ! piecewise continuous function linking constant early and rapid late decay
-    mdot = f3*(tt/t3)**(-3.1d0)
-  endif
-  f_agb = 0.1
-  t_agb = 0.8
-  x_agb = t_agb/max(t, 1.e-4)
-  x_agb = x_agb * x_agb
-  mdot = mdot + f_agb * (x_agb**0.8) * (exp(-min(50.,x_agb*x_agb*x_agb)) &
-  & + 1./(100. + x_agb))
+   if (tt .le. t1) then
+      mdot = f1
+   else if (tt .le. t2) then
+      mdot = f1 * (tt/t1)**(log(f2/f1)/log(t2/t1))
+   else if (tt .le. t3) then
+      mdot = f2 * (tt/t2)**(log(f3/f2)/log(t3/t2))
+   else
+      ! piecewise continuous function linking constant early and rapid late decay
+      mdot = f3*(tt/t3)**(-3.1d0)
+   endif
+   f_agb = 0.1
+   t_agb = 0.8
+   ! AGB term: stellar age in Gyr (tt). It used to read the simulation time t (code units, from amr_commons
+   ! via chemical_yields), which suppressed the AGB mass loss by a factor 30-60 (2026-11-26).
+   x_agb = t_agb/max(tt, 1.d-4)
+   x_agb = x_agb * x_agb
+   mdot = mdot + f_agb * (x_agb**0.8) * (exp(-min(50.,x_agb*x_agb*x_agb)) &
+      & + 1./(100. + x_agb))
 
-  if (t_age_Gyr .lt. 0.033) then
-    mdot = mdot * (1.01)
-  endif
-  f0 = ZZ**0.12
-  v_ejecta = f0 * (3000./(1.+(t_age_Gyr/0.003)**2.5) &
-  & + 600./(1.+(sqrt(ZZ)*t_age_Gyr/0.05)**6. + (ZZ/0.2)**1.5) + 30.)
+   if (t_age_Gyr .lt. 0.033) then
+      mdot = mdot * (1.01)
+   endif
+   f0 = ZZ**0.12
+   v_ejecta = f0 * (3000./(1.+(t_age_Gyr/0.003)**2.5) &
+      & + 600./(1.+(sqrt(ZZ)*t_age_Gyr/0.05)**6. + (ZZ/0.2)**1.5) + 30.)
 end subroutine get_wind_mass_loss_rate
 
 subroutine get_wind_yields(t_age_Gyr, metallicities, yields)
-  use chemical_yields
-  implicit none
-  real(dp), intent(in) :: t_age_Gyr
-  real(dp), intent(in) :: metallicities(1:nelements)
-  real(dp), intent(out) :: yields(1:nelements)
+   use chemical_yields
+   implicit none
+   real(dp), intent(in) :: t_age_Gyr
+   real(dp), intent(in) :: metallicities(1:nelements)
+   real(dp), intent(out) :: yields(1:nelements)
 
-  real(dp) :: f_H_0, f_He_0, f_C_0, f_N_0, f_O_0, f_CNO_0, z_sol
-  real(dp) :: t1, t2, t3, t4, t5, y1, y2, y3, y4, y5, y
-  real(dp) :: frac_loss_from_C, floss_CO, floss_C, floss_O
-  real(dp) :: y_H_to_C, y_He_to_C
-  integer :: k
+   real(dp) :: f_H_0, f_He_0, f_C_0, f_N_0, f_O_0, f_CNO_0, z_sol
+   real(dp) :: t1, t2, t3, t4, t5, y1, y2, y3, y4, y5, y
+   real(dp) :: frac_loss_from_C, floss_CO, floss_C, floss_O
+   real(dp) :: y_H_to_C, y_He_to_C
+   integer :: k
 
-  yields = metallicities
-  f_H_0=1.-(yields(1)+yields(2))
-  f_He_0=yields(2)
-  f_C_0=yields(3)
-  f_N_0=yields(4)
-  f_O_0=yields(5)
-  f_CNO_0=f_C_0+f_N_0+f_O_0+1.d-56
-  z_sol = f_CNO_0 /(solar_abundances(3) + solar_abundances(4) + &
-  & solar_abundances(5))
+   yields = metallicities
+   f_H_0=1.-(yields(1)+yields(2))
+   f_He_0=yields(2)
+   f_C_0=yields(3)
+   f_N_0=yields(4)
+   f_O_0=yields(5)
+   f_CNO_0=f_C_0+f_N_0+f_O_0+1.d-56
+   z_sol = f_CNO_0 /(solar_abundances(3) + solar_abundances(4) + &
+      & solar_abundances(5))
 
-  t1=0.0028
-  t2=0.01
-  t3=2.3
-  t4=3.0
-  y1=0.4*min((z_sol+1.d-3)**0.6,2.)
-  y2=0.08
-  y3=0.07
-  y4=0.042
+   t1=0.0028
+   t2=0.01
+   t3=2.3
+   t4=3.0
+   y1=0.4*min((z_sol+1.d-3)**0.6,2.)
+   y2=0.08
+   y3=0.07
+   y4=0.042
 
-  if (t_age_Gyr .lt. t1) then
-    y = y1 * (t_age_Gyr/t1)**3.0
-  else if (t_age_Gyr .lt. t2) then
-    y = y1 * (t_age_Gyr/t1)**(log(y2/y1)/log(t2/t1))
-  else if (t_age_Gyr .lt. t3) then
-    y = y2 * (t_age_Gyr/t2)**(log(y3/y2)/log(t3/t2))
-  else if (t_age_Gyr .lt. t4) then
-    y = y3 * (t_age_Gyr/t3)**(log(y4/y3)/log(t4/t3))
-  else
-    y = y4
-  endif
+   if (t_age_Gyr .lt. t1) then
+      y = y1 * (t_age_Gyr/t1)**3.0
+   else if (t_age_Gyr .lt. t2) then
+      y = y1 * (t_age_Gyr/t1)**(log(y2/y1)/log(t2/t1))
+   else if (t_age_Gyr .lt. t3) then
+      y = y2 * (t_age_Gyr/t2)**(log(y3/y2)/log(t3/t2))
+   else if (t_age_Gyr .lt. t4) then
+      y = y3 * (t_age_Gyr/t3)**(log(y4/y3)/log(t4/t3))
+   else
+      y = y4
+   endif
 
-  yields(2) = f_He_0 + y * f_H_0
+   yields(2) = f_He_0 + y * f_H_0
 
-  ! model secondary N production in CNO cycle: scales off of initial
-  ! fraction of CNO: y here represents fraction of CO mass converted
-  ! to -additional- N
+   ! model secondary N production in CNO cycle: scales off of initial
+   ! fraction of CNO: y here represents fraction of CO mass converted
+   ! to -additional- N
 
-  t1=0.001
-  t2=0.0028
-  t3=0.05
-  t4=1.9
-  t5=14.0
-  y1=0.2*max(1.d-4,min(z_sol*z_sol,0.9))
-  y2=0.68*min((z_sol+1.e-3)**0.1,0.9)
-  y3=0.4
-  y4=0.23
-  y5=0.065
+   t1=0.001
+   t2=0.0028
+   t3=0.05
+   t4=1.9
+   t5=14.0
+   y1=0.2*max(1.d-4,min(z_sol*z_sol,0.9))
+   y2=0.68*min((z_sol+1.e-3)**0.1,0.9)
+   y3=0.4
+   y4=0.23
+   y5=0.065
 
-  if (t_age_Gyr .lt. t1) then
-    y = y1 * (t_age_Gyr/t1)**3.5
-  else if (t_age_Gyr .lt. t2) then
-    y = y1 * (t_age_Gyr/t1)**(log(y2/y1)/log(t2/t1))
-  else if (t_age_Gyr .lt. t3) then
-    y = y2 * (t_age_Gyr/t2)**(log(y3/y2)/log(t3/t2))
-  else if (t_age_Gyr .lt. t4) then
-    y = y3 * (t_age_Gyr/t3)**(log(y4/y3)/log(t4/t3))
-  else if (t_age_Gyr .lt. t5) then
-    y = y4 * (t_age_Gyr/t4)**(log(y5/y4)/log(t5/t4))
-  else
-    y = y5
-  end if
+   if (t_age_Gyr .lt. t1) then
+      y = y1 * (t_age_Gyr/t1)**3.5
+   else if (t_age_Gyr .lt. t2) then
+      y = y1 * (t_age_Gyr/t1)**(log(y2/y1)/log(t2/t1))
+   else if (t_age_Gyr .lt. t3) then
+      y = y2 * (t_age_Gyr/t2)**(log(y3/y2)/log(t3/t2))
+   else if (t_age_Gyr .lt. t4) then
+      y = y3 * (t_age_Gyr/t3)**(log(y4/y3)/log(t4/t3))
+   else if (t_age_Gyr .lt. t5) then
+      y = y4 * (t_age_Gyr/t4)**(log(y5/y4)/log(t5/t4))
+   else
+      y = y5
+   end if
 
-  y=max(0.,min(1.,y))
+   y=max(0.,min(1.,y))
 
-  ! [Z, He, C, N, O, Ne, Mg, Si, S, Ca, Fe]
-  ! [1,  2, 3, 4, 5,  6,  7,  8, 9, 10, 11]
-  frac_loss_from_C = 0.5
-  floss_CO = y * (f_C_0 + f_O_0)
-  floss_C = min(frac_loss_from_C * floss_CO, 0.99*f_C_0)
-  floss_O = floss_CO - floss_C
-  yields(4) = f_N_0 + floss_CO
-  yields(3) = f_C_0 - floss_C
-  yields(5) = f_O_0 - floss_O   ! convert mass from CO to N,
-  ! conserving exactly total CNO mass
+   ! [Z, He, C, N, O, Ne, Mg, Si, S, Ca, Fe]
+   ! [1,  2, 3, 4, 5,  6,  7,  8, 9, 10, 11]
+   frac_loss_from_C = 0.5
+   floss_CO = y * (f_C_0 + f_O_0)
+   floss_C = min(frac_loss_from_C * floss_CO, 0.99*f_C_0)
+   floss_O = floss_CO - floss_C
+   yields(4) = f_N_0 + floss_CO
+   yields(3) = f_C_0 - floss_C
+   yields(5) = f_O_0 - floss_O   ! convert mass from CO to N,
+                                 ! conserving exactly total CNO mass
 
-  ! model primary C production: scales off initial H+He, generally
-  ! small compared to loss fraction above in SB99, large in some
-  ! other models, very small for early OB winds
-  t1=0.005
-  t2=0.04
-  t3=10.
-  y1=1.d-6
-  y2=0.001
-  y3=0.005
-  if (t_age_Gyr .lt. t1) then
-    y = y1*(t_age_Gyr/t1)**3.0
-  else if (t_age_Gyr .lt. t2) then
-    y = y1*(t_age_Gyr/t1)**(log(y2/y1)/log(t2/t1))
-  else if (t_age_Gyr .lt. t3) then
-    y = y2*(t_age_Gyr/t2)**(log(y3/y2)/log(t3/t2))
-  else
-    y = y3
-  end if
+   ! model primary C production: scales off initial H+He, generally
+   ! small compared to loss fraction above in SB99, large in some
+   ! other models, very small for early OB winds
+   t1=0.005
+   t2=0.04
+   t3=10.
+   y1=1.d-6
+   y2=0.001
+   y3=0.005
+   if (t_age_Gyr .lt. t1) then
+      y = y1*(t_age_Gyr/t1)**3.0
+   else if (t_age_Gyr .lt. t2) then
+      y = y1*(t_age_Gyr/t1)**(log(y2/y1)/log(t2/t1))
+   else if (t_age_Gyr .lt. t3) then
+      y = y2*(t_age_Gyr/t2)**(log(y3/y2)/log(t3/t2))
+   else
+      y = y3
+   end if
 
-  y_H_to_C = (1.-(yields(1)+yields(2))) * y
-  y_He_to_C = f_He_0 * y;    ! simply multiple initial He by this factor
-  ! to get final production
-  yields(2) = yields(2) - y_He_to_C
-  yields(3) = yields(3) + y_H_to_C + y_He_to_C
+   y_H_to_C = (1.-(yields(1)+yields(2))) * y
+   y_He_to_C = f_He_0 * y;    ! simply multiple initial He by this factor
+                              ! to get final production
+   yields(2) = yields(2) - y_He_to_C
+   yields(3) = yields(3) + y_H_to_C + y_He_to_C
 
-  yields(1) = 0.0d0
-  do k = 3, nelements
-    yields(1) = yields(1) + yields(k)
-  end do
+   yields(1) = 0.0d0
+   do k = 3, nelements
+      yields(1) = yields(1) + yields(k)
+   end do
 
-  yields = yields - metallicities ! remove the initial abundances
+   yields = yields - metallicities ! remove the initial abundances
 end subroutine get_wind_yields
 
 !------------------------------------------------------------------------
@@ -1406,3 +1892,108 @@ end subroutine get_wind_yields
 !###########################################################
 !###########################################################
 !###########################################################
+!################################################################
+! FG feedback (merge_ks): Pop III remnant mass, metal yield and lifetime tables of ks feedbk
+! (Wise+2012 / Schaerer 2002; pop3_model 1/2: 80+40 Msun binary, 100 Msun remnant, 9 Msun metals, 4 Myr)
+!################################################################
+function cal_mrem(mprog)
+  use amr_parameters, only : pop3_model !KS ADDED
+  implicit none
+  real(kind=8)::cal_mrem
+  real(kind=8)::mprog
+  integer::i
+  real(kind=8),dimension(1:10)::wwmass,wwmrem
+  wwmass=(/ 11.d0 , 13.d0 , 15.d0 , 18.d0 , 20.d0 , 22.d0 , 25.d0 , 30.d0 , 35.d0 , 40.000001d0 /) ! progenitor mass
+  wwmrem=(/ 1.35 , 1.28 , 1.53 , 3.40 , 4.12 , 1.49 , 6.36 , 8.17 , 12.8 , 16.6 /) ! remnant mass
+
+  !if(mprog.ge.11.and.mprog.le.40)then
+  if(mprog.ge.11.and.mprog.le.40)then
+    do i=1,9
+      !if(mprog.ge.wwmass(i) .and. mprog.lt.wwmass(i+1))then
+      if(mprog.ge.wwmass(i) .and. mprog.le.wwmass(i+1))then
+        cal_mrem=(wwmrem(i+1)-wwmrem(i))/(wwmass(i+1)-wwmass(i))*(mprog-wwmass(i))+wwmrem(i)
+      endif
+    enddo
+  else if(mprog.ge.139.999999d0 .and. mprog.le.260.000001d0)then ! PISN
+    cal_mrem=0d0
+  else if (mprog .lt.11) then                                          ! implosion
+    cal_mrem=1.1
+  else
+    cal_mrem=mprog
+  endif
+
+  !specification of pop3_model (KS ADDED)
+  if (pop3_model == 1 .or. pop3_model == 2) then
+    cal_mrem = 1d2 !assume M_ejecta= 20 Msun of 40 Msun star SN in 80+40 Msun binary (100 Msun remained as BHs)
+  end if
+
+end function cal_mrem
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
+function cal_mmet(mprog)
+  use amr_parameters, only : pop3_model !KS ADDED
+  implicit none
+  real(kind=8)::cal_mmet
+  real(kind=8)::mprog,mHe
+  integer::i
+  if(mprog.ge.11.and.mprog.lt.20)then
+    cal_mmet=0.107+0.3383*(mprog-11.)
+  else if(mprog.ge.20.and.mprog.le.40.000001d0)then
+    cal_mmet=-2.7650+0.2974*mprog
+  else if(mprog.ge.139.999999d0.and.mprog.le.260.000001d0)then
+    cal_mmet=13./24.*(mprog-20.)
+  else
+    cal_mmet=0.
+  endif
+
+  !specification of pop3_model (KS ADDED)
+  if (pop3_model == 1 .or. pop3_model == 2) then
+    cal_mmet = 9d0 !assume M_metal= 9 Msun of 40 Msun star SN in 80+40 Msun binary
+  end if
+
+end function cal_mmet
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
+function cal_tpop3(mprog)
+  use amr_parameters, only : pop3_model !KS ADDED
+  implicit none
+  real(kind=8)::cal_tpop3
+  real(kind=8)::mprog
+  integer::i
+  real(kind=8),dimension(1:14)::mini,tlife ! Schaerer 2002 - Table 4 & 5
+  !(KS MEMO) no mass loss results for M < 60 Msun (Table 4) and stronng mass loss results for M > 80 Msun (Table 5)
+  mini =(/   5.0 ,   9.0 ,  15.0 ,  25.0 ,  40.0 ,   60.0 , 80.0 , &
+  &   100.0 , 150.0 , 200.0 , 220.0 , 300.0 , 500.0 , 1001.0 /) ! Msun
+  tlife=(/ 61.90 , 20.22 , 10.40 , 6.459 , 3.864 , 3.464 , 3.722 , &
+  &   3.392 , 2.947 , 2.628 , 2.624 , 2.152 , 2.450 , 2.430  /) ! Myr
+  cal_tpop3=tlife(1)
+
+  if(mprog.ge.5d0.and.mprog.le.1000.9999999d0)then
+    do i=1,13
+      if(mprog.gt.mini(i).and.mprog.le.mini(i+1))then
+        cal_tpop3=(tlife(i+1)-tlife(i))/(mini(i+1)-mini(i))*(mprog-mini(i))+tlife(i)
+      endif
+    enddo
+  else if (mprog .lt. 5) then
+    cal_tpop3 = tlife(1)
+  else
+    cal_tpop3 = tlife(14)
+  end if
+
+  !specification of pop3_model (KS ADDED)
+  if (pop3_model == 1 .or. pop3_model == 2) then
+    if (mprog < 3d2) then
+      cal_tpop3 = 4d0 !assume t_life = 4Myr for 80+40 Msun binary (use original value for 1000 Msun star)
+    end if
+  end if
+
+  ! !**************** KS DEBUG ******************!
+  ! print *, "*** WARNING *** cal_tpop3 is artificially reduced by facotor of 1/1000 for easy debugging"
+  ! cal_tpop3 = 1d-3*cal_tpop3
+  ! !**************** KS DEBUG ******************!
+
+end function cal_tpop3

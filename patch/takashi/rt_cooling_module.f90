@@ -6,6 +6,7 @@
 
 module rt_cooling_module
   use cooling_module,only:X, Y
+  use amr_parameters,only:fclump_H2dust
   use rt_parameters
   use coolrates_module
   use constants
@@ -15,7 +16,7 @@ module rt_cooling_module
 
   public rt_set_model, rt_solve_cooling, update_UVrates, cmp_chem_eq     &
     , getMu, is_mu_H2, X, Y, T2_min_fix                             &
-    , signc, sigec, PHrate, UVrates, rt_isIR, kappaAbs, kappaSc     &
+    , signc, sigec, PHrate, Eprim_avg, UVrates, rt_isIR, kappaAbs, kappaSc &
     , is_kIR_T, iIR, rt_isIRtrap, iIRtrapVar, rt_pressBoost         &
     , rt_isoPress, rt_T_rad, rt_vc, iPEH_group                     &
     , init_cloudy_metal_cooling, Zsol_cloudy_factor, rt_isIR_alt
@@ -63,6 +64,7 @@ module rt_cooling_module
 
   ! Cooling constants, updated on SED and c-change [cm3 s-1],[erg cm3 s-1]
   real(dp),dimension(nGroups,nIons)::signc,sigec,PHrate
+  real(dp),dimension(nGroups,nIons)::Eprim_avg   ! mean photo-electron energy [eV] per group and ion (sec_ion)
 
   real(dp),dimension(nIons, 2)::UVrates     !UV backgr. heating/ion. rates
   ! Takashi input for metal cooling from Cloudy
@@ -165,7 +167,7 @@ CONTAINS
     UVrates=0.
     if(.not. haardt_madau) RETURN
 
-    call inp_UV_rates_table(1./aexp - 1., UVrates, .true.)
+    call inp_UV_rates_table(1./aexp - 1., UVrates, .false.)  ! no damping near z_reion, as the cloudy table and inp_UV_groups_table
 
     !if(myid==1) then
     !   write(*,*) 'The UV rates have changed to:'
@@ -179,7 +181,7 @@ CONTAINS
 
 !XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
   SUBROUTINE rt_solve_cooling(T2, xion, Np, Fp, p_gas, dNpdt, dFpdt        &
-    ,nH, c_switch, Zsolar, dt, a_exp, nCell)
+    ,nH, c_switch, Zsolar, dt, a_exp, nCell, dx_SS)
 ! Semi-implicitly solve for new temperature, ionization states,
 ! photon density/flux, and gas velocity in a number of cells.
 ! Parameters:
@@ -209,7 +211,11 @@ CONTAINS
     real(dp),dimension(1:nvector):: nH, Zsolar
     logical,dimension(1:nvector):: c_switch
     real(dp)::dt, a_exp
-    integer::ncell !--------------------------------------------------------
+    integer::ncell
+    real(dp),optional::dx_SS   ! shielding length [cm] for the LW self-shielding (cell size); absent: no shielding
+    real(dp)::dx_SS_loc
+    logical::LW_on             ! LW self-shielding active in this call (docs/merge_ks.md 方針 3)
+    !--------------------------------------------------------------------------
     real(dp),dimension(1:nvector):: tLeft, ddt
     logical:: dt_ok
     real(dp)::dt_rec
@@ -218,6 +224,8 @@ CONTAINS
     real(dp),dimension(nGroups):: dNp
     real(dp),dimension(nGroups):: dNp_save !TO: to update photon number density and chemistry simulataneously
     real(dp),dimension(nGroups):: dNp_noabs !TO: to keep original photon number befor absorption
+    real(dp),dimension(nGroups):: phAbs_gas0, phAbs_gas1, attn_corr ! attn_new_abund: gas absorption before/after chemistry
+    real(dp),dimension(nIons):: nN1
     real(dp),dimension(1:ndim, 1:nGroups):: dFp
     real(dp),dimension(1:ndim, 1:nGroups):: dFp_save
     real(dp),dimension(1:ndim, 1:nGroups):: dFp_noabs
@@ -232,6 +240,7 @@ CONTAINS
     !------------------------------------------------
     ! print info at first call (KS ADDED)
     !------------------------------------------------
+!$omp critical(rt_cool_first)
     if (ifirst == 0) then
       if(myid==1)then
         write(*,'(A)') '##################################################################'
@@ -252,6 +261,7 @@ CONTAINS
       end if
       ifirst = 1
     end if
+!$omp end critical(rt_cool_first)
 
     ! Store some temporary variables reduce computations
     one_over_rt_c_cgs = 1d0 / rt_c_cgs
@@ -259,6 +269,10 @@ CONTAINS
     one_over_Fp_FRAC = 1d0 / Fp_FRAC
     one_over_T_FRAC = 1d0 / T_FRAC
     one_over_x_FRAC = 1d0 / x_FRAC
+    dx_SS_loc = 0d0
+    if(present(dx_SS)) dx_SS_loc = dx_SS
+    LW_on = trim(LW_ss_model).ne.'none' .and. LWgroup.ge.1 .and. LWgroup.le.nGroups &
+      & .and. isH2 .and. dx_SS_loc.gt.0d0
 #if NGROUPS>0
     if(rt .and. nGroups .gt. 0) then
       group_egy_erg(1:nGroups) = group_egy(1:nGroups) * eV2erg
@@ -308,9 +322,13 @@ CONTAINS
     ! Loop until all cells have tleft=0
     ! **********************************************
     nAct=nCell                                      ! Currently active cells
-    loopcnt=0 ; n_cool_cells=n_cool_cells+nCell     !             Statistics
+    loopcnt=0
+!$omp atomic update
+    n_cool_cells=n_cool_cells+nCell                 !             Statistics
     do while (nAct .gt. 0)      ! Iterate while there are still active cells
-      loopcnt=loopcnt+1   ;   tot_cool_loopcnt=tot_cool_loopcnt+nAct
+      loopcnt=loopcnt+1
+!$omp atomic update
+      tot_cool_loopcnt=tot_cool_loopcnt+nAct
       nAct_next=0                     ! Active cells for the next iteration
       do ia=1,nAct                             ! Loop over the active cells
         i = indAct(ia)                        !                 Cell index
@@ -324,6 +342,7 @@ CONTAINS
         if(.not. dt_ok) then
           ddt(i)=ddt(i)/2.                    ! Try again with smaller dt
           nAct_next=nAct_next+1 ; indAct(nAct_next) = i
+!$omp atomic update
           loopCodes(code) = loopCodes(code)+1
           cycle
         endif
@@ -348,6 +367,7 @@ CONTAINS
       nAct=nAct_next
     end do ! end iterative loop
     ! loop statistics
+!$omp atomic update
     max_cool_loopcnt=max(max_cool_loopcnt,loopcnt)
   contains
 
@@ -384,23 +404,41 @@ CONTAINS
       use const
       implicit none
       integer, intent(in)::icell
-      real(dp),dimension(nDim),save:: dmom
-      real(dp),dimension(nIons),save:: alpha, beta, nN, nI
-      real(dp),save:: dUU, fracMax, x_tot
-      real(dp),save:: mu, TK, nHe, ne, neInit, Hrate
-      real(dp),save:: f_ne_H, f_ne_He   ! |dx| -> |dne|/ne conversion (TO ADDED)
-      real(dp):: xHI,dxHI, xH2=0d0,dXH2=0d0, xHeI,dxHeI
-      real(dp),save:: Crate, dCdT2, X_nHkb, rate, dRate, cr, de=0d0
-      real(dp),save:: photoRate, metal_tot, metal_prime, ss_factor, f_dust
-      real(dp), save:: metal_cool_tot, metal_cool_prime, metal_heat_tot &
+      real(dp),dimension(nDim):: dmom
+      real(dp),dimension(nIons):: alpha, beta, nN, nI
+      real(dp):: dUU, fracMax, x_tot
+      real(dp):: mu, TK, nHe, ne, neInit, Hrate
+      real(dp):: f_ne_H, f_ne_He   ! |dx| -> |dne|/ne conversion (TO ADDED)
+      real(dp):: xHI,dxHI, xH2,dXH2, xHeI,dxHeI
+      real(dp):: Crate, dCdT2, X_nHkb, rate, dRate, cr, de
+      real(dp):: photoRate, metal_tot, metal_prime, ss_factor, f_dust
+      real(dp):: metal_cool_tot, metal_cool_prime, metal_heat_tot &
         , metal_heat_prime
-      integer,save:: iion,igroup,idim
-      real(dp),dimension(nGroups),save:: recRad, phAbs, phSc, dustAbs
-      real(dp),dimension(nGroups),save:: dustSc, kAbs_loc,kSc_loc
-      real(dp),save:: rho, TR, one_over_C_v, E_rad, dE_T, fluxMag, mom_fact
-      real(dp),save:: G0, eff_peh, cdex, ncr
+      integer:: iion,igroup,idim
+      real(dp),dimension(nGroups):: recRad, phAbs, phSc, dustAbs
+      real(dp),dimension(nGroups):: dustSc, kAbs_loc,kSc_loc
+      real(dp):: rho, TR, one_over_C_v, E_rad, dE_T, fluxMag, mom_fact
+      real(dp):: S_dust, T_lo, T_hi, T_new, kT, gT, dgT, dNp_IRadd   ! dust temperature balance, net IR change (TO ADDED 2026-11-24)
+      integer:: itTR
+      real(dp):: G0, eff_peh, cdex, ncr
       logical::newAtomicCons=.true.
+      real(dp):: f_shd, xH2_tmp, de_thin          ! LW self-shielding (ks)
+      real(dp):: xe                               ! electron fraction per H (isH2Katz)
+      real(dp):: nHeI_k, xHeI_k                   ! He I for comp_Beta_H2coll (0 without He)
+      real(dp):: secion_xe, Eh_HI, Eh_HeI, PhiHI_HI, PhiHI_HeI, PhiHeI_HI, PhiHeI_HeI ! sec_ion
+      logical:: H2chem_hot                        ! isH2Katz: T >= T_H2chem_max, H2 chemistry skipped
+      real(dp),dimension(nGroups):: fshg          ! per-group factor on the H2 dissociation cross-section
       !---------------------------------------------------------------------
+      ! were save locals (static storage, i.e. zero when never assigned):
+      ! zero the ones that are only assigned when their physics is on
+      xH2=0d0; dXH2=0d0; de=0d0; dmom=0d0
+      metal_tot=0d0; metal_prime=0d0; metal_cool_tot=0d0; metal_cool_prime=0d0
+      metal_heat_tot=0d0; metal_heat_prime=0d0; ss_factor=0d0; f_dust=0d0
+      recRad=0d0; phAbs=0d0; phSc=0d0; dustAbs=0d0; dustSc=0d0; kAbs_loc=0d0; kSc_loc=0d0
+      rho=0d0; TR=0d0; one_over_C_v=0d0; E_rad=0d0; dE_T=0d0; fluxMag=0d0; mom_fact=0d0
+      G0=0d0; eff_peh=0d0; cdex=0d0; ncr=0d0; photoRate=0d0; Hrate=0d0; cr=0d0
+      f_shd=1d0; fshg=1d0; xH2_tmp=0d0; de_thin=0d0; xe=0d0; H2chem_hot=.false.
+      secion_xe=0d0; Eh_HI=0d0; Eh_HeI=0d0; PhiHI_HI=0d0; PhiHI_HeI=0d0; PhiHeI_HI=0d0; PhiHeI_HeI=0d0
       dt_ok=.false.
       nHe=0.25*nH(icell)*Y/X  !         Helium number density
       ! U contains the original values, dU the updated ones:
@@ -444,6 +482,14 @@ CONTAINS
       else if (self_shielding .and. cloudy_metal_cooling) then
         ss_factor = ss_factor_rahmati(nH(icell), 1.d0/aexp - 1.d0)
       end if
+      ! LW self-shielding factor of the H2 photodissociation (ported from
+      ! patch/ks): dust x H2 self-shielding from the column over dx_SS with the
+      ! current xH2. Applied to the dissociation rate, the LW pumping heating
+      ! and (LW_abs_thin=.false.) the LW photon absorption of group LWgroup.
+      if(LW_on) then
+        f_shd = LW_shield_factor(nN(ixHII), nN(ixHI), nH(icell), TK, Zsolar(icell), dx_SS_loc)
+        fshg(LWgroup) = f_shd
+      endif
 
       rho = nH(icell) / X * mH
 #if NGROUPS>0
@@ -454,15 +500,50 @@ CONTAINS
         if(is_kIR_T) then                           ! k_IR depends on T_rad
           ! For the radiation temperature,  weigh the energy in each group
           ! by its opacity over IR opacity (derived from IR temperature)
+          ! TO MODIFIED 2026-11-24: radiation (dust) temperature from the balance between the dust emission
+          ! and the absorption of all groups, with the IR opacity at that same temperature:
+          !   a T^4 kIR(T) = c_frac ( E_IR kIR(T) + sum_{i/=IR} k_i E_i ),  kIR(T) = kappaAbs(iIR) (T/10)^2 exp(-T/1e3)
+          ! The upstream one-step estimate (kIR at the temperature of the IR group alone, then
+          ! E_rad = E_IR + sum k_i/kIR E_i) is replaced: where the IR is not trapped (UV / optical heating
+          ! dominates) that kIR is too small and TR came out too high (production DICE run: median 10 K instead
+          ! of 4 K, kIR about 6 times too large). Where E_IR dominates the two agree.
+          ! g(T) = a T^4 - c_frac (E_IR + S/kIR(T)) increases with T up to 2000 K (maximum of kIR): safeguarded
+          ! Newton from the lower bound max(T_IR, UV-dominated solution without the exponential), which is the
+          ! root itself when T << 1000 K and E_IR is negligible (usually 2 evaluations). Without a root below
+          ! 2000 K (dust cannot balance the heating) the one-step form with kIR(2000 K) is used.
           E_rad = group_egy_erg(iIR) * dNp(iIR)
-          TR = max(0d0,(E_rad*rt_c_fraction/a_r)**0.25)   ! IR temperature
-          kAbs_loc(iIR) = kappaAbs(iIR) * (TR/10d0)**2
+          S_dust = 0d0
           do iGroup=1,nGroups
-            if(iGroup .ne. iIR)                                         &
-              E_rad = E_rad + kAbs_loc(iGroup) / kAbs_loc(iIR)       &
-              * group_egy_erg(iGroup) * dNp(iGroup)
+            if(iGroup .ne. iIR) S_dust = S_dust + kAbs_loc(iGroup) * group_egy_erg(iGroup) * dNp(iGroup)
           end do
-          TR = max(0d0,(E_rad*rt_c_fraction/a_r)**0.25) ! Rad. temperature
+          TR = max(0d0,(E_rad*rt_c_fraction/a_r)**0.25)   ! IR temperature
+          if(S_dust .gt. 0d0 .and. kappaAbs(iIR) .gt. 0d0) then
+            T_lo = max(TR, (1d2*rt_c_fraction*S_dust/(kappaAbs(iIR)*a_r))**(1d0/6d0))
+            T_hi = 2d3
+            kT = kappaAbs(iIR) * (T_hi/10d0)**2 * exp(-T_hi/1d3)
+            if(T_lo .ge. T_hi .or. a_r*T_hi**4 - rt_c_fraction*(E_rad + S_dust/kT) .le. 0d0) then
+              TR = max(T_lo, (rt_c_fraction*(E_rad + S_dust/kT)/a_r)**0.25)
+            else
+              TR = T_lo
+              do itTR=1,60
+                kT  = kappaAbs(iIR) * (TR/10d0)**2 * exp(-TR/1d3)
+                gT  = a_r*TR**4 - rt_c_fraction*(E_rad + S_dust/kT)
+                dgT = 4d0*a_r*TR**3 + rt_c_fraction*S_dust/kT*(2d0/TR - 1d-3)
+                if(gT .lt. 0d0) then
+                  T_lo = TR
+                else
+                  T_hi = TR
+                endif
+                T_new = TR - gT/dgT
+                if(.not.(T_new .gt. T_lo .and. T_new .lt. T_hi)) T_new = 0.5d0*(T_lo+T_hi)
+                if(abs(T_new-TR) .le. 1d-6*TR) then
+                  TR = T_new
+                  exit
+                endif
+                TR = T_new
+              end do
+            endif
+          endif
           if(rt_T_rad) then ! Use radiation temperature for everything
             dT2 = TR/mu ;   TK = TR
           endif
@@ -509,6 +590,12 @@ CONTAINS
           do igroup=1,nGroups      ! -------------------Ionization absorbtion
             phAbs(igroup) = SUM(nN(:)*signc(igroup,:)*ssh2(igroup)) ! s-1
           end do
+          if(LW_on) then   ! LW group: shielded H2 absorption (LW_abs_thin=.false.), absorption by HI
+            if(.not.LW_abs_thin) phAbs(LWgroup) = phAbs(LWgroup)             &
+              - nN(ixHI)*signc(LWgroup,ixHI)*ssh2(LWgroup)*(1d0-f_shd)
+            if(LW_abs_atom) phAbs(LWgroup) = phAbs(LWgroup) + nN(ixHII)*5.23d-25*rt_c_cgs
+          endif
+          phAbs_gas0 = phAbs   ! gas absorption with the abundances before the chemistry update (attn_new_abund)
           ! IR, optical and UV depletion by dust absorption: ----------------
           phSc(iIR)  = phSc(iIR) + dustSc(iIR)
           do igroup=1,nGroups        ! Deplete photons, since they go into IR
@@ -532,15 +619,57 @@ CONTAINS
             ! Note: as this absorption is done separately, kappaAbs
             !       should not include PEH absorption when PEH is included.
             ! from Bakes and Tielens 1994 and Wolfire 2003
-            G0  = group_egy_erg(iPEH_group)                                &
-              * dNp(iPEH_group) * rt_c_cgs / 1.6d-3
+            if(PEH_all_FUV) then
+              ! G0 from every FUV group (5.4 < egy <= 13.6 eV, incl. the LW band)
+              G0 = 0d0
+              do igroup=1,nGroups
+                if(group_egy(igroup).gt.5.4d0 .and. group_egy(igroup).le.13.6d0) &
+                  G0 = G0 + group_egy_erg(igroup) * dNp(igroup) * rt_c_cgs / 1.6d-3
+              end do
+            else
+              G0  = group_egy_erg(iPEH_group)                              &
+                * dNp(iPEH_group) * rt_c_cgs / 1.6d-3
+            endif
             eff_peh = 4.87d-2                                              &
               / (1d0 + 4d-3 * (G0*sqrt(TK)/ne*2.)**0.73)      &
               + 3.65d-2 * (TK/1d4)**0.7                       &
               / (1d0 + 2d-4 * (G0 * sqrt(TK) / ne*2. ))
-            phAbs(iPEH_group) = phAbs(iPEH_group)                          &
-              + 8.125d-22 * eff_peh * rt_c_cgs * nH(icell) &
-              * Zsolar(icell) * f_dust
+            if(PEH_all_FUV) then
+              ! the same absorption rate per photon in every FUV group
+              do igroup=1,nGroups
+                if(group_egy(igroup).gt.5.4d0 .and. group_egy(igroup).le.13.6d0) &
+                  phAbs(igroup) = phAbs(igroup)                              &
+                  + 8.125d-22 * eff_peh * rt_c_cgs * nH(icell)              &
+                  * Zsolar(icell) * f_dust
+              end do
+            else
+              phAbs(iPEH_group) = phAbs(iPEH_group)                        &
+                + 8.125d-22 * eff_peh * rt_c_cgs * nH(icell) &
+                * Zsolar(icell) * f_dust
+            endif
+          endif
+
+          ! TO MODIFIED 2026-11-24: with rt_isIR_alt the IR absorbed by dust is re-emitted in the same step and
+          ! the dust-absorbed UV / optical energy is moved to IR. dNp_IRadd is that amount [IR photons cm-3]:
+          !   sum_i dustAbs(i) ddt N_new(i) E_i/E_IR  (i = all groups, the IR group itself = re-emission),
+          ! with N_new the photon density after the implicit update below (same expression). The implicit update
+          ! N_new = (N + ddt S)/(1 + ddt phAbs) removes ddt phAbs N_new, of which ddt dustAbs N_new goes to dust,
+          ! so gas and dust share the absorbed photons in proportion to their rates and the IR group is
+          ! conserved exactly under absorption + re-emission. Formerly the density BEFORE absorption (dNp_noabs)
+          ! was used: photons absorbed by the gas were also counted as absorbed by dust (ionising photons in
+          ! neutral gas: up to ddt*dustAbs of their energy went to IR in addition to the ionisation), and the
+          ! re-emitted IR exceeded the absorbed IR by a factor 1 + ddt*phAbs.
+          ! dNp_IRadd is also used in the subcycle test of the IR group (net change; the test was made on the
+          ! absorption alone before).
+          dNp_IRadd = 0d0
+          if(rt_isIR_alt) then
+            do igroup=1,nGroups
+              dNp_IRadd = dNp_IRadd + dustAbs(igroup) * ddt(icell)               &
+                * MAX(smallNp,                                                   &
+                (ddt(icell)*(recRad(igroup)+dNpdt(igroup,icell))                 &
+                +dNp_save(igroup))                                               &
+                / (1d0+ddt(icell)*phAbs(igroup))) * group_egy_ratio(igroup)
+            end do
           endif
 
           dmom(1:nDim)=0d0
@@ -551,6 +680,9 @@ CONTAINS
               / (1d0+ddt(icell)*phAbs(igroup)))
 
             dUU = ABS(dNp_save(igroup)-Np(igroup,icell))                        &
+              /(Np(igroup,icell)+Np_MIN) * one_over_Np_FRAC
+            if(igroup .eq. iIR .and. rt_isIR_alt)                               &
+              dUU = ABS(dNp_save(igroup)+dNp_IRadd-Np(igroup,icell))            &
               /(Np(igroup,icell)+Np_MIN) * one_over_Np_FRAC
             if(.not.rt_skip_convergence) then
               if(.not. (dUU .le. 1d0)) then
@@ -610,14 +742,9 @@ CONTAINS
           dp_gas = dp_gas + dmom * rt_pressBoost        ! update gas momentum
 
           ! Add absorbed UV/optical energy to IR:----------------------------
-          if(rt_isIR_alt) then
-            do igroup=iIR+1,nGroups
-              dNp_save(iIR) = dNp_save(iIR) + dustAbs(igroup) * ddt(icell)          &
-                * dNp_noabs(igroup) * group_egy_ratio(igroup)
-            end do
-            dNp_save(iIR) = dNp_save(iIR) + dustAbs(iIR) * ddt(icell)          &
-              * dNp_noabs(iIR) ! dust re-emission
-          endif
+          ! TO MODIFIED 2026-11-24: dNp_IRadd (computed above from the photon densities after absorption)
+          ! = dust-absorbed UV / optical energy + dust re-emission of the absorbed IR
+          if(rt_isIR_alt) dNp_save(iIR) = dNp_save(iIR) + dNp_IRadd
           ! -----------------------------------------------------------------
 
         else !=========================== default mode =======================
@@ -645,6 +772,11 @@ CONTAINS
           do igroup=1,nGroups      ! -------------------Ionization absorbtion
             phAbs(igroup) = SUM(nN(:)*signc(igroup,:)*ssh2(igroup)) ! s-1
           end do
+          if(LW_on) then   ! LW group: shielded H2 absorption (LW_abs_thin=.false.), absorption by HI
+            if(.not.LW_abs_thin) phAbs(LWgroup) = phAbs(LWgroup)             &
+              - nN(ixHI)*signc(LWgroup,ixHI)*ssh2(LWgroup)*(1d0-f_shd)
+            if(LW_abs_atom) phAbs(LWgroup) = phAbs(LWgroup) + nN(ixHII)*5.23d-25*rt_c_cgs
+          endif
           ! IR, optical and UV depletion by dust absorption: ----------------
           if(rt_isIR) & !IR scattering/abs on dust (abs after T update)
             phSc(iIR)  = phSc(iIR) + dustSc(iIR)
@@ -659,15 +791,34 @@ CONTAINS
             ! Note: as this absorption is done separately, kappaAbs
             !       should not include PEH absorption when PEH is included.
             ! from Bakes and Tielens 1994 and Wolfire 2003
-            G0  = group_egy_erg(iPEH_group)                                &
-              * dNp(iPEH_group) * rt_c_cgs / 1.6d-3
+            if(PEH_all_FUV) then
+              ! G0 from every FUV group (5.4 < egy <= 13.6 eV, incl. the LW band)
+              G0 = 0d0
+              do igroup=1,nGroups
+                if(group_egy(igroup).gt.5.4d0 .and. group_egy(igroup).le.13.6d0) &
+                  G0 = G0 + group_egy_erg(igroup) * dNp(igroup) * rt_c_cgs / 1.6d-3
+              end do
+            else
+              G0  = group_egy_erg(iPEH_group)                              &
+                * dNp(iPEH_group) * rt_c_cgs / 1.6d-3
+            endif
             eff_peh = 4.87d-2                                              &
               / (1d0 + 4d-3 * (G0*sqrt(TK)/ne*2.)**0.73)      &
               + 3.65d-2 * (TK/1d4)**0.7                       &
               / (1d0 + 2d-4 * (G0 * sqrt(TK) / ne*2. ))
-            phAbs(iPEH_group) = phAbs(iPEH_group)                          &
-              + 8.125d-22 * eff_peh * rt_c_cgs * nH(icell) &
-              * Zsolar(icell) * f_dust
+            if(PEH_all_FUV) then
+              ! the same absorption rate per photon in every FUV group
+              do igroup=1,nGroups
+                if(group_egy(igroup).gt.5.4d0 .and. group_egy(igroup).le.13.6d0) &
+                  phAbs(igroup) = phAbs(igroup)                              &
+                  + 8.125d-22 * eff_peh * rt_c_cgs * nH(icell)              &
+                  * Zsolar(icell) * f_dust
+              end do
+            else
+              phAbs(iPEH_group) = phAbs(iPEH_group)                        &
+                + 8.125d-22 * eff_peh * rt_c_cgs * nH(icell) &
+                * Zsolar(icell) * f_dust
+            endif
           endif
 
           dmom(1:nDim)=0d0
@@ -739,9 +890,29 @@ CONTAINS
       if(c_switch(icell) .and. cooling .and. .not. rt_T_rad) then
         Hrate=0.                             !  Heating rate [erg cm-3 s-1]
         if(rt .and. rt_advect) then
-          do igroup=1,nGroups                              !  Photoheating
-            Hrate = Hrate + dNp(igroup) * SUM(nN(:) * PHrate(igroup,:))
-          end do
+          if(sec_ion) then
+            ! Photoheating with the fraction of the photo-electron energy that
+            ! goes into heat (Ricotti+2002); the rest ionises and excites.
+            ! HI and HeI photo-electrons only; H2 and HeII keep PHrate.
+            secion_xe = min(ne/(nH(icell)+nHe),1d0)   ! n_e/(n_H+n_He), <= 1
+            do igroup=1,nGroups
+              do iion=1,nIons          ! H2, HeII (and anything else) keep PHrate
+                if(iion==ixHII) cycle
+                if(isHe .and. iion==ixHeII) cycle
+                Hrate = Hrate + dNp(igroup) * nN(iion) * PHrate(igroup,iion)
+              end do
+              Eh_HI = secion_heat(Eprim_avg(igroup,ixHII), secion_xe)
+              Hrate = Hrate + dNp(igroup) * nN(ixHII) * signc(igroup,ixHII) * Eh_HI * eV2erg
+              if(isHe) then
+                Eh_HeI = secion_heat(Eprim_avg(igroup,ixHeII), secion_xe)
+                Hrate = Hrate + dNp(igroup) * nN(ixHeII) * signc(igroup,ixHeII) * Eh_HeI * eV2erg
+              endif
+            end do
+          else
+            do igroup=1,nGroups                              !  Photoheating
+              Hrate = Hrate + dNp(igroup) * SUM(nN(:) * PHrate(igroup,:))
+            end do
+          endif
         endif
         if(haardt_madau) Hrate= Hrate + SUM(nN(:)*UVrates(:,2)) * ss_factor
         if(iPEH_group .gt. 0 .and. rt_advect) then
@@ -755,8 +926,13 @@ CONTAINS
           cdex  = 1d-12 * (1.4 * exp(-18100. / (TK + 1200.)) * xH2       &
             + exp(-1000. / TK) * dxion(ixHI))                        &
             * sqrt(TK) * nH(icell) ![s-1]
-          Hrate = Hrate + 6.94 * SUM(dNp(:) * signc(:,ixHI) * isLW(:))   &
-            * 2. * eV2erg * cdex / (cdex + 2d-7) * nH(icell) * xH2
+          if(LW_on) then   ! LW pumping from the shielded dissociation rate
+            Hrate = Hrate + 6.94 * SUM(dNp(:) * signc(:,ixHI) * isLW(:) * fshg(:)) &
+              * 2. * eV2erg * cdex / (cdex + 2d-7) * nH(icell) * xH2
+          else
+            Hrate = Hrate + 6.94 * SUM(dNp(:) * signc(:,ixHI) * isLW(:))   &
+              * 2. * eV2erg * cdex / (cdex + 2d-7) * nH(icell) * xH2
+          endif
           !H2 formation heating, Omukai 2000
           ! and Hollenbach and McKee 1976, [erg cm-3 s-1]
           ncr   = 1d6 * TK**(-0.5)                                       &
@@ -783,7 +959,7 @@ CONTAINS
           if (isHe) Hrate = Hrate + 10. * eV2erg                      &
             * nHe * xHeI * 1.1 * cosray_HI
         endif
-        Crate = compCoolrate(TK,ne,nN,nI,dCdT2)       ! Cooling
+        Crate = compCoolrate(TK,ne,nH(icell),mu,nN,nI,dCdT2)   ! Cooling
         dCdT2 = dCdT2 * mu                            ! dC/dT2 = mu * dC/dT
         metal_tot=0d0 ; metal_prime=0d0             ! Metal cooling
         if (cloudy_metal_cooling) then
@@ -867,17 +1043,57 @@ CONTAINS
       ! Update xH2**********************************************************
       dxH2=xH2
       if(isH2) then
-        alpha(ixHI) = inp_coolrates_table(tbl_AlphaZ_H2, TK,.false.)      &
-          * Zsolar(icell) * f_dust * nH(icell)                  &
-          + inp_coolrates_table(tbl_AlphaGP_H2,TK,.false.) * ne &
-          + inp_coolrates_table(tbl_Beta_H3B,TK,.false.)        &
-          * nH(icell)**2 * dxion(ixHI) * (dxion(ixHI) + xH2/ 8.)
-        beta(ixHI)  = inp_coolrates_table(tbl_Beta_H2HI, TK,.false.)      &
-          * dxion(ixHI)                                         &
-          + inp_coolrates_table(tbl_Beta_H2H2, TK,.false.) * xH2
+        if(isH2Katz) then
+          ! ks/Katz+2017 H2 chemistry (docs/merge_ks.md). Above T_H2chem_max the
+          ! rates are the cheap high-T limits and photodissociation is skipped
+          ! (H2 is destroyed by collisions far faster there).
+          H2chem_hot = (TK .ge. T_H2chem_max)
+          xe = ne/nH(icell)
+          if(H2chem_hot) then
+            alpha(ixHI) = 0d0
+            beta(ixHI) = xe * 3.73d-9 * TK**0.1121 * exp(-99430d0/TK)      &
+              + dxion(ixHI) * 3.52d-9 * exp(-43900d0/TK)                   &
+              + xH2 * 1.30d-9 * exp(-53300d0/TK)                           &
+              + dxion(ixHII) * 4.38d-9
+            beta(ixHI) = MAX(beta(ixHI), 1d-40)
+          else
+            ! [cm3 s-1] x nH, so that cr = alpha * xHI below as in the upstream form
+            alpha(ixHI) = comp_Alpha_H2_Katz(TK, Zsolar(icell), xe, dxion(ixHII)  &
+              , nN(ixHII), nN(ixHI), dxion(ixHI), fclump_H2dust) * nH(icell)
+            nHeI_k = 0d0 ; xHeI_k = 0d0
+            if(isHe) then ; nHeI_k = nN(ixHeII) ; xHeI_k = xHeI ; endif
+            beta(ixHI) = comp_Beta_H2coll(TK, nH(icell), dxion(ixHI), xH2, xHeI_k &
+              , ne, nN(ixHII), nN(ixHI), nHeI_k)
+          endif
+        else
+          alpha(ixHI) = inp_coolrates_table(tbl_AlphaZ_H2, TK,.false.)      &
+            * Zsolar(icell) * f_dust * nH(icell)                  &
+            + inp_coolrates_table(tbl_AlphaGP_H2,TK,.false.) * ne &
+            + inp_coolrates_table(tbl_Beta_H3B,TK,.false.)        &
+            * nH(icell)**2 * dxion(ixHI) * (dxion(ixHI) + xH2/ 8.)
+          beta(ixHI)  = inp_coolrates_table(tbl_Beta_H2HI, TK,.false.)      &
+            * dxion(ixHI)                                         &
+            + inp_coolrates_table(tbl_Beta_H2H2, TK,.false.) * xH2
+        endif
         cr = alpha(ixHI) * dxion(ixHI)                        ! H2 Creation
         photoRate=0.
-        if(rt) photoRate = SUM(signc(:,ixHI)*dNp)
+        if(rt .and. .not.H2chem_hot) then
+          if(LW_on) then
+            if(LW_ss_from_incident_surface_yH2) then
+              ! ks option: shielding from the equilibrium xH2 of the unshielded
+              ! rates ("xH2 at the incident surface") instead of the current xH2
+              de_thin = beta(ixHI) * nH(icell) + SUM(signc(:,ixHI)*dNp)
+              if(haardt_madau) de_thin = de_thin + UVrates(ixHI,1)*ss_factor
+              if(cosmic_rays) de_thin = de_thin + cosray_H2
+              xH2_tmp = MIN(MAX(cr/de_thin, x_MIN), 0.5d0)
+              f_shd = LW_shield_factor(nN(ixHII), nH(icell)*xH2_tmp, nH(icell), TK, Zsolar(icell), dx_SS_loc)
+              fshg(LWgroup) = f_shd
+            endif
+            photoRate = SUM(signc(:,ixHI)*dNp*fshg(:))
+          else
+            photoRate = SUM(signc(:,ixHI)*dNp)
+          endif
+        endif
         if(haardt_madau) photoRate = photoRate + UVrates(ixHI,1)*ss_factor
         de = beta(ixHI) * nH(icell) + photoRate           ! H2 Destruction
         if(cosmic_rays) de = de + cosray_H2
@@ -894,6 +1110,17 @@ CONTAINS
       cr = alpha(ixHII) * ne * dxion(ixHII) + 2. * de * dxH2 !   HI creation
       photoRate=0.
       if(rt) photoRate = SUM(signc(:,ixHII)*dNp)    !                  [s-1]
+      if(rt .and. sec_ion) then
+        ! secondary ionisations of HI by the photo-electrons of HI and HeI
+        secion_xe = min(ne/(nH(icell)+nHe),1d0)
+        do igroup=1,nGroups
+          photoRate = photoRate + signc(igroup,ixHII)*dNp(igroup)              &
+            * secion_HI2nd(Eprim_avg(igroup,ixHII), secion_xe)
+          if(isHe) photoRate = photoRate + signc(igroup,ixHeII)*dNp(igroup)    &
+            * secion_HI2nd(Eprim_avg(igroup,ixHeII), secion_xe)                &
+            * nN(ixHeII) / max(nN(ixHII), x_MIN*nH(icell))   ! per HI atom
+        end do
+      endif
       if(haardt_madau) photoRate = photoRate + UVrates(ixHII,1)*ss_factor
       de = beta(ixHII) * ne + photoRate             !         HI destruction
       if(cosmic_rays) de = de + cosray_HI
@@ -1004,6 +1231,17 @@ CONTAINS
         de = beta(ixHeII) * ne
         if(cosmic_rays) de = de + 1.1 * cosray_HI
         if(rt) de = de + SUM(signc(:,ixHeII)*dNp)
+        if(rt .and. sec_ion) then
+          ! secondary ionisations of HeI by the photo-electrons of HI and HeI
+          secion_xe = min(ne/(nH(icell)+nHe),1d0)
+          do igroup=1,nGroups
+            de = de + signc(igroup,ixHeII)*dNp(igroup)                         &
+              * secion_HeI2nd(Eprim_avg(igroup,ixHeII), secion_xe)
+            de = de + signc(igroup,ixHII)*dNp(igroup)                          &
+              * secion_HeI2nd(Eprim_avg(igroup,ixHII), secion_xe)              &
+              * nN(ixHII) / max(nN(ixHeII), x_MIN*nHe)        ! per HeI atom
+          end do
+        endif
         if(haardt_madau) de = de + UVrates(ixHeII,1) * ss_factor
         dxHeI = (cr*ddt(icell)+xHeI)/(1.+de*ddt(icell))         ! The update
         dxHeI = MIN(MAX(dxHeI, x_min),1.)
@@ -1087,6 +1325,40 @@ CONTAINS
       endif
 
       if (rt .and. rt_advect .and. attn_after_chem) then
+        if (attn_new_abund) then
+          ! As ks: the chemistry above used the unattenuated field; attenuate with the abundances after
+          ! the chemistry update. dNp_save/dFp_save were attenuated with the old abundances (phAbs), so
+          ! replace the gas part of the absorption rate (dust/PEH absorption and the LW shielding factor
+          ! are kept as computed before the chemistry).
+          nN1=0d0
+          if(isH2) then
+            nN1(ixHI)  = nH(icell)*MAX((1.-dxion(ixHI)-dxion(ixHII))/2.,x_min)   ! nH2
+            nN1(ixHII) = nH(icell)*MAX(dxion(ixHI),x_min)                        ! nHI
+          else
+            nN1(ixHII) = nH(icell)*MAX(1d0-dxion(ixHII),x_min)
+          endif
+          if(isHe) then
+            nN1(ixHeII)  = nHe*MAX(1.-dxion(ixHeII)-dxion(ixHeIII),x_min)        ! nHeI
+            nN1(ixHeIII) = nHe*dxion(ixHeII)                                     ! nHeII
+          endif
+          do igroup=1,nGroups
+            phAbs_gas1(igroup) = SUM(nN1(:)*signc(igroup,:)*ssh2(igroup))
+          end do
+          if(LW_on) then
+            if(.not.LW_abs_thin) phAbs_gas1(LWgroup) = phAbs_gas1(LWgroup)           &
+              - nN1(ixHI)*signc(LWgroup,ixHI)*ssh2(LWgroup)*(1d0-f_shd)
+            if(LW_abs_atom) phAbs_gas1(LWgroup) = phAbs_gas1(LWgroup) + nN1(ixHII)*5.23d-25*rt_c_cgs
+          endif
+          do igroup=1,nGroups
+            attn_corr(igroup) = (1d0+ddt(icell)*phAbs(igroup))                      &
+              / (1d0+ddt(icell)*(phAbs(igroup)-phAbs_gas0(igroup)+phAbs_gas1(igroup)))
+            dNp_save(igroup) = MAX(smallNp, dNp_save(igroup)*attn_corr(igroup))
+            attn_corr(igroup) = (1d0+ddt(icell)*(phAbs(igroup)+phSc(igroup)))       &
+              / (1d0+ddt(icell)*(phAbs(igroup)-phAbs_gas0(igroup)+phAbs_gas1(igroup)+phSc(igroup)))
+            dFp_save(:,igroup) = dFp_save(:,igroup)*attn_corr(igroup)
+            call reduce_flux(dFp_save(:,igroup),dNp_save(igroup)*rt_c_cgs)
+          end do
+        endif
         ! Update the values for which absorption is considered
         dNp = dNp_save
         dFp = dFp_save
@@ -1172,13 +1444,17 @@ CONTAINS
     real(dp),dimension(1:7),intent(out)::nSpec!------------------------
     real(dp)::nHe
     real(dp)::n_H2, n_HI, n_HII, n_HEI, n_HEII, n_HEIII, n_E, n_E_min
-    real(dp)::g_H2=0,   g_HI=0,    g_HEI=0, g_HEII=0   ! Photoion/dissoc
-    real(dp)::aZ_H2=0,  aGP_H2,    a_HI=0,  a_HEI=0,   a_HEII=0  ! Formation
-    real(dp)::b_H2HI=0, b_H2H2=0,  b_H3B,   b_HI=0,    b_HEI=0, b_HEII=0!Col
-    real(dp)::C_HII=0,  C_H2=0,    D_H2=0,  f_HII=0,   f_H2=0  ! Cre & destr
-    real(dp)::D_HEI=0,  C_HEIII=0, f_HeI=0, f_HeIII=0, f_dust=0! Cre & destr
+    real(dp)::g_H2,   g_HI,    g_HEI, g_HEII   ! Photoion/dissoc
+    real(dp)::aZ_H2,  aGP_H2,    a_HI,  a_HEI,   a_HEII  ! Formation
+    real(dp)::b_H2HI, b_H2H2,  b_H3B,   b_HI,    b_HEI, b_HEII!Col
+    real(dp)::C_HII,  C_H2,    D_H2,  f_HII,   f_H2  ! Cre & destr
+    real(dp)::D_HEI,  C_HEIII, f_HeI, f_HeIII, f_dust! Cre & destr
     real(dp)::err_nE, err_nH2, n_H2_old
 !-------------------------------------------------------------------------
+    ! (were initialised locals = implicitly saved = shared between OpenMP threads)
+    g_H2=0; g_HI=0; g_HEI=0; g_HEII=0; aZ_H2=0; a_HI=0; a_HEI=0; a_HEII=0
+    b_H2HI=0; b_H2H2=0; b_HI=0; b_HEI=0; b_HEII=0; C_HII=0; C_H2=0; D_H2=0; f_HII=0; f_H2=0
+    D_HEI=0; C_HEIII=0; f_HeI=0; f_HeIII=0; f_dust=0
 
     g_HI   = t_rad_spec(ixHII)                  !      Photoionization [s-1]
     if(isH2) then
@@ -1426,9 +1702,10 @@ CONTAINS
     real(dp)::TT,lTT,deltaT,lcool1,lcool2,lcool1_prime,lcool2_prime
     real(dp)::ZZ,deltaZ
     real(dp)::c1=0.4,c2=10.0,TT0=1d5,TTC=1d6,alpha1=0.15
-    real(dp)::ux,g_courty,f_courty=1d0,g_courty_prime,f_courty_prime
+    real(dp)::ux,g_courty,f_courty,g_courty_prime,f_courty_prime
     integer::iT,iZ
 !-------------------------------------------------------------------------
+    f_courty=1d0   ! was an initialised (implicitly saved) local
     ZZ=1d0/aexp-1d0
     TT=T2*mu
     lTT=log10(TT)
@@ -1493,7 +1770,7 @@ CONTAINS
     implicit none
     real(kind=8),intent(in) :: Tmu
     real(kind=8),intent(in),dimension(nIons) :: xion
-    real(kind=8),save :: xHI, xHII, xHeII, xHeIII
+    real(kind=8) :: xHI, xHII, xHeII, xHeIII
     real(kind=8)::getMu
 !-------------------------------------------------------------------------
     xHII=0d0 ; xHeII=0d0 ; xHeIII=0d0
@@ -1711,6 +1988,15 @@ CONTAINS
     value = 10.d0**(log10(fa) + (log10(fb) - log10(fa))/(b - a)*(x - a))
   end function linear_interpolation_in_log
   !=========================================================================
+  ! Linear interpolation (for parameters that can be negative)
+  !-------------------------------------------------------------------------
+  function linear_interpolation(x, a, b, fa, fb) result(value)
+    implicit none
+    real(dp)::x, a, b, fa, fb
+    real(dp)::value
+    value = fa + (fb - fa)/(b - a)*(x - a)
+  end function linear_interpolation
+  !=========================================================================
   ! This function is written by Takashi Okamoto (t.t.okamoto@gmail)
   ! It returns self-shielding factor for the UV background
   ! The function is based on Rahmati et al. 2013
@@ -1766,13 +2052,16 @@ CONTAINS
       f = linear_interpolation_in_log(zred, rahmati_redshift(i), &
         rahmati_redshift(i + 1), &
         rahmati_f(i), rahmati_f(i + 1))
-      alpha1 = linear_interpolation_in_log(zred, rahmati_redshift(i), &
+      ! alpha1, alpha2 and beta are interpolated linearly (alpha < 0, so
+      ! a log interpolation gives NaN for 3 < z < 10). Same as maincl.cpp
+      ! that generated the cloudy table.
+      alpha1 = linear_interpolation(zred, rahmati_redshift(i), &
         rahmati_redshift(i + 1), &
         rahmati_alpha1(i), rahmati_alpha1(i + 1))
-      alpha2 = linear_interpolation_in_log(zred, rahmati_redshift(i), &
+      alpha2 = linear_interpolation(zred, rahmati_redshift(i), &
         rahmati_redshift(i + 1), &
         rahmati_alpha2(i), rahmati_alpha2(i + 1))
-      beta = linear_interpolation_in_log(zred, rahmati_redshift(i), &
+      beta = linear_interpolation(zred, rahmati_redshift(i), &
         rahmati_redshift(i + 1), &
         rahmati_beta(i), rahmati_beta(i + 1))
       value = rahmati_fitting_func(nH, nH0, f, alpha1, alpha2, beta)
@@ -1805,14 +2094,16 @@ CONTAINS
     TT = T2*mu
     lTT = log10(TT)
     lnH = log10(nH)
-    if (zred .ge. z_reion) then
+    ! The UV-background tables cover z <= zred_uv_max (10) only; above
+    ! that (or above z_reion) use the CIE table (last redshift bin).
+    if (zred .ge. min(z_reion, zred_uv_max)) then
       izred = nbin_z_cloudy
     else
       log_1pz = log10(zred + 1.0d0)
       izred = (log_1pz - log_1pzmin)/(dlogz) + 1
     end if
 
-    if (zred .ge. z_reion) then
+    if (zred .ge. min(z_reion, zred_uv_max)) then
       if (lTT .ge. log_T_cloudy(nbin_T_cloudy)) then
         metal_cool_tot = 0d0
         metal_cool_prime = 0d0
@@ -1893,6 +2184,87 @@ CONTAINS
     metal_heat_tot = metal_heat_tot*nH
     metal_heat_prime = metal_heat_prime*nH*mu
   end subroutine rt_cmp_cloudy_metals
+!=========================================================================
+! Secondary ionisation by photo-electrons (ported from patch/ks): fits of
+! Ricotti, Gnedin & Shull 2002 to the fraction of the primary electron
+! energy E0 [eV] that goes into HI / HeI ionisations and into heat, as a
+! function of the ionisation degree xe = n_e/(n_H+n_He). No secondaries
+! below E0 = 28 eV; all of E0 heats below 11 eV.
+!-------------------------------------------------------------------------
+  pure function secion_HI2nd(E0, xe) result(PhiHI)
+! number of secondary HI ionisations per primary electron
+    implicit none
+    real(dp),intent(in)::E0, xe
+    real(dp)::PhiHI, C, a, b, Efrac, x
+    real(dp),parameter::C1=-0.5517, C2=0.9904, C3=-0.006490
+    real(dp),parameter::a1=0.3692, a2=-0.1220, a3=-0.9775
+    real(dp),parameter::b1=1.476, b2=2.787, b3=-0.6476
+    real(dp),parameter::Eion_HI=13.60d0
+    PhiHI = 0d0
+    if(E0 < 28d0) return
+    x = min(max(xe,0d0),1d0)
+    C = C1 + C2*(E0/28d0)**C3
+    a = a1 + a2*(E0/28d0)**a3
+    b = b1 + b2*(E0/28d0)**b3
+    Efrac = C*(1d0-x**a)**b
+    PhiHI = Efrac*E0/Eion_HI
+  end function secion_HI2nd
+
+  pure function secion_HeI2nd(E0, xe) result(PhiHeI)
+! number of secondary HeI ionisations per primary electron
+    implicit none
+    real(dp),intent(in)::E0, xe
+    real(dp)::PhiHeI, C, a, b, Efrac, x
+    real(dp),parameter::C1=-0.8986, C2=0.9904, C3=-0.006490
+    real(dp),parameter::a1=0.3692, a2=-0.1220, a3=-0.9775
+    real(dp),parameter::b1=1.476, b2=2.787, b3=-0.6476
+    real(dp),parameter::Eion_HeI=24.59d0
+    PhiHeI = 0d0
+    if(E0 < 28d0) return
+    x = min(max(xe,0d0),1d0)
+    C = C1 + C2*(E0/28d0)**C3
+    a = a1 + a2*(E0/28d0)**a3
+    b = b1 + b2*(E0/28d0)**b3
+    Efrac = C*(1d0-x**a)**b
+    PhiHeI = Efrac*E0/Eion_HeI
+  end function secion_HeI2nd
+
+  pure function secion_heat(E0, xe) result(Eh)
+! energy deposited as heat per primary electron [eV]
+    implicit none
+    real(dp),intent(in)::E0, xe
+    real(dp)::Eh, a, b, Efrac, x
+    real(dp),parameter::a1=0.2364, a2=0.07122, a3=-0.3183
+    real(dp),parameter::b1=1.091, b2=3.320, b3=-0.7662
+    Eh = E0
+    if(E0 < 11d0) return
+    x = min(max(xe,0d0),1d0)
+    a = a1 + a2*(E0/11d0)**a3
+    b = b1 + b2*(E0/11d0)**b3
+    Efrac = 1d0 - (1d0-x**a)**b
+    Eh = Efrac*E0
+  end function secion_heat
+
+!=========================================================================
+  function LW_shield_factor(nHI, nH2, nHtot, TK, Z, dx) result(f)
+! LW shielding factor (ported from patch/ks): H2 self-shielding of the
+! chosen model times, with LW_ss_dust, the dust shielding of Gnedin+2009.
+! nHI, nH2 [cm-3], nHtot: hydrogen number density, TK [K], Z [Zsun], dx [cm].
+    implicit none
+    real(dp),intent(in)::nHI, nH2, nHtot, TK, Z, dx
+    real(dp)::f
+    select case (trim(LW_ss_model))
+    case ('WGH19')
+      f = comp_SH2_WGH(nH2, dx, nHtot, TK)
+    case ('DB96')
+      f = comp_SH2_DB96(nH2, dx)
+    case ('G09')
+      f = comp_SH2_G09(nH2, dx)
+    case default
+      f = 1d0
+    end select
+    if(LW_ss_dust) f = f * comp_Sd(nHI, nH2, dx, Z)
+  end function LW_shield_factor
 end module rt_cooling_module
 
 !************************************************************************
@@ -1912,6 +2284,12 @@ SUBROUTINE updateRTGroups_CoolConstants()
       PHrate(iP,iI) =  eV2erg * &        ! See eq (19) in Aubert(08)
         (sigec(iP,iI) * group_egy(iP) - signc(iP,iI)*ionEvs(iI))
       PHrate(iP,iI) = max(PHrate(iP,iI),0d0) !      No negative heating
+      ! mean photo-electron energy [eV] (sec_ion); c cancels in the ratio
+      if(signc(iP,iI) > 0d0) then
+        Eprim_avg(iP,iI) = sigec(iP,iI) * group_egy(iP) / signc(iP,iI) - ionEvs(iI)
+      else
+        Eprim_avg(iP,iI) = -1d0
+      endif
     end do
   end do
 end subroutine updateRTGroups_CoolConstants

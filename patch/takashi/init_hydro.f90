@@ -1,4 +1,5 @@
 subroutine init_hydro
+  use sn_energy_reservoir, only: init_sn_reservoir, read_sn_reservoir !FG feedback (merge_ks)
   use amr_commons
   use hydro_commons
 #ifdef RT
@@ -29,6 +30,7 @@ subroutine init_hydro
   !------------------------------------------------------
   ncell=ncoarse+twotondim*ngridmax
   allocate(uold(1:ncell,1:nvar))
+  call init_sn_reservoir() !FG feedback (merge_ks)
   allocate(unew(1:ncell,1:nvar))
   uold=0.0d0; unew=0.0d0
   if(MC_tracer) then
@@ -228,6 +230,7 @@ subroutine init_hydro
         end if
       end do
     end do
+    call read_sn_reservoir(ilun,nlevelmax2) !FG feedback (merge_ks): optional checkpoint trailer
     close(ilun)
 
     ! Send the token
@@ -427,6 +430,7 @@ subroutine init_hydro
         end if
       end do
     end do
+    call read_sn_reservoir(ilun,nlevelmax2) !FG feedback (merge_ks): optional checkpoint trailer
     close(ilun)
 
     ! Send the token

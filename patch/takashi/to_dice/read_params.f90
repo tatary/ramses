@@ -70,6 +70,7 @@ subroutine read_params
   !--------------------------------------------------
   integer::i,narg,levelmax
   character(LEN=80)::infile, info_file
+  character(LEN=16)::grpdir
   character(LEN=80)::cmdarg
   character(LEN=5)::nchar
   integer(kind=8)::ngridtot=0
@@ -109,16 +110,18 @@ subroutine read_params
   !--------------------------------------------------
   namelist/run_params/clumpfind,cosmo,pic,sink,tracer,lightcone,poisson,hydro,rt,verbose,debug &
   & ,nrestart,ncontrol,nstepmax,nsubcycle,nremap,ordering &
-  & ,bisec_tol,static,overload,cost_weighting,aton,nrestart_quad,restart_remap &
+  & ,bisec_tol,static,overload,cost_weighting,cost_weight_power,cost_time_weighting,cost_time_relax,timer_ranks_every,omp_hydro,omp_rt,omp_cooling,omp_poisson,omp_cg,omp_flag,omp_rho,omp_sf,aton,nrestart_quad,restart_remap &
+  & ,two_tier_balance,two_tier_level,two_tier_fine_frac,two_tier_test_shift,two_tier_auto_tol,two_tier_auto_ghost,two_tier_auto_memmax &
   & ,static_dm,static_gas,static_stars,convert_birth_times,use_proper_time,remap_pscalar &
   & ,unbind,make_mergertree,stellar,aexp_ini
   namelist/output_params/noutput,foutput,aout,tout &
   & ,tend,delta_tout,aend,delta_aout,gadget_output,walltime_hrs &
-  & ,minutes_dump,restart_hrs
+  & ,minutes_dump,restart_hrs &
+  & ,ugvtk,idp_ugvtk,NI_ugvtk,SFC_output_at_given_age,p3_output_minmass,SFC_output_minmass ! ugvtk (merge_ks; the last two also in &SF_PARAMS)
   namelist/amr_params/levelmin,levelmax,ngridmax,ngridtot &
   & ,npartmax,nparttot,nexpand,boxlen,nlevel_collapse
   namelist/poisson_params/epsilon,gravity_type,gravity_params &
-  & ,cg_levelmin,cic_levelmax
+  & ,cg_levelmin,cic_levelmax,cg_auto,cg_auto_every,cg_auto_margin,cg_warm_start,cg_precond,cg_precond_omega
   namelist/lightcone_params/thetay_cone,thetaz_cone,zmax_cone
   namelist/movie_params/levelmax_frame,nw_frame,nh_frame,ivar_frame &
   & ,xcentre_frame,ycentre_frame,zcentre_frame &
@@ -248,6 +251,11 @@ subroutine read_params
   rewind(1)
   read(1,NML=run_params)
   rewind(1)
+  ! two-tier load balance needs a key ordering (ported from patch/ks)
+  if(two_tier_balance.and.ordering=='bisection')then
+    if(myid==1)write(*,*)'two_tier_balance is not compatible with ordering=bisection'
+    call clean_stop
+  end if
   read(1,NML=output_params)
   rewind(1)
   read(1,NML=amr_params)
@@ -330,16 +338,22 @@ subroutine read_params
 
   if (myid==1 .and. nrestart .gt. 0) then
     call title(nrestart,nchar)
-    info_file='output_'//TRIM(nchar)//'/info_'//TRIM(nchar)//'.txt'
+    ! with IOGROUPSIZEREP>0 the header files are in the group directory of cpu 1
+    ! (upstream looked in the top directory only, so such a set was never found)
+    grpdir='/'
+    if(IOGROUPSIZEREP>0) grpdir='/group_00001/'
+    info_file='output_'//TRIM(nchar)//TRIM(grpdir)//'info_'//TRIM(nchar)//'.txt'
     inquire(file=info_file, exist=info_ok)
     do while(.not. info_ok .and. nrestart .gt. 1)
       nrestart = nrestart - 1
       call title(nrestart,nchar)
-      info_file='output_'//TRIM(nchar)//'/info_'//TRIM(nchar)//'.txt'
+      info_file='output_'//TRIM(nchar)//TRIM(grpdir)//'info_'//TRIM(nchar)//'.txt'
       inquire(file=info_file, exist=info_ok)
     enddo
   else if (myid==1 .and. nrestart .lt. 0)  then
-    info_file='output_restart/info_restart.txt'
+    grpdir='/'
+    if(IOGROUPSIZEREP>0) grpdir='/group_00001/'
+    info_file='output_restart'//TRIM(grpdir)//'info_restart.txt'
     inquire(file=info_file, exist=info_ok)
   endif
 
@@ -457,7 +471,13 @@ subroutine read_params
   call read_rt_params(nml_ok)
 #endif
 #if NDIM==3
-  if (sink)call read_sink_params
+  if (sink)then
+    if(sf_fg)then
+      call read_sink_params_fg ! FG sink (sink_particle_fg.f90): ks &SINK_PARAMS entries
+    else
+      call read_sink_params
+    end if
+  end if
   if (clumpfind .or. sink)call read_clumpfind_params
   if (stellar)call read_stellar_params
   if (unbind)call read_unbinding_params

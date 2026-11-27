@@ -154,8 +154,13 @@ subroutine init_tree
 
 #if NDIM==3
   if(sink)then
-    call kill_entire_cloud(1)
-    call create_cloud_from_sink
+    if(sf_fg)then ! FG sink (sink_particle_fg.f90)
+      call kill_entire_cloud_fg(1)
+      call create_cloud_from_sink_fg
+    else
+      call kill_entire_cloud(1)
+      call create_cloud_from_sink
+    end if
   endif
 #endif
 
@@ -720,6 +725,8 @@ subroutine virtual_tree_fine(ilevel)
 #endif
   ! DICE patch / gas temperature
   if(dice_init) particle_data_width=particle_data_width+2
+  ! DICE: gas metallicity without star/sink (with star/sink zp is already sent above; TODO.md 1b)
+  if(dice_init.and.metal.and..not.(star.or.sink)) particle_data_width=particle_data_width+1
 
   ! Allocate communication buffer in emission
   do icpu=1,ncpu
@@ -1232,12 +1239,30 @@ subroutine fill_comm(ind_part,ind_com,ind_list,np,ilevel,icpu)
   ! DICE patch / gas temperature
   if(dice_init) then
     do i=1,np
+#ifdef LIGHT_MPI_COMM
+      reception(icpu,ilevel)%pcomm%u(current_property,ind_com(i))=up(ind_part(i))
+#else
       reception(icpu,ilevel)%up(ind_com(i),current_property)=up(ind_part(i))
+#endif
     end do
     current_property = current_property+1
     if(cosmo) then
       do i=1,np
+#ifdef LIGHT_MPI_COMM
+        reception(icpu,ilevel)%pcomm%u(current_property,ind_com(i))=maskp(ind_part(i))
+#else
         reception(icpu,ilevel)%up(ind_com(i),current_property)=maskp(ind_part(i))
+#endif
+      end do
+      current_property = current_property+1
+    endif
+    if(metal.and..not.(star.or.sink)) then
+      do i=1,np
+#ifdef LIGHT_MPI_COMM
+        reception(icpu,ilevel)%pcomm%u(current_property,ind_com(i))=zp(ind_part(i))
+#else
+        reception(icpu,ilevel)%up(ind_com(i),current_property)=zp(ind_part(i))
+#endif
       end do
       current_property = current_property+1
     endif
@@ -1424,12 +1449,30 @@ subroutine empty_comm(ind_com,np,ilevel,icpu)
   ! DICE patch / gas temperature
   if(dice_init) then
     do i=1,np
+#ifdef LIGHT_MPI_COMM
+      up(ind_part(i))=emission_part(ilevel)%u(current_property, offset_np+ind_com(i)-1)
+#else
       up(ind_part(i))=emission(icpu,ilevel)%up(ind_com(i),current_property)
+#endif
     end do
     current_property = current_property+1
     if(cosmo) then
       do i=1,np
+#ifdef LIGHT_MPI_COMM
+        maskp(ind_part(i))=emission_part(ilevel)%u(current_property, offset_np+ind_com(i)-1)
+#else
         maskp(ind_part(i))=emission(icpu,ilevel)%up(ind_com(i),current_property)
+#endif
+      end do
+      current_property = current_property+1
+    endif
+    if(metal.and..not.(star.or.sink)) then
+      do i=1,np
+#ifdef LIGHT_MPI_COMM
+        zp(ind_part(i))=emission_part(ilevel)%u(current_property, offset_np+ind_com(i)-1)
+#else
+        zp(ind_part(i))=emission(icpu,ilevel)%up(ind_com(i),current_property)
+#endif
       end do
       current_property = current_property+1
     endif

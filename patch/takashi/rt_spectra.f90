@@ -175,7 +175,7 @@ CONTAINS
 ! species => ixHI (H2), ixHII (HI), ixHeII (HeI) or ixHeIII (HeII)
 ! returns :  photoionization or photodissociation cross-section in cm^2
 !------------------------------------------------------------------------
-    use rt_parameters,only:ionEvs, ixHI, ixHII, ixHeII, ixHeIII
+    use rt_parameters,only:ionEvs, ixHI, ixHII, ixHeII, ixHeIII, isH2Katz
     use constants,only:c_cgs, eV2erg, hplanck
     real(kind=8)      :: lambda, getCrosssection
     integer           :: species
@@ -185,6 +185,22 @@ CONTAINS
     E = hplanck * c_cgs/(lambda*1d-8) / eV2erg         ! photon energy in eV
     if ( E .lt. ionEvs(species) ) then            ! below ionization energy
       getCrosssection=0.
+      RETURN
+    endif
+    if(species .eq. ixHI .and. isH2Katz) then ! ks: Baczynski, Glover & Klessen 2015, Table 1
+      getCrosssection = 0.
+      if (E .gt. 11.20 .and. E .lt. 13.60) getCrosssection = 2.47d-18   ! LW: Dlw/Flw of Katz+2017
+      if (E .gt. 15.20 .and. E .le. 15.45) getCrosssection = 0.09d-18
+      if (E .gt. 15.70 .and. E .le. 15.95) getCrosssection = 1.15d-18
+      if (E .gt. 15.95 .and. E .le. 16.20) getCrosssection = 3.00d-18
+      if (E .gt. 16.20 .and. E .le. 16.40) getCrosssection = 5.00d-18
+      if (E .gt. 16.40 .and. E .le. 16.65) getCrosssection = 6.75d-18
+      if (E .gt. 16.65 .and. E .le. 16.85) getCrosssection = 8.00d-18
+      if (E .gt. 16.85 .and. E .le. 17.00) getCrosssection = 9.00d-18
+      if (E .gt. 17.00 .and. E .le. 17.20) getCrosssection = 9.50d-18
+      if (E .gt. 17.20 .and. E .le. 17.65) getCrosssection = 9.80d-18
+      if (E .gt. 17.65 .and. E .le. 18.10) getCrosssection = 10.10d-18
+      if (E .gt. 18.10) getCrosssection = (10.10d-18) * ((18.10d0/E)**3.0d0)
       RETURN
     endif
     if(species .eq. ixHI) then ! H2 ionization cs, Abel1997 eqn A24
@@ -469,6 +485,10 @@ CONTAINS
     real(dp),save,allocatable,dimension(:,:)::sum_cse_cpu,sum_cse_all
     real(dp),save,allocatable,dimension(:)::sum_egy_cpu,sum_egy_all
     real(dp):: mass, age, Z, t_sne_Gyr
+    ! FG sink BHs (sf_fg)
+    real(dp),dimension(nSEDgroups):: L_sink
+    integer:: isink
+    real(dp):: scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,scale_lum
 !-------------------------------------------------------------------------
     if(.not. allocated(L_star)) then
       allocate(L_star(nSEDgroups))
@@ -490,7 +510,7 @@ CONTAINS
     sum_cse_cpu = 0d0
     t_sne_Gyr = t_sne / 1d3
     do i=1,npartmax
-      if(levelp(i).le.0 .or. .NOT.is_star(typep(i)))                       &
+      if(levelp(i).le.0 .or. .NOT.(is_star(typep(i)).or.(sf_fg.and.is_pop3(typep(i))))) &
         cycle ! not a star
       ! particle exists and is a star
       mass = mp(i)
@@ -502,6 +522,18 @@ CONTAINS
 #endif
 #endif
       call getAgeGyr(tp(i), age)                         !     age = [Gyrs]
+      if(sf_fg.and.is_pop3(typep(i)))then
+        ! FG Pop III star (merge_ks): Schaerer (2002) photon rates by mass, 1e5 K blackbody group properties
+#ifdef INIT_STELLAR_MASS
+        mass = mp0(i)
+#endif
+        if(pop3_model==1 .or. pop3_model==2)then
+          call get_pop3_Nphoton_pop3_model(mass, L_star)   ! [# s-1 M_sun-1]
+        else
+          call get_pop3_Nphoton(mass, L_star)
+        endif
+        call get_pop3_props(1d5, egy_star, csn_star, cse_star)
+      else
       ! second condition below is for kinetic SN feedback
 #ifndef INIT_STELLAR_MASS
       if(age.gt.t_sne_Gyr .or. (eta_sn.gt.0.0 .and. f_w.gt.0.0)) then
@@ -520,6 +552,7 @@ CONTAINS
         call inp_SED_table(age, Z, 2+2*ii, .true., csn_star(:,ii))! [cm^2]
         call inp_SED_table(age, Z, 3+2*ii, .true., cse_star(:,ii))! [cm^2]
       end do
+      endif
 
       do ip=1,nSEDgroups
         L_star(ip) = L_star(ip) * mass             !       [# photons s-1]
@@ -547,6 +580,23 @@ CONTAINS
     call MPI_ALLREDUCE(sum_cse_cpu, sum_cse_all, nSEDgroups*nIons,         &
       MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, info)
 #endif
+
+    ! FG sink BHs (sf_fg, BH_model 1/2; merge_ks): power-law spectrum of set_BH_SED weighted by the
+    ! bolometric luminosity acc_lum of every sink (identical on all ranks, so no reduction)
+    if(sf_fg.and.sink.and.(BH_model==1.or.BH_model==2))then
+      call set_BH_SED
+      call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+      scale_lum=scale_d*scale_l**3*scale_v**2/scale_t
+      do isink=1,nsink
+        L_sink(:)=acc_lum(isink)*scale_lum*L_to_Ndot_BH(:)   ! photon emissivity per group [s^-1]
+        do ip=1,nSEDgroups
+          sum_L_all(ip)    = sum_L_all(ip)     + L_sink(ip)
+          sum_egy_all(ip)  = sum_egy_all(ip)   + L_sink(ip)*egy_BH(ip)
+          sum_csn_all(ip,:)= sum_csn_all(ip,:) + L_sink(ip)*csn_BH(ip,:)
+          sum_cse_all(ip,:)= sum_cse_all(ip,:) + L_sink(ip)*cse_BH(ip,:)
+        end do
+      end do
+    end if
 
     ! ...and take averages weighted by luminosities
     do ip=1,nSEDgroups
@@ -585,7 +635,8 @@ CONTAINS
     integer::ilevel
     logical,save::groupProps_init=.false.
 !-------------------------------------------------------------------------
-    if(rt_star.and. nstar_tot .gt. 0) then
+    if(rt_star.and.(nstar_tot .gt. 0 .or. &
+      (sf_fg.and.sink.and.nsink.gt.0.and.(BH_model==1.or.BH_model==2)))) then ! FG sink BHs radiate too
       if(.not.rt_advect) then ! Turn on RT advection due to newborn stars:
         if(myid==1) write(*,*) '*****************************************'
         if(myid==1) write(*,*) 'Stellar RT turned on at a=',aexp
@@ -623,7 +674,7 @@ CONTAINS
 !-------------------------------------------------------------------------
 #if NGROUPS > 0
     if(.not.rt_advect)RETURN
-    if(nstar_tot .le. 0 ) return
+    if(nstar_tot .le. 0 .and. .not.(sf_fg.and.sink.and.nsink.gt.0)) return
     if(numbtot(1,ilevel)==0)return ! number of grids in the level
     if(verbose)write(*,111)ilevel
     ! Gather star particles only.
@@ -645,8 +696,8 @@ CONTAINS
             ! Save next particle       <--- Very important !!!
             next_part = nextp(ipart)
             ! Select only star particles
-            if(is_star(typep(ipart))) then
-              npart2 = npart2+1     ! only stars
+            if(is_star(typep(ipart)) .or. (sf_fg.and.is_pop3(typep(ipart)))) then
+              npart2 = npart2+1     ! only stars (FG: and Pop III)
             endif
             ipart = next_part        ! Go to next particle
           end do
@@ -662,7 +713,7 @@ CONTAINS
             ! Save next particle      <--- Very important !!!
             next_part = nextp(ipart)
             ! Select only star particles
-            if(is_star(typep(ipart))) then
+            if(is_star(typep(ipart)) .or. (sf_fg.and.is_pop3(typep(ipart)))) then
               if(ig==0)then
                 ig=1
                 ind_grid(ig)=igrid
@@ -693,6 +744,9 @@ CONTAINS
 
     if(heat_unresolved_HII.gt.0) &
       call heat_unresolved_HII_regions(ilevel,dtnew(ilevel))
+
+    ! FG sink BHs (sf_fg, BH_model 1/2)
+    if(sf_fg.and.sink.and.(BH_model==1.or.BH_model==2)) call BH_RT_feedback(ilevel,dt)
 
 111 format('   Entering star_rt_feedback for level ',I2)
 #endif
@@ -1038,6 +1092,191 @@ CONTAINS
 
 #if NGROUPS > 0
 !*************************************************************************
+!*************************************************************************
+! FG Pop III radiation (merge_ks, from patch/ks rt_spectra): photon rates per Msun from fits to
+! Schaerer (2002) tables 4/5 by group energy, group properties of a 1e5 K blackbody, lifetime fit.
+! No X-ray/hypernova groups (ks isXray) here. p3_noFUV / p3_noEUV (&RT_PARAMS) suppress bands.
+!*************************************************************************
+  SUBROUTINE get_pop3_Nphoton_pop3_model(mass, nphoton)
+    ! pop3_model 1/2: a particle lighter than 300 Msun is the 80+40 Msun binary
+    use amr_commons, only:dp
+    implicit none
+    real(dp),intent(in)::mass
+    real(dp) :: mass1, mass2
+    real(dp),dimension(1:nSEDgroups)::nphoton,nphoton1, nphoton2
+    real(dp):: scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,scale_msun
+    call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+    scale_msun = scale_l**3*scale_d/1.989d33
+    if (mass*scale_msun > 3d2) then
+      call get_pop3_Nphoton(mass, nphoton) ! [nphoton] = #/s/Msun
+    else
+      mass1 = 8d1/scale_msun
+      call get_pop3_Nphoton(mass1, nphoton1)
+      mass2 = 4d1/scale_msun
+      call get_pop3_Nphoton(mass2, nphoton2)
+      nphoton(:) = (nphoton1(:)*8d1+nphoton2(:)*4d1)/1.2d2   ! per Msun of the 120 Msun particle
+    end if
+  end subroutine get_pop3_Nphoton_pop3_model
+
+  SUBROUTINE get_pop3_Nphoton(m, nphoton)
+    ! number of photons per s per Msun of a Pop III star of mass m (code units)
+    use amr_commons, only:dp
+    use rt_parameters, only: group_egy, LWgroup, p3_noFUV, p3_noEUV
+    implicit none
+    real(dp),intent(in)::m
+    real(dp),dimension(1:nSEDgroups)::nphoton
+    real(dp)::x,y,ev_avg,frac
+    integer ::ip,j,ndeg,nbin_HII
+    integer ::ndeg_HII=3,ndeg_HeII=5,ndeg_HeIII=3,ndeg_H2=3
+    real(dp),dimension(0:3)::a_HII,a_HeIII,a_H2
+    real(dp),dimension(0:5)::a_HeII,a_fit
+    real(dp):: scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,scale_msun
+    real(dp):: x_fit !fit is up to 1000 Msun and the formula is diverging outside (KS MODIFIED)
+    call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+    scale_msun = scale_l**3*scale_d/1.989d33
+    ! fit to Schaerer (2002) Table 4,5
+    a_HII = (/3.7931090e+01,1.4585544e+01,-6.0434098e+00,8.9166773e-01/)
+    a_HeII = (/-1.4045167e+01,1.6406353e+02,-1.7101901e+02,8.8029022e+01,-2.2113640e+01,2.1670952e+00/)
+    a_HeIII = (/2.3361417e+01,2.5165704e+01,-7.9901436e+00,8.7320721e-01/)
+    a_H2 = (/4.3037504e+01,6.7958632e+00,-2.2352535e+00,2.9633043e-01/)
+    x = log10(m*scale_msun)
+    nphoton(:) = 0d0
+    nbin_HII = 0
+    ! two bins for HII (13.6-15.2, 15.2-24.59)?
+    do ip=1,nSEDgroups
+      ev_avg = group_egy(ip)
+      if(ev_avg.gt.13.60.and.ev_avg.lt.24.59) nbin_HII = nbin_HII + 1
+    end do
+    do ip=1,nSEDgroups
+      ev_avg = group_egy(ip)
+      frac = 1d0
+      if      (ev_avg.gt.11.20.and.ev_avg.lt.13.60) then
+        ndeg = ndeg_H2
+        a_fit(0:ndeg)=a_H2
+      else if (ev_avg.gt.13.60.and.ev_avg.lt.24.59) then
+        ndeg = ndeg_HII
+        a_fit(0:ndeg)=a_HII
+        if(nbin_HII.eq.2)then ! (i.e. 13.6-15.2, 15.2-24.59)
+          if(ev_avg.lt.15.20)then ! for T=1d5K black body spectrum
+            frac = 0.1
+          else
+            frac = 0.9
+          endif
+        endif
+      else if (ev_avg.gt.24.59.and.ev_avg.lt.54.42) then
+        ndeg = ndeg_HeII
+        a_fit(0:ndeg)=a_HeII
+      else if (ev_avg.gt.54.42) then
+        ndeg = ndeg_HeIII
+        a_fit(0:ndeg)=a_HeIII
+      else ! neglect any optical to IR photons
+        ndeg = 0
+        a_fit(:)=0d0
+      endif
+      if(ndeg.eq.0) then
+        nphoton(ip) = 0d0
+      else
+        y = 0d0
+        x_fit = min(x,3d0)   ! the fits are valid up to 1000 Msun; linear scaling above (KS)
+        do j=0,ndeg
+          y = y + x_fit**dble(j)*a_fit(j)
+        end do
+        y = y + x-x_fit
+        nphoton(ip) = 10d0**y*frac
+      endif
+    end do
+    nphoton(:) = nphoton(:) / (m*scale_msun)   ! #/s per Msun
+    if (LWgroup>0 .and. LWgroup<=nSEDgroups) then
+      if (p3_noFUV) nphoton(LWgroup)=0d0
+      if (p3_noEUV) nphoton(LWgroup+1:nSEDgroups)=0d0
+    end if
+  end subroutine get_pop3_Nphoton
+
+  SUBROUTINE get_pop3_props (Tk,egy_star,csn_star,cse_star)
+    ! average energies and cross sections of a blackbody of temperature Tk (computed once)
+    use amr_commons, only:dp
+    use rt_parameters, only: nIons, groupL0, groupL1
+    implicit none
+    real(dp),dimension(1:nSEDgroups,1:nIons)::csn_star,cse_star
+    real(dp),dimension(1:nSEDgroups)::egy_star
+    real(dp)::Tk,pL0,pL1,lam_cm
+    integer ::nLs=2000,i,ip,ii
+    real(dp),allocatable,dimension(:)::Ls,fakeSED
+    real(dp),dimension(:,:),allocatable,save::csn_star_pop3,cse_star_pop3
+    real(dp),dimension(:),allocatable,save::egy_star_pop3
+    real(dp)::h_pl=6.6260755d-27,kB=1.3806504d-16,c_cms=2.999d10
+    logical,save:: initialise=.true.
+    if(initialise)then
+      allocate(csn_star_pop3(nSEDgroups,nIons),cse_star_pop3(nSEDgroups,nIons),egy_star_pop3(nSEDgroups))
+      allocate(Ls(1:nLs))
+      allocate(fakeSED(1:nLs))
+      do i=1,nLs
+        Ls(i) = 10d0**(dble(i)/nLs*(5d0-0d0))  ! 1A - 10000A
+        lam_cm = Ls(i)/1d8 ! A->cm
+        if(h_pl*c_cms/lam_cm/kB/Tk.ge.500)then ! exp causes floating overflow - JP
+          fakeSED(i) = 0
+        else
+          fakeSED(i) = 2d0*h_pl*c_cms/lam_cm**5d0/(exp(h_pl*c_cms/lam_cm/kB/Tk)-1d0)
+        endif
+      end do
+      do ip=1,nSEDgroups
+        pL0 = groupL0(ip)
+        pL1 = groupL1(ip)
+        egy_star_pop3(ip) = getSEDEgy(Ls,fakeSED,nLs,pL0,pL1)
+        do ii=1,nIons
+          csn_star_pop3(ip,ii) = getSEDcsn(Ls,fakeSED,nLs,pL0,pL1,ii)
+          cse_star_pop3(ip,ii) = getSEDcse(Ls,fakeSED,nLs,pL0,pL1,ii)
+        end do
+      end do
+      deallocate(Ls,fakeSED)
+      initialise = .false.
+    endif
+    csn_star(:,:) = csn_star_pop3(:,:)
+    cse_star(:,:) = cse_star_pop3(:,:)
+    egy_star(:)   = egy_star_pop3(:)
+  end subroutine get_pop3_props
+
+  SUBROUTINE getNPhotonsEmitted_pop3(mass,age_Gyr,dt_loc_Gyr,nphoton)
+    ! photons emitted per Msun during dt_loc_Gyr by a Pop III star of mass (code units)
+    use amr_commons, only:dp
+    use amr_parameters, only: pop3_model
+    implicit none
+    real(dp),intent(in)::mass,age_Gyr,dt_loc_Gyr
+    real(dp)::lifetime_Gyr
+    real(dp),dimension(1:nSEDgroups)::nphoton
+    if (pop3_model == 1 .or. pop3_model == 2) then
+      ! the particle disappears at its SN (feedback.f90): no lifetime cut here
+      call get_pop3_Nphoton_pop3_model(mass, nphoton) ! [nphoton] = #/s/Msun
+      nphoton(:) = nphoton(:)*dt_loc_Gyr*1d9*365d0*24d0*3600d0
+    else
+      call get_pop3_ageGyr(mass,lifetime_Gyr)
+      nphoton(:)=0d0
+      if (age_Gyr.le.lifetime_Gyr) then
+        call get_pop3_Nphoton(mass, nphoton) ! [nphoton] = #/s/Msun
+        nphoton(:) = nphoton(:)*dt_loc_Gyr*1d9*365d0*24d0*3600d0
+      endif
+    end if
+  end subroutine getNPhotonsEmitted_pop3
+
+  SUBROUTINE get_pop3_ageGyr(mass,age_gyr)
+    ! Pop III lifetime [Gyr] fit (ks mechanical_fine_pop3)
+    use amr_commons, only:dp
+    implicit none
+    real(dp)::mass,age_gyr,logm
+    real(dp),dimension(0:3)::a_fit
+    integer::ndeg=3,i
+    real(dp):: scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,scale_msun
+    call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+    scale_msun = scale_l**3*scale_d/1.989d33
+    a_fit = (/0.7595398e+00,-3.7303953e+00,1.4031973e+00,-1.7896967e-01/)
+    age_gyr = 0d0
+    logm    = log10(mass*scale_msun)
+    do i=0,ndeg
+      age_gyr = age_gyr + a_fit(i)*logm**dble(i)
+    end do
+    age_gyr = 10d0**age_gyr
+  end subroutine get_pop3_ageGyr
+
   SUBROUTINE star_RT_vsweep(ind_grid,ind_part,ind_grid_part,ng,np,dt,ilevel)
 
 ! This routine is called by subroutine star_rt_feedback.
@@ -1205,6 +1444,14 @@ CONTAINS
       call getAgeGyr(tp(ind_part(j)), age)          !  End-of-dt age [Gyrs]
       ! Possibilities:     Born i) before dt, ii) within dt, iii) after dt:
       dt_loc_Gyr = max(min(dt_Gyr, age), 0.)
+      if(sf_fg.and.is_pop3(typep(ind_part(j))))then
+        ! FG Pop III star (merge_ks): Schaerer (2002) rates by mass, until its lifetime (pop3_model 1/2: until the SN)
+        mass = mp(ind_part(j))
+#ifdef INIT_STELLAR_MASS
+        mass = mp0(ind_part(j))
+#endif
+        call getNPhotonsEmitted_pop3(mass,age,dt_loc_Gyr,part_NpInp(j,1:nSEDgroups))
+      else
       call getNPhotonsEmitted(age,dt_loc_Gyr,z,part_NpInp(j,1:nSEDgroups))
 #ifndef INIT_STELLAR_MASS
       mass = mp(ind_part(j))
@@ -1220,6 +1467,7 @@ CONTAINS
       mass = msp0(ind_part(j))
 #endif
 #endif
+      endif   ! Pop III / Pop II
       ! part_NpInp(j,:) = part_NpInp(j,:)*mass*scale_inp !#photons
       part_NpInp(j,:) = group_on*part_NpInp(j,:)*mass*scale_inp !#photons
 
@@ -1255,6 +1503,126 @@ CONTAINS
 
   end subroutine star_RT_vsweep
 #endif
+
+!*************************************************************************
+  SUBROUTINE BH_RT_feedback(ilevel, dt)
+
+! FG sink BHs (sf_fg, BH_model 1/2; patch/ks, merge_ks): inject the photons of every sink
+! (bolometric acc_lum x L_to_Ndot_BH of the power-law spectrum) into the leaf cell holding
+! the sink when that cell is at ilevel. The owner of the ilevel grid at xsink does it
+! (cmp_cpumap_lev as get_cpu_of_pos of my_utils; works with two_tier_balance).
+!-------------------------------------------------------------------------
+    use rt_parameters, only : L_to_Ndot_BH, nGroups, iGroups
+    use rt_hydro_commons
+    use pm_commons
+    use amr_commons
+    use hydro_commons
+    implicit none
+    integer, intent(IN):: ilevel
+    real(dp), intent(IN):: dt
+    integer,dimension(1:nvector)::cell_index,cell_levl,cc
+    integer :: isink, ip, ix, iy, iz
+    real(dp),dimension(nGroups):: BH_NpInp
+    real(dp),dimension(1:nvector,1:3)::pos
+    real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,scale_lum
+    real(dp)::scale_Np,scale_Fp,dx,dx_grid,vol_loc,coef_inp
+#if NGROUPS > 0
+    if(nsink<=0)return
+    call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+    scale_lum=scale_d*scale_l**3*scale_v**2/scale_t
+    call rt_units(scale_Np,scale_Fp)
+    dx=0.5D0**ilevel
+    dx_grid=2d0*dx
+    vol_loc=dx**ndim ! boxlen=1 (ks)
+    coef_inp=1d0/(vol_loc*scale_l**3)/scale_Np
+    call BH_luminosity_from_acc_rate_fg
+    call set_BH_SED
+    do isink=1,nsink
+      ! owner of the level-ilevel grid containing the sink
+      ix=int(xsink(isink,1)/dx_grid); iy=int(xsink(isink,2)/dx_grid); iz=int(xsink(isink,3)/dx_grid)
+      pos(1,1:3)=(/(ix+0.5d0)*dx_grid,(iy+0.5d0)*dx_grid,(iz+0.5d0)*dx_grid/)
+      call cmp_cpumap_lev(pos,cc,1,ilevel)
+      if(cc(1)/=myid)cycle
+      pos(1,1:3)=xsink(isink,1:3)
+      call get_cell_index(cell_index,cell_levl,pos,nlevelmax,1)
+      if(cell_levl(1)/=ilevel)cycle ! injected at the level of the leaf cell only
+      BH_NpInp(:)=acc_lum(isink)*scale_lum*L_to_Ndot_BH(:)*dt*scale_t ! photons
+      BH_NpInp(:)=coef_inp*BH_NpInp(:)                                ! photon number density [code]
+      do ip=1,nSEDgroups
+        rtunew(cell_index(1),iGroups(ip))=rtunew(cell_index(1),iGroups(ip))+BH_NpInp(ip)
+      end do
+    end do
+#endif
+  END SUBROUTINE BH_RT_feedback
+
+!*************************************************************************
+  SUBROUTINE set_BH_SED
+
+! FG sink BHs (patch/ks): group properties of a power-law spectrum L_nu ~ nu^alpha
+! (alpha=-1.5) between 11.2 eV_erg and 10 keV: L_to_Ndot_BH (bolometric L -> photons/s per
+! group), egy_BH, csn_BH, cse_BH. Computed once; needs nGroups == nSEDgroups.
+!-------------------------------------------------------------------------
+    use rt_parameters
+    use amr_commons, only:dp,myid
+    implicit none
+    real(dp), parameter :: alpha_pow = -1.5d0 ! power-law index of the BH radiation
+    real(dp), parameter :: hnu_min = 11.2d0   ! lower cutoff [eV_erg]
+    real(dp), parameter :: hnu_max = 1d4      ! upper cutoff [eV_erg]
+    real(dp) :: pL0,pL1
+    integer :: i,ip,ii
+    integer,parameter :: nLs=2000             ! wavelength bins of the tabulated SED
+    real(dp),dimension(1:nLs) :: Ls,SED
+    real(dp), parameter:: h_pl=6.6260755d-27, c_li=2.999d10, eV_erg=1.602176463158d-12 ! local names (constants has hplanck)
+    real(dp) :: L0, Ndot0, hnu_low, hnu_up, hnu, lambda, L_lambda
+    logical,save :: Initialized = .false.
+    if (Initialized) return
+    if (nGroups /=  nSEDgroups)then
+      if(myid==1)write(*,*)'set_BH_SED: nGroups == nSEDgroups is assumed; got ',nGroups,nSEDgroups
+      call clean_stop
+    end if
+    ! normalisation for a bolometric luminosity of 1 erg/s
+    L0 = h_pl**(alpha_pow+1) / (((hnu_max*eV_erg)**(alpha_pow+1) - (hnu_min*eV_erg)**(alpha_pow+1))/(alpha_pow+1))
+    Ndot0 = L0 / h_pl
+    do ip=1,nSEDgroups
+      hnu_low = max(groupL0(ip),hnu_min)
+      hnu_up = groupL1(ip)              ! groupL1 = 0: no upper limit
+      if (hnu_up == 0) then
+        hnu_up = hnu_max
+      else
+        hnu_up = min(hnu_up,hnu_max)
+      end if
+      if (hnu_low >= hnu_up) then
+        L_to_Ndot_BH(ip) = 0d0
+      else
+        L_to_Ndot_BH(ip) = Ndot0/h_pl**alpha_pow * ((hnu_up*eV_erg)**alpha_pow - (hnu_low*eV_erg)**alpha_pow)/alpha_pow
+      end if
+    end do
+    ! tabulated SED [erg/s/A] for the group averages
+    do i=1,nLs
+      hnu = hnu_max * (hnu_min/hnu_max) ** (dble(i)/nLs) ! from high to low frequency
+      lambda = c_li / (hnu*eV_erg/h_pl)                  ! [cm]
+      Ls(i) = lambda * 1d8                                ! [A]
+      L_lambda = L0 * (c_li/lambda)**alpha_pow * c_li/lambda**2 ! [erg/s/cm]
+      SED(i) = L_lambda * 1d-8                            ! [erg/s/A]
+    end do
+    do ip=1,nGroups
+      pL0 = groupL0(ip)
+      pL1 = groupL1(ip)
+      if (L_to_Ndot_BH(ip) == 0d0) then ! group outside the power law: no BH photons, and the
+        egy_BH(ip) = 0.5d0*(pL0+max(pL1,pL0)) ! integrator of this version stops without overlap
+        csn_BH(ip,:) = 0d0; cse_BH(ip,:) = 0d0
+        cycle
+      end if
+      egy_BH(ip) = getSEDEgy(Ls,SED,nLs,pL0,pL1)
+      do ii=1,nIons
+        csn_BH(ip,ii) = getSEDcsn(Ls,SED,nLs,pL0,pL1,ii)
+        cse_BH(ip,ii) = getSEDcse(Ls,SED,nLs,pL0,pL1,ii)
+      end do
+    end do
+    if(myid==1)write(*,'(A,99ES11.3)')' set_BH_SED: L_to_Ndot_BH [1/erg] =',L_to_Ndot_BH(1:nGroups)
+    Initialized = .true.
+  END SUBROUTINE set_BH_SED
+
 end module SED_module
 
 

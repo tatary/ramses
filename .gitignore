@@ -21,3 +21,7 @@ histo
 part2cylprof
 doc/*_build
 __pycache__
+*~
+*.bak
+patch/takashi/logs/
+.claude/settings.local.json
