@@ -170,8 +170,11 @@ recursive subroutine amr_step(ilevel,icount)
     call MPI_ALLREDUCE(output_now,output_now_all,1,MPI_LOGICAL,MPI_LOR,MPI_COMM_WORLD,mpi_err)
 #endif
     output_now = .false.
+    ! dtexpout_Myr (merge_ks): outputs every dtexpout_Myr of proper time; texpout_next is computed
+    ! from the current texp on the first call (also after a restart, so no extra restart record)
+    if(dtexpout_Myr>0d0.and.texpout_next==HUGE(1.0D0))call set_texpout_next
     if(mod(nstep_coarse,foutput)==0.or.aexp>=aout(iout).or.t>=tout(iout) &
-    &.or.aexp>=aout_next.or.t>=tout_next)then
+    &.or.aexp>=aout_next.or.t>=tout_next.or.texp>=texpout_next)then
       call timer('io','start')
       if(.not.ok_defrag)then
         call defrag

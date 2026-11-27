@@ -1,5 +1,35 @@
 !#########################################################################
 !#########################################################################
+subroutine set_texpout_next
+  ! dtexpout_Myr (merge_ks): the outputs fall on texp_start + k*dtexpout_Myr, where texp_start is the
+  ! proper time at aexp_ini (the start of the run; the same after any restart). Sets texpout_next to
+  ! the first such time after the current texp. ks (Ramses-FG) counts dtexpout_Myr from the previous
+  ! output instead and keeps that time in an extra restart file; the fixed grid needs no state.
+  use amr_commons
+  use constants,only:Myr2sec
+  implicit none
+  real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v
+  real(dp)::texp_start,dtout
+  integer::i
+  call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+  if(cosmo)then
+    ! scale_t/aexp**2 is independent of aexp (cf. getAgeGyr in update_time.f90)
+    dtout=dtexpout_Myr*Myr2sec/(scale_t/aexp**2)
+    ! proper time at aexp_ini from the Friedmann table (as texp in init_time)
+    i=1
+    do while(aexp_frw(i)>aexp_ini.and.i<n_frw)
+      i=i+1
+    end do
+    texp_start=t_frw(i)*(aexp_ini-aexp_frw(i-1))/(aexp_frw(i)-aexp_frw(i-1))+ &
+    &          t_frw(i-1)*(aexp_ini-aexp_frw(i))/(aexp_frw(i-1)-aexp_frw(i))
+  else
+    dtout=dtexpout_Myr*Myr2sec/scale_t
+    texp_start=0d0
+  endif
+  texpout_next=texp_start+(floor((texp-texp_start)/dtout)+1)*dtout
+  if(myid==1)write(*,'(" dtexpout_Myr: next output at t =",F10.3," Myr after the start (now",F10.3,")")') &
+  & (texpout_next-texp_start)*dtexpout_Myr/dtout,(texp-texp_start)*dtexpout_Myr/dtout
+end subroutine set_texpout_next
 !#########################################################################
 !#########################################################################
 subroutine dump_all
@@ -34,6 +64,7 @@ subroutine dump_all
   if(t>=tout(iout).or.aexp>=aout(iout))iout=iout+1
   if(t>=tout_next)tout_next=tout_next+delta_tout
   if(aexp>=aout_next)aout_next=aout_next+delta_aout
+  if(dtexpout_Myr>0d0.and.texp>=texpout_next)call set_texpout_next
   output_done=.true.
 
   if(IOGROUPSIZEREP>0) then

@@ -142,6 +142,8 @@ module amr_parameters
   real(dp),dimension(1:MAXOUT)::tout=HUGE(1.0D0)      ! Output times
   real(dp)::tout_next=HUGE(1.0D0)     ! next output time using delta_tout
   real(dp)::aout_next=HUGE(1.0D0)     ! next output expansion factor using delta_aout
+  real(dp)::dtexpout_Myr=-1d0         ! proper-time interval of outputs in Myr, counted from the start (aexp_ini); <=0: off (merge_ks: ks name)
+  real(dp)::texpout_next=HUGE(1.0D0)  ! next output proper time (code units) for dtexpout_Myr; set by set_texpout_next
 
   ! Lightcone parameters
   real(dp)::thetay_cone=12.5d0
@@ -282,7 +284,11 @@ module amr_parameters
   logical  :: ugvtk = .false.          !master switch of the ugvtk output (ks has none: there the output is always on)
   integer  :: idp_ugvtk = -1           !idp of the star followed by the ugvtk output at formation and at given ages (no output if negative)
   integer  :: NI_ugvtk = 64            !cells on a side of each ugvtk level
-  logical  :: SFC_output_at_given_age = .false. !ugvtk output around every SFC at 0.1, 1, 3, 5, 10 Myr (expensive)
+  logical  :: SFC_output_at_given_age = .false. !ugvtk output around every SFC / SFC marker at the ages SFC_tout_Myr (expensive)
+  ! TO ADDED 2026-11-27: the ages of that output [Myr] (&OUTPUT_PARAMS; ks: fixed list 0.1, 1, 3, 5, 10). Entries <= 0 are unused.
+  ! The file suffix is made from the value: _3Myr for whole Myr, otherwise _100kyr (rounded to 1 kyr)
+  integer,parameter :: SFC_Ntout_max = 20
+  real(dp),dimension(1:SFC_Ntout_max) :: SFC_tout_Myr = reshape((/1d-1,1d0,3d0,5d0,1d1/),(/SFC_Ntout_max/),pad=(/-1d0/))
   ! SFC (star-forming cloud) model, pop2_model = 4/5
   real(dp) :: SFC_dist_min_pc = 1d2 !minimum distance for simulataneous SFC formation (pc)
   real(dp) :: SFC_nH_min = -1d3 !minimum (outer-boundary) density for SFC (cm-3)
@@ -296,7 +302,7 @@ module amr_parameters
   real(dp) :: SFC_rsize_min_pc = 1d0 !minimum size for SFC (pc)
   logical :: SFC_flg_thin = .false. !let photons freely escape from active SFC (cooling side; not ported yet)
   real(dp) :: SFC_t_life = 1d1 !life time of active SFC in Myr
-  real(dp) :: SFC_output_minmass = -1d0 !ugvtk output around a new SFC only above this mass [Msun] (<0: all)
+  real(dp) :: SFC_output_minmass = 0d0 !ugvtk output around a new SFC only above this mass [Msun] (<=0: all)
   ! star-by-star (pop2_model = 5) IMF
   logical :: star_by_star = .false. ! use star-by-star feedback models (for radiation and SN)
   character(len=16) :: sbs_imf_name='Chabrier' ! IMF name (either Chabrier or Chon)

@@ -554,7 +554,9 @@ ks のブロックを切り出して変換) で `patch/takashi/output_analysis.f
   無条件の `set_ufront(lev,3)`、`set_particle_density` の粒子密度、level ごとの ALLREDUCE で rank 1 に集約)。
 - 経路: (1) SFC 形成時 `output_around_SFC` (`star_formation_fg`、`SFC_output_minmass`)、(2) Pop III 形成時 `output_around_star`
   (`p3_output_minmass`)、(3) `idp_ugvtk` の星の形成時と年齢ごと (1 kyr … 300 Myr の 33 点、`output_around_star_at_given_age`)、
-  (4) 全 SFC の 0.1/1/3/5/10 Myr (`SFC_output_at_given_age`、重い)。(3)(4) は `amr_step` から毎 level 呼ぶ
+  (4) 全 SFC / SFC marker の年齢ごと (`SFC_output_at_given_age`、重い; 年齢は `&OUTPUT_PARAMS` の `SFC_tout_Myr` [Myr]、最大 20 個、
+  既定 0.1/1/3/5/10 = ks の固定リスト、2026-11-27 に namelist 化。接尾辞は値から作る: 整数 Myr は `_3Myr`、それ以外は kyr に丸めて
+  `_100kyr`、`_2500kyr`)。(3)(4) は `amr_step` から毎 level 呼ぶ
   `output_analysis_data` が最も細かい level でだけ動かす (ks と同じ位置: levelmin の出力ブロックの直後)。
 - **主スイッチ `ugvtk` (`&OUTPUT_PARAMS`、既定 .false.、TO ADDED)**: ks には無く常に有効だったが、既定だと Pop III 1 個ごとに
   数十 MB 書くので takashi では明示的に on にする。`idp_ugvtk`, `NI_ugvtk`, `SFC_output_at_given_age`, `p3_output_minmass`,
@@ -922,8 +924,13 @@ Pop III が 846 → 2 個に減るのは、極大の判定が `loc_vir > 0` の�
   (warm start は高赤方偏移の zoom では逆効果)。`omp_cg=.true.` (ランクあたりの grid が多いので CG もスレッド化)。
 - C_eps1 の 5 項目: `pop2_model=2`、`eps_star=1`、`pop2_peak_only=.false.`、`pop2_SFC_marker=.true.`、
   `SFC_output_at_given_age=.true.`。
-- 出力: ks の `dtexpout_Myr=5` は未移植なので、開始 (z = 127、宇宙年齢 11.9 Myr) から 5 Myr ごとの `aout` を 233 個並べた
-  (最後は `aend=0.167`; RAMSES と同じく輻射なしの平坦 ΛCDM で計算)。
+- 出力: `dtexpout_Myr=5` (`&OUTPUT_PARAMS`、2026-11-27 に移植) で 5 Myr ごとに出す。`aout` は z = 12 (0.0769231) だけで、
+  最後は `aend=0.167`。移植した `dtexpout_Myr` は ks と数え方が違う: ks は直前の出力時刻から数え、その時刻を
+  `texpout_prev_*.out` に書いて restart で読み戻す。こちらは開始時刻 (aexp_ini での固有時間) + k × `dtexpout_Myr` の格子を
+  越えた coarse step で出す (`output_amr.f90` の `set_texpout_next`、判定は `amr_step.f90`)。次の出力時刻は restart のたびに
+  今の `texp` から計算し直すので、restart ファイルに追加の記録は要らない。既定 (-1 = 無効) では出力は bit 一致。
+  `l5_14_test.nml` に `dtexpout_Myr=1.0`、`foutput=1000` を足して確認 (1.275、2.600、3.276 Myr の step で出力、
+  output_00003 から restart しても次は 3.276 Myr)。
 - job script: restart は `output_restart/` の有無で決める (`nrestart=-1` / 0)。`run.lock/` で同じディレクトリの同時実行を
   防ぐので、何本かまとめて投入できる。初期条件は `/work/$USER/smbh/ICs/<名前>/` (その下に `ics_ramses/` があればそちら)。
 - 古い `~/work7/rare_peak/music_*/ngridmax_intel.sh` と `ics_ramses/ngridmax_music.nml` (2026-11-14、flat) は使わない

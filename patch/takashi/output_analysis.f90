@@ -619,7 +619,7 @@ CONTAINS
   ! output vtk around SFCs at given age
   !----------------------------------------------------------------------------
   ! check all SFCs with the age at tout_SFC_Myr and output vtk around them
-  !  (default) tout_SFC_Myr =  0.1, 1, 3, 5, 10
+  !  the ages are SFC_tout_Myr of &OUTPUT_PARAMS (default 0.1, 1, 3, 5, 10; ks: fixed list)
   ! similar to output_around_star_at_given_age
   !----------------------------------------------------------------------------
   subroutine output_around_SFC_at_given_age(dt)
@@ -639,17 +639,14 @@ CONTAINS
 
 
     real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v
-    real(dp) :: SFC_tout_Myr, t0, current_time, birth_time, dteff
+    real(dp) :: tout_Myr, t0, current_time, birth_time, dteff
     character(LEN=80):: SFC_tout_char
     integer :: iloc, iglob, offset
     integer :: itout
     integer :: i,icpu,info
 
 
-    !list of ages for output
-    integer,parameter :: SFC_Ntout = 5
-    real(dp), dimension(1:SFC_Ntout), parameter:: SFC_tout_Myr_list = (/1d-1, 1d0, 3d0, 5d0, 1d1/)
-    character(LEN=80), dimension(1:SFC_Ntout), parameter:: SFC_tout_char_list = (/'_100kyr', '_1Myr  ', '_3Myr  ','_5Myr  ','_10Myr '/) !gfortran requires the same length for the char list
+    !list of ages for output: SFC_tout_Myr (amr_parameters, &OUTPUT_PARAMS; TO MODIFIED 2026-11-27, ks: fixed list here)
 
     !buffer for MPI send/recv
     integer,dimension(1:max(ncpu,SFCoutput_n_max*3)) :: sbufi,rbufi
@@ -665,17 +662,22 @@ CONTAINS
     endif
 
 
-    do itout=1,SFC_Ntout
-      !SFC_tout_Myr = 1d0 !age for output
-      SFC_tout_Myr = SFC_tout_Myr_list(itout) !age for output in Myr
-      SFC_tout_char = SFC_tout_char_list(itout) !age for output in char
+    do itout=1,SFC_Ntout_max
+      tout_Myr = SFC_tout_Myr(itout) !age for output in Myr
+      if (.not. (tout_Myr > 0d0)) cycle !unused entry
+      !age for output in char (file suffix): _3Myr for whole Myr, otherwise in kyr (_100kyr)
+      if (abs(tout_Myr - nint(tout_Myr)) < 1d-9) then
+        write(SFC_tout_char,'("_",I0,"Myr")') nint(tout_Myr)
+      else
+        write(SFC_tout_char,'("_",I0,"kyr")') nint(tout_Myr*1d3)
+      end if
 
       ! output time from Myr to code units
       if(use_proper_time)then
-        t0=SFC_tout_Myr * 1d6*(365.*24.*3600.)/(scale_t/aexp**2) !star output time (Myr -> code unit)
+        t0=tout_Myr * 1d6*(365.*24.*3600.)/(scale_t/aexp**2) !star output time (Myr -> code unit)
         current_time=texp
       else
-        t0=SFC_tout_Myr * 1d6*(365.*24.*3600.)/scale_t !star output time (Myr -> code unit)
+        t0=tout_Myr * 1d6*(365.*24.*3600.)/scale_t !star output time (Myr -> code unit)
         current_time=t
       endif
 
@@ -715,7 +717,7 @@ CONTAINS
       SFCoutput_n_list(:) = rbufi(1:ncpu)
       SFCoutput_n_glob = sum(SFCoutput_n_list) !total number of SFC for output
 
-      !retry with different SFC_tout_Myr if there is no SFC for output
+      !retry with different tout_Myr if there is no SFC for output
       if (SFCoutput_n_glob == 0) then
         cycle
       end if
@@ -762,7 +764,7 @@ CONTAINS
       !-------------------------------------------
       if(myid==1) then
         write(*,'(A, 1P1E10.2, A, I8)') &
-          '** KS DEBUG ** (output_around_SFC_at_given_age) output vtk for SFCs at age of ', SFC_tout_Myr, ' Myr: ',  SFCoutput_n_glob
+          '** KS DEBUG ** (output_around_SFC_at_given_age) output vtk for SFCs at age of ', tout_Myr, ' Myr: ',  SFCoutput_n_glob
       end if
 
       call ugvtk_batch_begin
