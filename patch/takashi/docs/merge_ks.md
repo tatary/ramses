@@ -896,3 +896,59 @@ Pop III が 846 → 2 個に減るのは、極大の判定が `loc_vir > 0` の�
 (ks 側で解析的な速度場の箱を使い、符号が 1728/1728 セルで一致することを確認済みの同じコード)。`ivar_refine > 0` の経路は
 こちらでも未確認。`tests/dice_rt_fg.nml` のコメントにある「Zpop3=1d1 で 846 個」を前提にした試験 (SN、sink、ugvtk) は
 星の数が変わる。
+
+## MUSIC 初期条件の本番 (hybrid、C_eps1 の物理) と、そのための移植 3 件 (2026-11-27)
+
+新しい初期条件 `music_M1e10_in_M5e11` (4sigmaM10 の後継) と `music_M5e10_in_M1e12` (5sigmaM5e10 の後継;
+`~/work7/rare_peak/music_ic_settings.md`) を patch/takashi で走らせるための一式。物理は ks の Pop II 比較ラン C_eps1
+(`4sigmaM10/pop2_compare/C_eps1/C_eps1.sh` = 本番 `ngridmax_intel.sh` の sed + 局所 Pop II の 5 項目) にそろえた。
+
+| ファイル | 内容 |
+|---|---|
+| `bin/Makefile.xd_ks_intel` | 既存のものをそのまま使う (oneAPI `mpiifx -qopenmp`、`OPENMP = 1`)。`bin_ks/` にコピーして組む |
+| `namelist/ks/music_M1e10_in_M5e11.nml` | levelmin 8 / levelmax 23、初期条件 level 8-12 |
+| `namelist/ks/music_M5e10_in_M1e12.nml` | levelmin 8 / levelmax 24、初期条件 level 8-13 |
+| `jobfiles/xd/ks/music_M1e10_in_M5e11.sh` | 4 ノード、16 ランク/ノード x 7 スレッド = 64 ランク |
+| `jobfiles/xd/ks/music_M5e10_in_M1e12.sh` | 16 ノード、同 = 256 ランク |
+
+- ノード数は元のラン (flat 448 / 1792 ランク) と同じ。`ngridmax` はランクあたりなので flat の 7 倍 (2.8e6 / 3.15e6; 総量は同じ)。
+  `npartmax` は両方 3.2e7 (flat の 7 倍は 2.24e7 / 1.4e7)。初期の粒子は 9.8e7 / 3.8e8 個で、zoom の外の境界粒子が
+  2.0e7 / 2.6e7 個 (level 8 の 256^3 だけで 1.67e7) ある。コスト重みの分割では安い境界領域が少数のランクに集まるので、
+  level 8 が 1 ランクに全部乗っても入る大きさにした。メモリは 1 ノード 16 ランクで 300-320 GB の見積もり (`--mem=461G`)。
+- 光子群はエネルギーの低い順 (ユーザー 2026-11-27; やり直しのランなので ks と違ってよい): 1 FUV 5.6-11.2、2 LW 11.2-13.6、
+  3 HI、4 HeI、5 HeII (ks は LW, HI, HeI, HeII, FUV)。`LWgroup=2`、`iPEH_group=1`、`spec2group=2,3,4,5`。群の番号は全部
+  namelist で渡すのでコードは同じ。この並びでの実行は未確認 (読み込みと群の表の表示まで)。
+- 分割と重力 (ユーザー 2026-11-27): `two_tier_level=-1` (Ls を自動選択)、`cg_auto=.true.`、`cg_warm_start=.false.`
+  (warm start は高赤方偏移の zoom では逆効果)。`omp_cg=.true.` (ランクあたりの grid が多いので CG もスレッド化)。
+- C_eps1 の 5 項目: `pop2_model=2`、`eps_star=1`、`pop2_peak_only=.false.`、`pop2_SFC_marker=.true.`、
+  `SFC_output_at_given_age=.true.`。
+- 出力: ks の `dtexpout_Myr=5` は未移植なので、開始 (z = 127、宇宙年齢 11.9 Myr) から 5 Myr ごとの `aout` を 233 個並べた
+  (最後は `aend=0.167`; RAMSES と同じく輻射なしの平坦 ΛCDM で計算)。
+- job script: restart は `output_restart/` の有無で決める (`nrestart=-1` / 0)。`run.lock/` で同じディレクトリの同時実行を
+  防ぐので、何本かまとめて投入できる。初期条件は `/work/$USER/smbh/ICs/<名前>/` (その下に `ics_ramses/` があればそちら)。
+- 古い `~/work7/rare_peak/music_*/ngridmax_intel.sh` と `ics_ramses/ngridmax_music.nml` (2026-11-14、flat) は使わない
+  (削除済みの `loc_vir` が残っていて読めない)。
+
+### 移植 3 件 (既定値では変更前と bit 一致)
+
+C_eps1 の namelist で `!KS` のまま残っていた項目のうち、結果に効くものを入れた。
+
+| 項目 | 場所 | 内容 |
+|---|---|---|
+| `jeans_refine_nH` (`&REFINE_PARAMS`、既定 0) | `hydro_flag.f90` の `jeans_length_refine` | Jeans 細分化は nH がこの値 [H/cc] を超えるセルだけ。あわせて ks と同じく、`ivar_refine > 0` のとき zoom スカラーが `var_cut_refine` 未満のセルは流体の細分化条件を全部落とす |
+| `strict_Npart_refine`、`Mmin_strict_Npart_refine` (`&REFINE_PARAMS`、既定 `.false.` / -1) | `rho_fine.f90` と `to_dice/rho_fine.f90` の 2 箇所ずつ | `m_refine` の粒子数で baryon 粒子を質量 / `mass_sph` ではなく個数で数える。`Mmin` より軽い粒子は数えない |
+| `pressure_fix_cond=3`、`pressure_fix_eta` (`&HYDRO_PARAMS`、既定 0.05) | `godunov_fine.f90` の `set_uold` | mode 1 に「`e_cons < pressure_fix_eta × E_total`」を足したもの。`e_cons <= 0` は条件によらず `e_prim` で置き換える。非有限・非正のエネルギーは `clean_stop` |
+
+- `jeans_refine_nH` と zoom の制限は本番に必須: 無いと z = 127 の一様なガス (nH = 0.4 /cc、T ≈ 300 K、Jeans 長 ≈ 29 kpc/h
+  comoving < 8 セル) が箱全体で level 11 まで細分化される。今までの比較ラン (`l5_14_test.nml`) は `jeans_refine=0` だったので
+  この経路を通っていなかった。
+- `no_sinkcloud_refine` は移植済みだったが `&SINK_PARAMS` で読む (ks は `&REFINE_PARAMS` 相当)。本番 namelist で `.true.` にした。
+- `mhd/godunov_fine.f90` には `pressure_fix_cond=3` を入れていない。
+- 確認: ks 設定 (gfortran、OpenMP なし) で `namelist/ks/l5_14_test.nml` (16 ランク 6 step) の出力 384 ファイルが変更前と bit 一致。
+
+### C_eps1 と違うまま残るもの
+
+`!KS` で残っている項目は ks 本番でもオフか既定値のもの (`fof_find`、`fout_*`、`met_switch`、`flg_thin_star_cell`、`nHmax_preSN`、
+`fJeans_cool`、`SS_LVG`、`isXray`、`p2_no*`、`sgagn_seed`、`f_rho_add`、`flg_voffset_ini`) で、物理の差にはならない。差が残るのは
+これまでの方針どおり: フィードバックの実装 (takashi の `feedbk` + FIRE-3 yields + `msp0`; ks の `pop2_SN_model='fixed'`、
+`pop2_sESN` は無い)、cloudy の金属冷却テーブル (方針 1)、光電加熱の効率 (`iPEH_group`)、`rt_c_fraction` がスカラーなこと。

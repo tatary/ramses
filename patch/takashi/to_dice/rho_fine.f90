@@ -1012,7 +1012,12 @@ subroutine cic_amr(ind_cell,ind_part,ind_grid_part,x0,ng,np,ilevel,direct,irho,i
     if(star)then
       do j=1,np
         if ( is_not_DM(fam(j)) ) then
-          vol2(j) = vol2(j)*mmm(j)/mass_sph
+          if(strict_Npart_refine)then
+             ! patch/ks: count baryon particles by number; those lighter than Mmin_strict_Npart_refine do not count
+             if(mmm(j)<Mmin_strict_Npart_refine)vol2(j)=0d0
+          else
+             vol2(j) = vol2(j)*mmm(j)/mass_sph
+          endif
         endif
       end do
     endif
@@ -1117,7 +1122,12 @@ subroutine cic_amr(ind_cell,ind_part,ind_grid_part,x0,ng,np,ilevel,direct,irho,i
     if(star)then
       do j=1,np
         if ( is_not_DM(fam(j)) ) then
-          vol2(j) = vol2(j)*mmm(j)/mass_sph
+          if(strict_Npart_refine)then
+             ! patch/ks: count baryon particles by number; those lighter than Mmin_strict_Npart_refine do not count
+             if(mmm(j)<Mmin_strict_Npart_refine)vol2(j)=0d0
+          else
+             vol2(j) = vol2(j)*mmm(j)/mass_sph
+          endif
         endif
       end do
     endif

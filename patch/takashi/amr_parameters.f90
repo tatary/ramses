@@ -319,6 +319,10 @@ module amr_parameters
   real(dp) :: sink_mass_min_pop3BH = 0d0    ! minimum FAM_BH mass [Msun] converted to a sink (negative: never)
   real(dp) :: sink_mass_min_pop2BH = -1d0   ! minimum FAM_DEAD mass [Msun] converted to a sink (negative: never)
   logical  :: no_sinkcloud_refine = .false. ! sink cloud particles do not count for the particle refinement criterion (rho_fine)
+  ! patch/ks refinement options (&REFINE_PARAMS; defaults keep the upstream behaviour)
+  real(dp) :: jeans_refine_nH = 0d0          ! Jeans refinement only in cells with nH above this value [H/cc]
+  logical  :: strict_Npart_refine = .false.  ! m_refine counts baryon particles by number instead of mass/mass_sph (rho_fine)
+  real(dp) :: Mmin_strict_Npart_refine = -1d0 ! with strict_Npart_refine: baryon particles lighter than this [code units] do not count
   real(dp) :: sgagn_T2max = 1d9             ! BH_model=3: maximum T/mu [K] reached by the thermal feedback
   logical  :: sink_check_vars = .false.     ! check that msink/xsink/vsink agree on all ranks (ALLREDUCEs per sink and call)
   logical ::cooling_ism = .false.      ! Use cooling module from Audit & Hennebelle 2005 (non-RT)
@@ -336,6 +340,10 @@ module amr_parameters
   !      e_cons < 2 * e_kin / pressure_fix_maxMach**2.
   !      This confines the correction to sufficiently high-Mach flows.
   real(dp) :: pressure_fix_maxMach = 1d1  ! Mach-number threshold used when pressure_fix_cond = 2
+  ! pressure_fix_cond = 3 (patch/ks): mode 1 plus a thermal-fraction gate,
+  !      e_cons < e_trunc .and. e_cons < e_prim .and. e_cons < pressure_fix_eta * E_total;
+  !      a non-positive e_cons is always replaced by e_prim.
+  real(dp) :: pressure_fix_eta = 0.05d0   ! thermal / total energy threshold used when pressure_fix_cond = 3
   logical :: Zsolar_Asplund=.false.
 
   ! EOS parameters

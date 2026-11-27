@@ -208,12 +208,19 @@ subroutine jeans_length_refine(ind_cell,ok,ncell,ilevel)
   integer::i,indi
   real(dp)::lamb_jeans,tail_pix,n_jeans
   real(dp)::dens,tempe,etherm,factG
+  real(dp)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,nH_min_code
 #if NENER>0
   integer::irad
 #endif
 #ifdef SOLVERmhd
   real(dp)::emag
 #endif
+  ! patch/ks: the Jeans criterion applies only above jeans_refine_nH [H/cc] (default 0: everywhere)
+  nH_min_code=0d0
+  if(jeans_refine_nH>0d0)then
+     call units(scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+     nH_min_code=jeans_refine_nH/scale_nH
+  endif
   factG=1
   if(cosmo)factG=3d0/8d0/pi*omega_m*aexp
   n_jeans = jeans_refine(ilevel)
@@ -260,7 +267,14 @@ subroutine jeans_length_refine(ind_cell,ok,ncell,ilevel)
      lamb_jeans = sqrt( tempe * pi / dens / factG )
      ! the Jeans length must be smaller
      ! than n_jeans times the size of the pixel
-     ok(i) = ok(i) .or. ( n_jeans*tail_pix >= lamb_jeans )
+     if(dens>nH_min_code)then
+        ok(i) = ok(i) .or. ( n_jeans*tail_pix >= lamb_jeans )
+     endif
+     ! patch/ks: with a zoom scalar (ivar_refine>0) no hydro refinement outside the zoom region.
+     ! Without this the Jeans criterion refines the cold gas of the whole box.
+     if(ivar_refine>0)then
+        if(uold(indi,ivar_refine)/dens<var_cut_refine)ok(i)=.false.
+     endif
   end do
 
 end subroutine jeans_length_refine

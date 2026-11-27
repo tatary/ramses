@@ -55,12 +55,13 @@ subroutine read_hydro_params(nml_ok)
 #endif
   & ,pressure_fix,beta_fix,scheme,riemann &
   & ,strict_equilibrium &
-  & ,pressure_fix_cond, pressure_fix_maxMach
+  & ,pressure_fix_cond, pressure_fix_maxMach, pressure_fix_eta
 
 
   ! Refinement parameters
   namelist/refine_params/x_refine,y_refine,z_refine,r_refine &
   & ,a_refine,b_refine,exp_refine,jeans_refine,mass_cut_refine &
+  & ,jeans_refine_nH,strict_Npart_refine,Mmin_strict_Npart_refine &
   & ,m_refine,mass_sph,err_grad_d,err_grad_p,err_grad_u &
   & ,floor_d,floor_u,floor_p,ivar_refine,var_cut_refine &
 #ifdef SOLVERmhd
@@ -152,9 +153,17 @@ subroutine read_hydro_params(nml_ok)
   if(hydro)read(1,NML=hydro_params)
 
   ! Check pressure-fix parameters
-  if (pressure_fix_cond < 0 .or. pressure_fix_cond > 2) then
+  if (pressure_fix_cond < 0 .or. pressure_fix_cond > 3) then
     if (myid == 1) write(*,*) 'Error in the namelist'
-    if (myid == 1) write(*,*) 'pressure_fix_cond must be 0, 1, or 2'
+    if (myid == 1) write(*,*) 'pressure_fix_cond must be 0, 1, 2, or 3'
+    nml_ok = .false.
+  end if
+
+  if (pressure_fix_cond == 3 .and. (.not. (pressure_fix_eta > 0d0 .and. pressure_fix_eta < 1d0) &
+       & .or. .not. (beta_fix >= 0d0))) then
+    if (myid == 1) write(*,*) 'Error in the namelist'
+    if (myid == 1) write(*,*) &
+      'pressure_fix_cond = 3 needs 0 < pressure_fix_eta < 1 and beta_fix >= 0'
     nml_ok = .false.
   end if
 

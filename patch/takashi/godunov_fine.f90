@@ -248,6 +248,30 @@ subroutine set_uold(ilevel)
             e_cons < 2d0 * e_kin / pressure_fix_maxMach**2) then
             uold(ind_cell,ndim+2) = e_prim + e_kin
           end if
+
+         case(3)
+          ! patch/ks: mode 1 plus a thermal-fraction gate (keeps thermally dominated gas);
+          ! a non-positive conservative thermal energy is always replaced
+          if (.not. (abs(e_cons) <= huge(1d0)) .or. .not. (abs(e_kin) <= huge(1d0))) then
+            write(*,*) 'Error: nonfinite conservative energy in pressure_fix_cond=3', myid, ilevel, ind_cell
+            call clean_stop
+          end if
+          if (e_cons <= 0d0) then
+            if (.not. (e_prim > 0d0 .and. e_prim <= huge(1d0))) then
+              write(*,*) 'Error: invalid dual energy for pressure rescue', myid, ilevel, ind_cell
+              call clean_stop
+            end if
+            uold(ind_cell,ndim+2) = e_prim + e_kin
+          else if (abs(e_prim) <= huge(1d0)) then
+            if (e_cons < e_trunc .and. e_cons < e_prim .and. &
+              e_cons < pressure_fix_eta * uold(ind_cell,ndim+2)) then
+              uold(ind_cell,ndim+2) = e_prim + e_kin
+            end if
+          end if
+          if (.not. (abs(uold(ind_cell,ndim+2)) <= huge(1d0)) .or. uold(ind_cell,ndim+2) - e_kin <= 0d0) then
+            write(*,*) 'Error: pressure rescue cannot represent positive thermal energy', myid, ilevel, ind_cell
+            call clean_stop
+          end if
         end select
       end do
     end if
