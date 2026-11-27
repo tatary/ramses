@@ -13,8 +13,9 @@ RAMSES (AMR 宇宙流体コード, Fortran 90 + MPI) の岡本研フォーク。
   `init_part, particle_tree, rho_fine, read_params, init_refine, init_flow_fine,
   init_time, add_list, gadgetreadfile` はここにもあるので、両方を同じ内容に保つ。
 - `patch/takashi/mhd/` は `SOLVER=mhd` のときだけ有効。
-- `patch/mizuki/` は小野さんの独立した作業コピー。**消さない、こちらから編集しない**。
-  差分の取り込みは mizuki → takashi の向きで行う (`diff -w -i -B` で比較)。
+- 小野さんの作業コピー `patch/mizuki/` は `origin/mizuki` ブランチにある (このブランチからは 2026-11-27 に削除)。
+  **こちらから編集しない**。差分の取り込みは mizuki → takashi の向きで行う
+  (`git show origin/mizuki:patch/mizuki/xxx.f90 | diff -w -i -B - patch/takashi/xxx.f90` で比較)。
 - **`patch/takashi/` に `.f90` を置くだけで (git 未追跡でも) ビルドに入る**。使うものは
   `git add`、使わないものは `.f90.mizuki` のように拡張子を変えて外す
   (例: `rt_cooling_module.f90.back`)。

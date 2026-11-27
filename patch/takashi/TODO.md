@@ -61,10 +61,11 @@
 - `feedbk` の `sf_log_properties` ブロック末尾 `typep(ind_part(i))%tag` が、ループ変数 `j` の
   ところで古い `i` を使っていた (上流 `pm/feedback.f90:405` も同じ)。`sf_log_properties=.true.`
   で SN が起きると `typep(0)` を読み、-O2 では segfault、bounds check では
-  "Index '0' of dimension 1 of array 'typep'"。`j` に修正。`patch/mizuki/feedback.f90` にも同じ行がある
-  (そちらは触っていない)。本番 namelist は `sf_log_properties=.true.` なので本番でも踏み得た。
+  "Index '0' of dimension 1 of array 'typep'"。`j` に修正。小野さんの版 (`origin/mizuki` の `patch/mizuki/feedback.f90`) にも同じ行があった
+  (47f0d67a で修正済み)。本番 namelist は `sf_log_properties=.true.` なので本番でも踏み得た。
 - 2026-10-29: origin/mizuki acb88172 でログ出力ブロックが MHD のループ注入の前に移動した (こちらにも
-  移植済み、hydro ビルドでは bit 一致)。mizuki 側はまだ `typep(ind_part(i))` のまま。小野さんに連絡要。
+  移植済み、hydro ビルドでは bit 一致)。mizuki 側の `typep(ind_part(i))` は origin/mizuki 47f0d67a (2026-10-29) で `j` に直った。
+- 2026-11-27: `patch/mizuki/` (4112010f 時点の写し) をこのブランチから削除した。小野さんの版は `origin/mizuki` ブランチにある。
 
 ### 1f. (修正済 2026-11-07) `LIGHT_MPI_COMM=1` で DICE 初期条件が読めない
 
